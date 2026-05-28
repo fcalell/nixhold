@@ -1,0 +1,89 @@
+{ lib, ... }:
+let
+  inherit (lib) mkOption types;
+in
+{
+  # The `layout` contract: seven required paths, all set by the
+  # operator in `mkFleet`'s `layout` arg, all readable from any
+  # host as `config.nixhold.layout.*`. The framework eval never
+  # reads from these paths directly — they're CLI-side state. The
+  # CLI reads them via `nix eval` to know where to scaffold and
+  # where committed secrets/keys live.
+  options.nixhold.layout = {
+    secrets = mkOption {
+      type = types.path;
+      description = ''
+        Root of the operator's encrypted secrets tree. The
+        convention `secrets/hosts/<host>/<name>.age` is enforced —
+        the framework derives the per-secret file path from this
+        root, `config.networking.hostName`, and the attribute name
+        in `nixhold.secrets`.
+      '';
+      example = lib.literalExpression "./secrets";
+    };
+
+    hostsFile = mkOption {
+      type = types.path;
+      description = ''
+        CLI-owned Nix file containing the host topology attrset.
+        `nixhold host add` / `nixhold host remove` manipulate this
+        file end-to-end.
+      '';
+      example = lib.literalExpression "./hosts.nix";
+    };
+
+    modulesDir = mkOption {
+      type = types.path;
+      description = ''
+        Directory for forker-authored modules. The framework does
+        not auto-import this; the operator's flake imports modules
+        from here directly, either inside profiles or in
+        `hosts.<n>.modules`.
+      '';
+      example = lib.literalExpression "./modules";
+    };
+
+    profilesDir = mkOption {
+      type = types.path;
+      description = ''
+        Directory where the CLI writes operator-authored profiles
+        (`nixhold profile new`). Like `modulesDir`, the framework
+        does not auto-import from here.
+      '';
+      example = lib.literalExpression "./profiles";
+    };
+
+    keysDir = mkOption {
+      type = types.path;
+      description = ''
+        Directory holding per-host public keys committed to the
+        fleet repo (SSH host pubkeys, age recipient pubkeys).
+        The framework reads these at eval time to build
+        cross-host authorizedKeys lists and agenix recipient
+        registries.
+      '';
+      example = lib.literalExpression "./keys";
+    };
+
+    ageRecipient = mkOption {
+      type = types.path;
+      description = ''
+        Path to the operator's age public key. Used as a default
+        recipient on every encrypted secret so the operator can
+        edit and rekey from any device with the wrapped private
+        key.
+      '';
+      example = lib.literalExpression "./keys/operator.pub";
+    };
+
+    ageIdentityWrapped = mkOption {
+      type = types.path;
+      description = ''
+        Path to the operator's passphrase-wrapped age private key.
+        Unwrapped only at edit time by `nixhold secret edit`;
+        never decrypted to disk during normal activation.
+      '';
+      example = lib.literalExpression "./keys/operator.age";
+    };
+  };
+}
