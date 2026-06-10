@@ -2,12 +2,14 @@
 # Scaffolds a service module under <layout.modulesDir>/services/.
 
 cmd_service_new() {
-  local name="$1"
+  local name="${1:-}"
   if [ -z "$name" ]; then
     nh_err "expected: nixhold service new <name>"
     return 1
   fi
-  local modules_dir; modules_dir="$(nh_layout modulesDir | jq -r '.')"
+  # Worktree path, not nh_layout's read-only /nix/store view —
+  # this verb writes.
+  local modules_dir; modules_dir="$(nh_worktree_layout_dir modulesDir modules)" || return 1
   mkdir -p "$modules_dir/services"
   local target="$modules_dir/services/$name.nix"
   if [ -f "$target" ]; then

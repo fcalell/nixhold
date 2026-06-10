@@ -43,7 +43,7 @@ let
           backendPort = svc.network.ports.${ep.backend} or null;
         }
       ) (svc.expose or { })
-    ) config.nixhold.services
+    ) (config.nixhold.services or { })
   );
 
   httpEndpoints = lib.filter (
@@ -91,7 +91,18 @@ let
     map (e: e.fqdn) (lib.filter (e: e.netType == "tailscale") endpointsWithFqdn)
   );
   hasTailscale = tailscaleFqdns != [ ];
+  hasInternet = lib.any (e: e.netType == "internet") endpointsWithFqdn;
   tailscaleFqdn = lib.head (tailscaleFqdns ++ [ null ]);
+
+  # Misconfigurations the grouping would otherwise swallow: two
+  # endpoints with no pathPrefix on one FQDN (only one could win),
+  # or one FQDN spanning network types (TLS strategy is per-vhost).
+  ambiguousFqdns = lib.attrNames (
+    lib.filterAttrs (_: eps: lib.length (lib.filter (e: e.pathPrefix == null) eps) > 1) grouped
+  );
+  mixedNetFqdns = lib.attrNames (
+    lib.filterAttrs (_: eps: lib.length (lib.unique (map (e: e.netType) eps)) > 1) grouped
+  );
 
   mkVhostExtraConfig =
     eps:
@@ -102,8 +113,11 @@ let
       # Per-endpoint extraConfig is injected inside the handle block,
       # before the default reverse_proxy — apps add `encode`, a
       # websocket split, etc. without leaving the data-driven model.
+      # `handle_path` strips the prefix before proxying; endpoints
+      # that mount themselves under the prefix (stripPrefix = false)
+      # get a non-stripping `handle` instead.
       handlePrefixed = lib.concatMapStrings (e: ''
-        handle_path ${e.pathPrefix}* {
+        ${if e.stripPrefix then "handle_path" else "handle"} ${e.pathPrefix}* {
           ${e.extraConfig}
           reverse_proxy http://127.0.0.1:${toString e.backendPort}
         }
@@ -131,6 +145,28 @@ let
 in
 {
   config = lib.mkMerge [
+    {
+      assertions = [
+        {
+          assertion = ambiguousFqdns == [ ];
+          message = ''
+            nixhold caddy: multiple endpoints without a pathPrefix claim the
+            same FQDN (${lib.concatStringsSep ", " ambiguousFqdns}); only one
+            default handle per vhost is possible. Give each endpoint a
+            distinct pathPrefix or subdomain.
+          '';
+        }
+        {
+          assertion = mixedNetFqdns == [ ];
+          message = ''
+            nixhold caddy: endpoints on different network types resolve to the
+            same FQDN (${lib.concatStringsSep ", " mixedNetFqdns}); the TLS
+            strategy is per-vhost, so this cannot be routed.
+          '';
+        }
+      ];
+    }
+
     (lib.mkIf (endpointsWithFqdn != [ ]) {
       services.caddy = {
         enable = true;
@@ -142,8 +178,10 @@ in
     # caddy when it changes. Only when the host serves a tailnet vhost.
     (lib.mkIf hasTailscale {
       # Tailnet-internal — no :80 listener, so disable the HTTP→HTTPS
-      # redirect caddy would otherwise add.
-      services.caddy.globalConfig = "auto_https disable_redirects";
+      # redirect caddy would otherwise add. `auto_https` is global, so
+      # only when no internet vhost shares this caddy (those want the
+      # redirect).
+      services.caddy.globalConfig = lib.mkIf (!hasInternet) "auto_https disable_redirects";
 
       systemd.tmpfiles.rules = [ "d ${tlsDir} 0750 caddy caddy - -" ];
 
@@ -157,6 +195,11 @@ in
           "tailscaled.service"
           "network-online.target"
         ];
+        # The vhost hard-references the cert files, so caddy must not
+        # start before the first fetch has run — otherwise it exits on
+        # config load and Restart=on-abnormal never revives it.
+        before = [ "caddy.service" ];
+        wantedBy = [ "caddy.service" ];
         path = [
           pkgs.tailscale
           pkgs.coreutils
@@ -208,7 +251,9 @@ in
         description = "Reload caddy after TLS cert refresh";
         serviceConfig = {
           Type = "oneshot";
-          ExecStart = "${pkgs.systemd}/bin/systemctl reload caddy.service";
+          # reload-or-restart (not plain reload): also brings caddy up
+          # if it failed an earlier start because the cert was missing.
+          ExecStart = "${pkgs.systemd}/bin/systemctl reload-or-restart caddy.service";
         };
       };
     })

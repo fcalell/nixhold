@@ -46,12 +46,6 @@ EOF
   fi
   arch="$(printf '%s' "$arch" | jq -r '.')"
 
-  # Auto-walk secret bootstrap if a required secret has no ciphertext
-  # yet (the former standalone `secret bootstrap` verb, folded into the
-  # normal deploy flow per the lifecycle design).
-  . "$NIXHOLD_LIB_ROOT/secret-bootstrap.sh"
-  nh_bootstrap_if_missing "$name" "$platform" || true
-
   local local_host=0
   if [ "$(hostname -s 2>/dev/null || hostname)" = "$name" ]; then
     local_host=1
@@ -61,6 +55,17 @@ EOF
     nh_info "deploy $name ($platform, $arch) — mode=$mode dry_run=$dry_run"
     nh_prompt_confirm "Proceed?" || { nh_info "aborted"; return 0; }
   fi
+
+  # Auto-walk secret bootstrap if a required secret has no ciphertext
+  # yet (the former standalone `secret bootstrap` verb, folded into the
+  # normal deploy flow per the lifecycle design). After the confirm —
+  # it can open editors/run generators. A failure aborts: activation
+  # would only fail later with a much worse error.
+  . "$NIXHOLD_LIB_ROOT/secret-bootstrap.sh"
+  nh_bootstrap_if_missing "$name" "$platform" || {
+    nh_err "secret bootstrap failed — fix the secrets above, then re-run deploy"
+    return 1
+  }
 
   case "$platform" in
     nixos)
@@ -95,15 +100,26 @@ EOF
       fi
       ;;
     darwin)
-      if [ "$local_host" -ne 1 ]; then
-        nh_err "darwin hosts deploy locally only (v1)"
+      # v1: darwin deploys are always local — so gate on the OS, not
+      # the hostname. The fleet name and the macOS/MDM hostname
+      # routinely differ (especially before the first switch).
+      if [ "$(uname -s)" != "Darwin" ]; then
+        nh_err "darwin hosts deploy locally only (v1) — run this on $name itself"
         return 1
       fi
-      nh_require_cmd darwin-rebuild
+      if [ "$local_host" -ne 1 ]; then
+        nh_warn "local hostname is '$(hostname -s 2>/dev/null || hostname)', not '$name' — assuming this machine IS $name (darwin deploys are local-only)"
+      fi
+      if ! command -v darwin-rebuild >/dev/null 2>&1; then
+        nh_err "darwin-rebuild not on PATH — the first activation goes through 'nixhold host install $name'"
+        return 1
+      fi
       local args=(switch)
       [ "$mode" != "switch" ] && args=("$mode")
       [ "$dry_run" -eq 1 ] && args=(check)
-      ( cd "$root" && darwin-rebuild "${args[@]}" --flake ".#$name" )
+      # nix-darwin requires root for switch (since the 25.05-era
+      # activation refactor), same as the NixOS path.
+      ( cd "$root" && sudo darwin-rebuild "${args[@]}" --flake ".#$name" )
       ;;
   esac
 }

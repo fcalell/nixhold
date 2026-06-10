@@ -27,32 +27,57 @@ cmd_secret_rekey() {
 
   (
     set -euo pipefail
-    idfile="$(mktemp -t nixhold-id.XXXXXX)"
-    chmod 600 "$idfile"
-    trap 'rm -f "$idfile"' EXIT
+    # One private workdir for identity + per-secret temp files; the
+    # trap removes it whole, so a mid-loop failure can't leak
+    # decrypted plaintext into $TMPDIR.
+    workdir="$(mktemp -d -t nixhold-rekey.XXXXXX)"
+    chmod 700 "$workdir"
+    trap 'rm -rf "$workdir"' EXIT
+    idfile="$workdir/identity"
     nh_unwrap_identity "$idfile"
 
-    local count=0 host platform json name target rfile tmp
+    local count=0 failed=0 host platform json name target rfile tmp
     while IFS= read -r host; do
       [ -n "$host" ] || continue
-      platform="$(nh_host_platform "$host")" || continue
-      json="$(nh_host_eval "$host" "$platform" nixhold.secrets 2>/dev/null)" || continue
+      # A skipped host means its secrets stay encrypted to a STALE
+      # recipient set — never silent, and the verb fails overall.
+      if ! platform="$(nh_host_platform "$host")"; then
+        nh_warn "skipping $host — platform probe failed; its secrets were NOT rekeyed"
+        failed=1
+        continue
+      fi
+      if ! json="$(nh_host_eval "$host" "$platform" nixhold.secrets 2>/dev/null)"; then
+        nh_warn "skipping $host — eval of nixhold.secrets failed; its secrets were NOT rekeyed"
+        failed=1
+        continue
+      fi
       while IFS= read -r name; do
         [ -n "$name" ] || continue
         target="$sdir/hosts/$host/$name.age"
         [ -e "$target" ] || continue
-        rfile="$(mktemp -t nixhold-rcpt.XXXXXX)"
-        tmp="$(mktemp -t nixhold-plain.XXXXXX)"
-        chmod 600 "$tmp"
+        rfile="$workdir/recipients"
+        tmp="$workdir/plain"
         printf '%s' "$json" | jq -r --arg n "$name" '.[$n].recipients[]' >"$rfile"
+        if [ ! -s "$rfile" ]; then
+          nh_warn "hosts/$host/$name.age has no recipients (missing operator/host pubkeys?) — NOT rekeyed"
+          failed=1
+          continue
+        fi
         age -d -i "$idfile" -o "$tmp" "$target"
-        age -R "$rfile" -o "$target" "$tmp"
-        rm -f "$rfile" "$tmp"
+        # Encrypt to a sibling temp + rename so a failure can't leave
+        # the committed ciphertext truncated.
+        age -R "$rfile" -o "$target.tmp" "$tmp"
+        mv "$target.tmp" "$target"
+        rm -f "$tmp"
         count=$((count + 1))
         nh_info "rekeyed hosts/$host/$name.age"
       done < <(printf '%s' "$json" | jq -r 'keys[]')
     done < <(nh_all_hosts)
 
+    if [ "$failed" -ne 0 ]; then
+      nh_err "rekeyed $count secret(s), but some were skipped — fix the warnings above and re-run"
+      exit 1
+    fi
     nh_ok "rekeyed $count secret(s)"
   )
 }

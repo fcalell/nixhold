@@ -70,6 +70,28 @@ nh_worktree_layout_dir() {
 nh_worktree_secrets_dir() { nh_worktree_layout_dir secrets secrets; }
 nh_worktree_keys_dir() { nh_worktree_layout_dir keysDir keys; }
 
+# nh_worktree_layout_file <layout-key> -> worktree path for a
+# file-valued nixhold.layout.<key>; non-zero (and no output) when the
+# option can't be probed. Same store-prefix re-rooting as the dir
+# variant.
+nh_worktree_layout_file() {
+  local key="$1" root abspath rel
+  root="$(nh_fleet_root)" || return 2
+  abspath="$(nh_layout "$key" 2>/dev/null | jq -r '.')" || abspath=""
+  if [ -z "$abspath" ] || [ "$abspath" = "null" ]; then
+    return 1
+  fi
+  case "$abspath" in
+    /nix/store/*) rel="${abspath#/nix/store/*/}" ;;
+    "$root"/*) rel="${abspath#"$root"/}" ;;
+    *) rel="$abspath" ;;
+  esac
+  case "$rel" in
+    /*) printf '%s' "$rel" ;;
+    *) printf '%s/%s' "$root" "$rel" ;;
+  esac
+}
+
 # nh_recipients_file <secrets-json> <name> <out> — write the secret's
 # age recipients (one per line) for `age -R`. Errors if the secret is
 # undeclared or has no recipients.
@@ -88,13 +110,21 @@ nh_recipients_file() {
 
 # nh_unwrap_identity <out> — decrypt the passphrase-wrapped operator
 # age identity to <out> (prompts for the passphrase). Caller chmods/
-# removes <out>.
+# removes <out>. Prefers the operator-local copy; falls back to the
+# fleet-committed `layout.ageIdentityWrapped` so edit/rekey work on a
+# machine that hasn't been through `nixhold init` (both are
+# passphrase-wrapped, so the fallback costs nothing in security).
 nh_unwrap_identity() {
-  local out="$1"
-  if [ ! -f "$NIXHOLD_IDENTITY_FILE" ]; then
-    nh_err "no operator identity at $NIXHOLD_IDENTITY_FILE — run 'nixhold init'"
-    return 1
+  local out="$1" src="$NIXHOLD_IDENTITY_FILE" committed
+  if [ ! -f "$src" ]; then
+    if committed="$(nh_worktree_layout_file ageIdentityWrapped)" && [ -f "$committed" ]; then
+      nh_info "no $NIXHOLD_IDENTITY_FILE — using fleet-committed identity $committed"
+      src="$committed"
+    else
+      nh_err "no operator identity at $NIXHOLD_IDENTITY_FILE — run 'nixhold init'"
+      return 1
+    fi
   fi
   nh_info "unlock operator identity (passphrase prompt)"
-  age -d -o "$out" "$NIXHOLD_IDENTITY_FILE"
+  age -d -o "$out" "$src"
 }

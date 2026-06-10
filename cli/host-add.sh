@@ -35,6 +35,14 @@ EOF
   local root
   root="$(nh_fleet_root)" || return 1
 
+  # Refuse up front, before generating keys or scaffolding files —
+  # failing at the hosts.nix append would leave half the work done.
+  local hosts_file="$root/hosts.nix"
+  if [ -f "$hosts_file" ] && grep -qE "^[[:space:]]+${name}[[:space:]]*=[[:space:]]*\{" "$hosts_file"; then
+    nh_err "host '$name' already present in $hosts_file (run 'host remove' first; 'host rotate-key' regenerates its key)"
+    return 1
+  fi
+
   local arch
   arch="$(nh_prompt_choose "Arch for $name:" \
     "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin")"
@@ -96,9 +104,22 @@ EOF
   nh_scaffold_host_files "$root" "$name" "$arch" "$statever"
 
   # Append entry to hosts.nix.
-  local hosts_file="$root/hosts.nix"
   nh_append_host_entry "$hosts_file" "$name" "$arch" "$profile" "$networks" "$public_ip" "$public_fqdn"
   nh_ok "wrote host entry for $name into $hosts_file"
+
+  # Make the generated files visible to git-flake eval: a dirty git
+  # flake includes modified tracked files but NOT untracked ones, so
+  # without this every following eval (secret bootstrap, lint,
+  # --install) sees a hosts.nix entry whose ./hosts/<name> files
+  # "don't exist" — and, worse, the recipients computation silently
+  # omits the invisible host.pub.
+  if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git -C "$root" add --intent-to-add \
+      "$keys_dir/hosts/$name" "$root/hosts/$name" "$hosts_file" 2>/dev/null ||
+      nh_warn "git add of generated files failed — run 'git add keys/ hosts/ hosts.nix' before evaluating"
+  else
+    nh_warn "fleet is not a git worktree — if it becomes one, 'git add' the generated files before evaluating"
+  fi
 
   # Final scaffolding step: provision any declared-but-missing secrets.
   # Best-effort — the host's own module may not be evaluable yet (the
@@ -153,12 +174,13 @@ EOF
   };
 "
 
-  # Splice before the last '}' line. Using ed avoids shelling
-  # out to sed/awk inplace incompatibilities between BSD and GNU.
+  # Splice before the last '}' line. The entry goes in via ENVIRON,
+  # not `awk -v` — `-v` processes backslash escapes, which would
+  # mangle a custom profile expression containing `\`.
   local tmp
   tmp="$(mktemp -t nixhold-hosts.XXXXXX)"
-  awk -v entry="$entry" '
-    /^}$/ && !done { print entry; done=1 }
+  entry="$entry" awk '
+    /^}$/ && !done { print ENVIRON["entry"]; done=1 }
     { print }
   ' "$file" >"$tmp"
   mv "$tmp" "$file"

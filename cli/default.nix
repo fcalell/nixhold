@@ -18,6 +18,12 @@ pkgs.writeShellApplication {
     rage
     rsync
     nix
+    git
+    # Remote-install/deploy drivers: `host install` hard-requires
+    # nixos-anywhere, and `deploy` needs nixos-rebuild even for
+    # remote targets (darwin machines don't ship it).
+    nixos-anywhere
+    nixos-rebuild
   ];
 
   text = ''

@@ -6,7 +6,7 @@
 # The secret must already be declared on the host.
 
 cmd_secret_new() {
-  local host="$1" name="$2"
+  local host="${1:-}" name="${2:-}"
   if [ -z "$host" ] || [ -z "$name" ]; then
     nh_err "expected: nixhold secret new <host> <name>"
     return 1

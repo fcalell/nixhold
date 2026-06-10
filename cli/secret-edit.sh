@@ -4,7 +4,7 @@
 # $EDITOR, and re-encrypts to the current recipient set.
 
 cmd_secret_edit() {
-  local host="$1" name="$2"
+  local host="${1:-}" name="${2:-}"
   if [ -z "$host" ] || [ -z "$name" ]; then
     nh_err "expected: nixhold secret edit <host> <name>"
     return 1
@@ -36,7 +36,10 @@ cmd_secret_edit() {
     nh_unwrap_identity "$idfile"
     age -d -i "$idfile" -o "$tmp" "$target"
     "${EDITOR:-vi}" "$tmp"
-    age -R "$rfile" -o "$target" "$tmp"
+    # Encrypt to a sibling temp + rename so an age failure can't
+    # leave the committed ciphertext truncated.
+    age -R "$rfile" -o "$target.tmp" "$tmp"
+    mv "$target.tmp" "$target"
     nh_ok "updated $target"
   )
 }

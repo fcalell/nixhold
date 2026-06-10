@@ -3,15 +3,34 @@ let
   inherit (lib) mkOption types;
 
   layoutSecrets = config.nixhold.layout.secrets;
-  hostName = config.networking.hostName or "unknown";
-  username = config.nixhold.identity.username or "user";
+  # Lazy: only forced when a secret path is actually computed. On
+  # darwin `networking.hostName` defaults to null (mkFleet normally
+  # mkDefaults it to the fleet host name), which would otherwise fail
+  # string interpolation with an opaque coercion error.
+  hostName =
+    let
+      hn = config.networking.hostName or null;
+    in
+    if hn == null || hn == "" then
+      throw "nixhold.secrets: networking.hostName is unset; it must equal the fleet host name (mkFleet sets it by default)"
+    else
+      hn;
+  username = config.nixhold.identity.username;
 
   layout = config.nixhold.layout;
 
   # First line of a committed pubkey file, trailing newline trimmed.
   # age recipients and SSH host pubkeys are single-line; agenix
   # forwards the value to age verbatim, which rejects a stray newline.
-  pubkeyLine = path: builtins.head (builtins.match "([^\n]*)\n?" (builtins.readFile path));
+  pubkeyLine =
+    path:
+    let
+      m = builtins.match "([^\n]*)\n?" (builtins.readFile path);
+    in
+    if m == null then
+      throw "nixhold.secrets: ${toString path} must contain exactly one key line (found extra lines)"
+    else
+      builtins.head m;
 
   # Recipients every secret on THIS host is encrypted to: the operator
   # (so they can edit/rekey from any device with the wrapped key) plus
@@ -68,8 +87,9 @@ let
           default = null;
           description = ''
             Starter content the CLI seeds into the editor on
-            `nixhold secret edit <name>` when the encrypted file
-            does not yet exist. Typically a key=value scaffold.
+            `nixhold secret bootstrap` when the encrypted file
+            does not yet exist (`secret edit` requires an existing
+            ciphertext). Typically a key=value scaffold.
           '';
           example = ''
             ADMIN_TOKEN=
@@ -201,4 +221,18 @@ in
       the `secrets/hosts/<host>/<name>.age` convention.
     '';
   };
+
+  # A required secret with no committed ciphertext would otherwise
+  # surface as agenix's raw "path does not exist" at build time;
+  # fail with the fix spelled out instead. `required = false`
+  # secrets are filtered out of `age.secrets` by the platform
+  # halves until their ciphertext lands.
+  config.assertions = lib.mapAttrsToList (name: s: {
+    assertion = !s.required || builtins.pathExists s.file;
+    message = ''
+      nixhold.secrets.${name}: missing ciphertext ${toString s.file}.
+      Run `nixhold secret bootstrap <host>` (or declare it with
+      `required = false` until it is bootstrapped).
+    '';
+  }) config.nixhold.secrets;
 }

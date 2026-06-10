@@ -1,6 +1,11 @@
 # nixhold init — one-time per fork. Generates the operator's age
 # identity, wraps it with a passphrase, drops it at
 # $NIXHOLD_IDENTITY_FILE. Refuses to overwrite without --force.
+#
+# Recovery path: when run inside a fleet that already commits a
+# wrapped identity (layout.ageIdentityWrapped), init offers to RESTORE
+# that file instead of generating a new key — a new key would orphan
+# every existing secret.
 
 cmd_init() {
   local force=0
@@ -21,7 +26,7 @@ EOF
     esac
   done
 
-  nh_require_cmd age age-keygen
+  nh_require_cmd age age-keygen gum
 
   if [ -f "$NIXHOLD_IDENTITY_FILE" ] && [ "$force" -ne 1 ]; then
     nh_err "identity already exists at $NIXHOLD_IDENTITY_FILE (use --force to overwrite)"
@@ -30,6 +35,24 @@ EOF
 
   mkdir -p "$NIXHOLD_IDENTITY_DIR"
   chmod 0700 "$NIXHOLD_IDENTITY_DIR"
+
+  # Restore-from-fleet: a committed wrapped identity means existing
+  # secrets are encrypted to THAT key — restoring it is almost always
+  # what the operator wants on a fresh machine.
+  local committed=""
+  if [ -f "${NIXHOLD_FLEET:-$PWD}/flake.nix" ]; then
+    committed="$(nh_worktree_layout_file ageIdentityWrapped 2>/dev/null || true)"
+  fi
+  if [ -n "$committed" ] && [ -f "$committed" ]; then
+    nh_info "found committed operator identity: $committed"
+    if nh_prompt_confirm "Restore it to $NIXHOLD_IDENTITY_FILE (recommended — generating a NEW key would orphan all existing secrets)?"; then
+      cp "$committed" "$NIXHOLD_IDENTITY_FILE"
+      chmod 0600 "$NIXHOLD_IDENTITY_FILE"
+      nh_ok "restored operator identity to $NIXHOLD_IDENTITY_FILE (same passphrase as before)"
+      return 0
+    fi
+    nh_warn "generating a NEW operator identity — existing secrets stay decryptable only by the OLD key"
+  fi
 
   local tmp
   tmp="$(mktemp -t nixhold-identity.XXXXXX)"

@@ -83,9 +83,14 @@ nixhold logs <name> <unit>     # journalctl over the tailnet
    key → auto-join on activation) or run `tailscale up` once on the box.
 4. `nixhold deploy web` for subsequent changes.
 
-Darwin hosts are already-running macOS: `nixhold host add mac` (capture
-its `/etc/ssh` host pubkey as the recipient), `nixhold secret rekey`,
-then `nixhold deploy mac`.
+Darwin hosts are already-running macOS — run `nixhold host install
+mac` **on the Mac itself**. It is fresh-machine capable: it ensures
+the host age identity at `/etc/ssh/ssh_host_ed25519_key` (installing
+the `host add`-cached key, or generating one in place), commits that
+key's pubkey as `keys/hosts/mac/host.pub` and rekeys secrets to it,
+then activates with `sudo darwin-rebuild` — bootstrapping via the
+fleet's pinned nix-darwin when `darwin-rebuild` isn't on PATH yet.
+Day-to-day changes afterwards: `nixhold deploy mac`.
 
 ## What you get without wiring it yourself
 

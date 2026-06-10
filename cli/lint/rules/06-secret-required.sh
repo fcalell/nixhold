@@ -6,8 +6,16 @@ sdir="$(nh_worktree_secrets_dir)" || exit 2
 worst=0
 while IFS= read -r h; do
   [ -n "$h" ] || continue
-  platform="$(nh_host_platform "$h")" || continue
-  json="$(nh_host_eval "$h" "$platform" nixhold.secrets 2>/dev/null)" || continue
+  platform="$(nh_host_platform "$h")" || {
+    echo "ERROR: could not resolve platform for $h — required-secret check skipped"
+    [ "$worst" -lt 2 ] && worst=2
+    continue
+  }
+  json="$(nh_host_eval "$h" "$platform" nixhold.secrets 2>/dev/null)" || {
+    echo "ERROR: could not evaluate nixhold.secrets for $h — required-secret check skipped"
+    [ "$worst" -lt 2 ] && worst=2
+    continue
+  }
   while IFS= read -r n; do
     [ -n "$n" ] || continue
     if [ ! -e "$sdir/hosts/$h/$n.age" ]; then

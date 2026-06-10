@@ -9,7 +9,7 @@
 # tool for one secret — that's `secret new`.
 
 cmd_secret_bootstrap() {
-  local host="$1"
+  local host="${1:-}"
   if [ -z "$host" ]; then
     nh_err "expected: nixhold secret bootstrap <host>"
     return 1

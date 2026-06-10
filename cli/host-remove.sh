@@ -26,9 +26,19 @@ cmd_host_remove() {
     return 0
   fi
 
+  # Resolve worktree paths BEFORE rewriting hosts.nix — the layout
+  # probe evals the fleet, and the worktree helpers (not raw
+  # nh_layout) are required because layout.* eval to read-only
+  # /nix/store source paths.
+  local secrets_dir keys_dir
+  secrets_dir="$(nh_worktree_secrets_dir)" || return 1
+  keys_dir="$(nh_worktree_keys_dir)" || return 1
+
   # Strip the host's attrset entry from hosts.nix. Conservative
   # range-delete from `^[[:space:]]+<name>[[:space:]]*=[[:space:]]*{`
-  # through the matching closing `};` at the same indentation.
+  # through the matching closing `};` at the SAME indentation as the
+  # opening line, so nested `{ ... };` blocks inside the entry don't
+  # terminate the range early.
   local hosts_file="$root/hosts.nix"
   if [ -f "$hosts_file" ]; then
     local tmp; tmp="$(mktemp -t nixhold-hosts-remove.XXXXXX)"
@@ -36,9 +46,13 @@ cmd_host_remove() {
       BEGIN { skip = 0 }
       {
         if (!skip && $0 ~ ("^[[:space:]]+" name "[[:space:]]*=[[:space:]]*\\{")) {
-          skip = 1; next
+          skip = 1
+          indent = $0
+          sub(/[^ \t].*$/, "", indent)
+          close_re = "^" indent "\\};[[:space:]]*$"
+          next
         }
-        if (skip && $0 ~ /^[[:space:]]+\};[[:space:]]*$/) {
+        if (skip && $0 ~ close_re) {
           skip = 0; next
         }
         if (!skip) print
@@ -48,15 +62,11 @@ cmd_host_remove() {
     nh_ok "removed entry from $hosts_file"
   fi
 
-  local secrets_dir keys_dir
-  secrets_dir="$(nh_layout secrets 2>/dev/null | jq -r '.' || true)"
-  keys_dir="$(nh_layout keysDir 2>/dev/null | jq -r '.' || true)"
-
-  if [ -n "$secrets_dir" ] && [ -d "$secrets_dir/hosts/$name" ]; then
+  if [ -d "$secrets_dir/hosts/$name" ]; then
     rm -rf "$secrets_dir/hosts/$name"
     nh_ok "removed $secrets_dir/hosts/$name"
   fi
-  if [ -n "$keys_dir" ] && [ -d "$keys_dir/hosts/$name" ]; then
+  if [ -d "$keys_dir/hosts/$name" ]; then
     rm -rf "$keys_dir/hosts/$name"
     nh_ok "removed $keys_dir/hosts/$name"
   fi

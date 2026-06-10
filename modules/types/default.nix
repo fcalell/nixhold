@@ -89,6 +89,19 @@ let
         example = "/api";
       };
 
+      stripPrefix = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Whether `pathPrefix` is stripped before proxying. `true`
+          (default) emits caddy `handle_path` — the backend sees
+          paths relative to the prefix. Set `false` (caddy `handle`)
+          for apps that mount themselves under the prefix and expect
+          it passed through, e.g. vaultwarden with a path in
+          `DOMAIN`. Only meaningful when `pathPrefix` is set.
+        '';
+      };
+
       description = mkOption {
         type = types.nullOr types.str;
         default = null;

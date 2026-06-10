@@ -1,5 +1,5 @@
 # nixhold host install <name> [--remote <user>@<ip>] [--disk <by-id>]
-#                             [--disko-from <path>]
+#                             [--disko-from <path>] [--yes]
 #
 # NixOS: generates a single-disk disko layout (unless --disko-from is
 # given), ships the host's cached SSH key via --extra-files so agenix
@@ -7,8 +7,10 @@
 # (--build-on-remote: the target builds its own closure;
 # --generate-hardware-config nixos-facter: writes facter.json back).
 #
-# Darwin: runs darwin-rebuild switch locally (the Mac is its own
-# target).
+# Darwin: local, fresh-macOS capable (see nh_darwin_install) — ensures
+# the host age identity at /etc/ssh, commits/rekeys the recipient, and
+# activates via the fleet's pinned nix-darwin even when darwin-rebuild
+# isn't on PATH yet.
 #
 # NOTE: the live install path (SSH to target, nixos-anywhere) cannot
 # be exercised in CI; the deterministic parts (disko generation, key
@@ -81,17 +83,100 @@ nh_pick_disk() {
   fi
 }
 
+# nh_darwin_install <name> <root> — local darwin install, fresh-macOS
+# capable. Does the three jobs the NixOS path gets from nixos-anywhere:
+#   1. host age identity — ensure /etc/ssh/ssh_host_ed25519_key exists
+#      (agenix's darwin identityPath): install the `host add`-cached
+#      key, or generate one in place;
+#   2. recipients — commit that key's pubkey as
+#      keys/hosts/<name>/host.pub and rekey secrets when it changed;
+#   3. activate — sudo darwin-rebuild; on a machine that has never
+#      switched (no darwin-rebuild on PATH), bootstrap via the fleet's
+#      pinned nix-darwin.
+nh_darwin_install() {
+  local name="$1" root="$2"
+
+  if [ "$(uname -s)" != "Darwin" ]; then
+    nh_err "darwin install runs on the Mac itself — run this on $name"
+    return 1
+  fi
+
+  local hostkey="/etc/ssh/ssh_host_ed25519_key"
+  local cache="$NIXHOLD_CACHE_DIR/host-keys/$name"
+
+  # 1. Host identity. Fresh macOS has no /etc/ssh host keys until
+  #    sshd has run at least once.
+  if [ ! -f "$hostkey" ]; then
+    sudo install -d -m 0755 /etc/ssh
+    if [ -f "$cache/ssh_host_ed25519_key" ]; then
+      nh_info "installing cached host key to $hostkey (sudo)"
+      sudo install -m 0600 "$cache/ssh_host_ed25519_key" "$hostkey"
+      sudo install -m 0644 "$cache/ssh_host_ed25519_key.pub" "$hostkey.pub"
+    else
+      nh_info "generating host key at $hostkey (sudo)"
+      sudo ssh-keygen -t ed25519 -N "" -C "nixhold-host-$name" -f "$hostkey" >/dev/null
+    fi
+  fi
+  if [ ! -f "$hostkey.pub" ]; then
+    nh_info "deriving $hostkey.pub (sudo)"
+    sudo sh -c "ssh-keygen -y -f '$hostkey' > '$hostkey.pub' && chmod 0644 '$hostkey.pub'"
+  fi
+
+  # 2. The committed recipient must be the machine's ACTUAL key —
+  #    agenix decrypts with $hostkey, regardless of what host.pub says.
+  local keys_dir committed machine_pub
+  keys_dir="$(nh_worktree_keys_dir)"
+  committed="$keys_dir/hosts/$name/host.pub"
+  machine_pub="$(awk '{print $1 " " $2}' "$hostkey.pub")"
+  if [ ! -f "$committed" ] || [ "$(awk '{print $1 " " $2}' "$committed")" != "$machine_pub" ]; then
+    mkdir -p "$keys_dir/hosts/$name"
+    cp "$hostkey.pub" "$committed"
+    if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      git -C "$root" add --intent-to-add "$committed" 2>/dev/null || true
+    fi
+    nh_ok "committed $committed (the machine's host key)"
+    nh_info "re-encrypting secrets to include the host recipient"
+    . "$NIXHOLD_LIB_ROOT/secret-rekey.sh"
+    cmd_secret_rekey || {
+      nh_err "rekey failed — secrets are NOT decryptable by $name yet; fix and re-run install"
+      return 1
+    }
+    nh_info "commit + push keys/ and secrets/ once the install finishes"
+  fi
+
+  # 3. Activate (nix-darwin requires root for switch).
+  if command -v darwin-rebuild >/dev/null 2>&1; then
+    (cd "$root" && sudo darwin-rebuild switch --flake ".#$name") || return $?
+  else
+    nh_info "darwin-rebuild not on PATH — first switch, bootstrapping via the fleet's pinned nix-darwin"
+    local out
+    out="$(mktemp -d -t nixhold-darwin-bootstrap.XXXXXX)"
+    nix build --out-link "$out/system" "$root#darwinConfigurations.$name.system"
+    if ! (cd "$root" && sudo "$out/system/sw/bin/darwin-rebuild" switch --flake ".#$name"); then
+      rm -rf "$out"
+      nh_err "first activation failed — if it complained about pre-existing files (/etc/nix/nix.conf, /etc/zshenv, …), move them aside (e.g. sudo mv /etc/nix/nix.conf{,.before-nix-darwin}) and re-run"
+      return 1
+    fi
+    rm -rf "$out"
+  fi
+
+  nh_ok "installed $name"
+  nh_info "agenix decrypts via launchd shortly after activation — verify: ls /run/agenix (kick it: sudo launchctl kickstart -k system/activate-agenix)"
+}
+
 cmd_host_install() {
-  local name="" remote="" disk="" disko_from=""
+  local name="" remote="" disk="" disko_from="" yes=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --remote) remote="$2"; shift 2 ;;
       --disk) disk="$2"; shift 2 ;;
       --disko-from) disko_from="$2"; shift 2 ;;
+      --yes) yes=1; shift ;;
       -h | --help)
         cat <<'EOF'
 Usage: nixhold host install <name> [--remote <user>@<ip>]
                                     [--disk <by-id>] [--disko-from <path>]
+                                    [--yes]
 EOF
         return 0
         ;;
@@ -118,8 +203,7 @@ EOF
       if [ -n "$remote" ]; then
         nh_warn "--remote is ignored for darwin hosts (install runs locally)"
       fi
-      nh_require_cmd darwin-rebuild
-      (cd "$root" && darwin-rebuild switch --flake ".#$name")
+      nh_darwin_install "$name" "$root"
       return $?
       ;;
     *-linux) ;;
@@ -156,8 +240,22 @@ EOF
     nh_ok "wrote $disko_target (device $disk)"
   fi
 
-  # 2. Stage the host's cached SSH key so agenix decrypts on the first
+  # 2. Confirm — this is the one destructive verb. The gum disk
+  #    picker warns, but the --disk / --disko-from / reuse-existing
+  #    paths would otherwise reformat with zero prompt.
+  if [ "$yes" -ne 1 ]; then
+    nh_warn "nixos-anywhere will ERASE the disk(s) declared in $disko_target on $name @ $remote and reinstall from scratch"
+    nh_prompt_confirm "Proceed with the destructive install of $name?" || {
+      nh_info "aborted"
+      return 0
+    }
+  fi
+
+  # 3. Stage the host's cached SSH key so agenix decrypts on the first
   #    activation pass (placed before nixos-install runs).
+  #    nixos-anywhere is checked BEFORE key material lands in $TMPDIR,
+  #    and the trap cleans the staging dir on every exit path.
+  nh_require_cmd nixos-anywhere
   local cache extra
   cache="$NIXHOLD_CACHE_DIR/host-keys/$name"
   if [ ! -f "$cache/ssh_host_ed25519_key" ]; then
@@ -165,15 +263,16 @@ EOF
     return 1
   fi
   extra="$(mktemp -d)"
+  # shellcheck disable=SC2064 — expand $extra now, it goes out of scope
+  trap "rm -rf '$extra'" EXIT
   mkdir -p "$extra/etc/ssh"
   install -m 0600 "$cache/ssh_host_ed25519_key" "$extra/etc/ssh/ssh_host_ed25519_key"
   install -m 0644 "$cache/ssh_host_ed25519_key.pub" "$extra/etc/ssh/ssh_host_ed25519_key.pub"
 
   nh_info "ensure hosts.$name.modules imports: ./hosts/$name/disko.nix, inputs.disko.nixosModules.disko, { nixhold.hardware.facterReport = ./hosts/$name/facter.json; }"
 
-  # 3. Install. The target builds its own closure (--build-on-remote);
+  # 4. Install. The target builds its own closure (--build-on-remote);
   #    nixos-facter writes the hardware report back to facter.json.
-  nh_require_cmd nixos-anywhere
   nh_info "running nixos-anywhere against $name @ $remote"
   if nixos-anywhere \
     --flake "$root#$name" \
@@ -181,12 +280,10 @@ EOF
     --extra-files "$extra" \
     --build-on-remote \
     --target-host "$remote"; then
-    rm -rf "$extra"
     nh_ok "installed $name"
     nh_info "commit the generated hardware files: $disko_target and $facter_target"
   else
     local rc=$?
-    rm -rf "$extra"
     nh_err "nixos-anywhere failed (exit $rc)"
     return "$rc"
   fi

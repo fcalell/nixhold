@@ -34,8 +34,10 @@ in
 
   # Cross-platform auto-wiring. NixOS and nix-darwin both expose
   # `nix.settings.trusted-users` — mkDefault so a host or profile
-  # can override without `mkForce`.
+  # can override without `mkForce`. `root` stays in the list: writing
+  # the setting replaces nix.conf's built-in `trusted-users = root`.
   config.nix.settings.trusted-users = lib.mkDefault [
+    "root"
     config.nixhold.identity.username
   ];
 }

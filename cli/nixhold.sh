@@ -13,6 +13,13 @@ set -euo pipefail
 NIXHOLD_LIB_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export NIXHOLD_LIB_ROOT
 
+# Every CLI nix call needs flakes — but a fresh machine (vanilla Nix,
+# pre-first-switch) hasn't enabled them yet. `extra-` merges harmlessly
+# where they're already on; a caller-set NIX_CONFIG is preserved.
+NIX_CONFIG="${NIX_CONFIG:+$NIX_CONFIG
+}extra-experimental-features = nix-command flakes"
+export NIX_CONFIG
+
 # shellcheck source=lib/run.sh
 . "$NIXHOLD_LIB_ROOT/lib/run.sh"
 # shellcheck source=lib/prompt.sh

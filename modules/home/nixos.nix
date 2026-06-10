@@ -13,7 +13,12 @@
 let
   username = config.nixhold.identity.username;
 
-  symlinkSecrets = lib.filterAttrs (_: s: s.homePath != null) config.nixhold.secrets;
+  # Same bootstrapped-ness filter as the secrets platform half: a
+  # `required = false` secret with no ciphertext yet has no
+  # `age.secrets` entry, so emitting its symlink would dangle at eval.
+  symlinkSecrets = lib.filterAttrs (
+    _: s: s.homePath != null && (s.required || builtins.pathExists s.file)
+  ) config.nixhold.secrets;
   sshSymlinkSecrets = lib.filterAttrs (
     name: s: lib.hasPrefix "ssh-" name && s.resolvedOwner == username
   ) symlinkSecrets;
@@ -90,6 +95,8 @@ in
             if [ -r "$src" ]; then
               ${hmArgs.pkgs.openssh}/bin/ssh-keygen -y -f "$src" > "$dst" 2>/dev/null || true
               chmod 0644 "$dst" 2>/dev/null || true
+            else
+              echo "nixhold: ${name} not decrypted yet; skipping $dst (re-run activation once agenix has run)" >&2
             fi
           '';
         }) sshSymlinkSecrets;

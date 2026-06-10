@@ -6,7 +6,11 @@ nixos_hosts="$(nix eval --json --no-warn-dirty "$root#nixosConfigurations" --app
 
 worst=0
 for h in $nixos_hosts; do
-  services="$(nh_host_eval "$h" nixos nixhold.services)"
+  services="$(nh_host_eval "$h" nixos nixhold.services 2>/dev/null)" || {
+    echo "ERROR: could not evaluate nixhold.services for $h — backend check skipped"
+    [ "$worst" -lt 2 ] && worst=2
+    continue
+  }
   refs="$(echo "$services" | jq -r '
     to_entries[]
     | .key as $svc

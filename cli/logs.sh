@@ -28,10 +28,18 @@ cmd_logs() {
   addr="$(nh_deploy_addr "$host" nixos)"
   [ -z "$addr" ] && { nh_err "could not resolve address for $host"; return 1; }
 
-  local args=(journalctl -u "$service")
+  # SSH as the operator (the hardened openssh preset plants no root
+  # authorized key) and read the journal via sudo.
+  local user
+  user="$(nh_host_eval "$host" nixos "nixhold.identity.username" | jq -r '.')"
+  [ -z "$user" ] && { nh_err "could not resolve operator username for $host"; return 1; }
+
+  local args=(sudo journalctl -u "$service")
   [ -n "$lines" ] && args+=(-n "$lines")
   [ -n "$since" ] && args+=(--since "$since")
   [ "$follow" -eq 1 ] && args+=(-f)
 
-  nh_ssh "root@$addr" -- "${args[@]}"
+  # ssh joins argv with spaces for the remote shell — re-quote so
+  # values like `--since "2 hours ago"` survive.
+  nh_ssh "$user@$addr" -- "$(printf '%q ' "${args[@]}")"
 }
