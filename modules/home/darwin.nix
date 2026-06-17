@@ -3,6 +3,7 @@
 {
   config,
   lib,
+  pkgs,
   inputs,
   identity,
   ...
@@ -92,7 +93,7 @@ in
             src="${hmArgs.osConfig.age.secrets.${name}.path}"
             dst="$HOME/${s.homePath}.pub"
             if [ -r "$src" ]; then
-              ${hmArgs.pkgs.openssh}/bin/ssh-keygen -y -f "$src" > "$dst" 2>/dev/null || true
+              ${pkgs.openssh}/bin/ssh-keygen -y -f "$src" > "$dst" 2>/dev/null || true
               chmod 0644 "$dst" 2>/dev/null || true
             else
               echo "nixhold: ${name} not decrypted yet; skipping $dst (agenix decrypts asynchronously on darwin — re-run activation once /run/agenix is populated)" >&2
