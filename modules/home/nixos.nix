@@ -43,15 +43,15 @@ let
       s = config.nixhold.secrets.ssh-personal or null;
     in
     if s != null && s.homePath != null then "~/${s.homePath}" else null;
-  sshMatchBlocks = lib.mapAttrs (
+  sshSettings = lib.mapAttrs (
     _: addr:
     {
-      hostname = addr;
-      user = username;
+      HostName = addr;
+      User = username;
     }
     // lib.optionalAttrs (personalKey != null) {
-      identityFile = personalKey;
-      identitiesOnly = true;
+      IdentityFile = personalKey;
+      IdentitiesOnly = true;
     }
   ) (
     lib.filterAttrs (_: a: a != null) (
@@ -75,7 +75,7 @@ in
 
         programs.ssh = {
           enable = lib.mkDefault true;
-          matchBlocks = sshMatchBlocks;
+          settings = sshSettings;
         };
 
         # home-manager requires a stateVersion. Tie it to the
