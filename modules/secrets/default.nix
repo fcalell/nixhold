@@ -50,14 +50,40 @@ let
       options = {
         owner = mkOption {
           type = types.str;
+          default = "user";
           example = "vaultwarden";
           description = ''
             Owning unix user for the decrypted file. The literal
-            string `"user"` is a shortcut expanding to
+            string `"user"` (the default) is a shortcut expanding to
             `config.nixhold.identity.username` with mode `"0600"`.
             Service modules pass the service-account name
             (`"vaultwarden"`, `"caddy"`, …); operator-owned secrets
-            use `"user"`.
+            declare nothing.
+          '';
+        };
+
+        sshKey = mkOption {
+          type = types.bool;
+          default = false;
+          description = ''
+            Marks the secret as an SSH private key: the home module
+            derives `~/<homePath>.pub` via `ssh-keygen -y` at HM
+            activation, and `homePath` defaults to `".ssh/<name>"`.
+            Only meaningful with `owner = "user"`. Behavior is
+            triggered by this option, never by the secret's name.
+          '';
+        };
+
+        sshIdentity = mkOption {
+          type = types.bool;
+          default = false;
+          description = ''
+            Marks THE operator's outbound SSH identity on this host
+            (implies `sshKey`; at most one per host). The home
+            module wires it as `IdentityFile` for fleet-peer
+            matchBlocks; the CLI commits its derived pubkey as
+            `keys/hosts/<host>/identity.pub`, which defaults
+            `fleet.hosts.<host>.loginPubkey`.
           '';
         };
 
@@ -123,15 +149,16 @@ let
 
         homePath = mkOption {
           type = types.nullOr types.str;
-          default = null;
+          defaultText = lib.literalMD ''`".ssh/<name>"` when `sshKey = true`, else `null`'';
           description = ''
             Relative path under `$HOME` to symlink at. The home
             module emits
             `home.file.<homePath>.source = mkOutOfStoreSymlink
             <decrypted-path>`. Only meaningful with
-            `owner = "user"`; lint enforces. Names beginning with
-            `ssh-` additionally get an auto-derived `.pub`
-            alongside (via `ssh-keygen -y` at HM activation).
+            `owner = "user"`; lint enforces. Secrets with
+            `sshKey = true` additionally get an auto-derived
+            `.pub` alongside (via `ssh-keygen -y` at HM
+            activation).
           '';
           example = ".ssh/personal";
         };
@@ -171,6 +198,19 @@ let
           '';
         };
 
+        active = mkOption {
+          type = types.bool;
+          readOnly = true;
+          description = ''
+            Whether this secret participates in activation:
+            `required`, or already bootstrapped (ciphertext exists).
+            The platform halves populate `age.secrets` and the home
+            modules emit symlinks only for active secrets, so a
+            `required = false` secret declared ahead of its
+            ciphertext never dangles.
+          '';
+        };
+
         recipients = mkOption {
           type = types.listOf types.str;
           readOnly = true;
@@ -189,6 +229,10 @@ let
       };
 
       config = {
+        # sshIdentity is the stronger claim; declaring it alone is
+        # enough (an explicit sshKey definition still wins).
+        sshKey = lib.mkDefault config.sshIdentity;
+        homePath = lib.mkDefault (if config.sshKey then ".ssh/${name}" else null);
         resolvedOwner = if config.owner == "user" then username else config.owner;
         resolvedMode =
           if config.mode != null then
@@ -198,6 +242,7 @@ let
           else
             "0400";
         file = layoutSecrets + "/hosts/${hostName}/${name}.age";
+        active = config.required || builtins.pathExists config.file;
         recipients = recipientsForHost;
       };
     }
@@ -227,12 +272,48 @@ in
   # fail with the fix spelled out instead. `required = false`
   # secrets are filtered out of `age.secrets` by the platform
   # halves until their ciphertext lands.
-  config.assertions = lib.mapAttrsToList (name: s: {
-    assertion = !s.required || builtins.pathExists s.file;
-    message = ''
-      nixhold.secrets.${name}: missing ciphertext ${toString s.file}.
-      Run `nixhold secret bootstrap <host>` (or declare it with
-      `required = false` until it is bootstrapped).
-    '';
-  }) config.nixhold.secrets;
+  config.assertions =
+    lib.concatLists (
+      lib.mapAttrsToList (name: s: [
+        {
+          assertion = !s.required || builtins.pathExists s.file;
+          message = ''
+            nixhold.secrets.${name}: missing ciphertext ${toString s.file}.
+            Run `nixhold secret bootstrap <host>` (or declare it with
+            `required = false` until it is bootstrapped).
+          '';
+        }
+        {
+          assertion = s.homePath == null || s.owner == "user";
+          message = ''
+            nixhold.secrets.${name}: homePath is only meaningful with
+            owner = "user" (got owner = "${s.owner}").
+          '';
+        }
+        {
+          assertion = !s.sshKey || s.owner == "user";
+          message = ''
+            nixhold.secrets.${name}: sshKey marks an operator-owned
+            key; it requires owner = "user" (got owner = "${s.owner}").
+          '';
+        }
+        {
+          assertion = !s.sshIdentity || s.sshKey;
+          message = ''
+            nixhold.secrets.${name}: sshIdentity implies sshKey; do
+            not set sshKey = false on the identity secret.
+          '';
+        }
+      ]) config.nixhold.secrets
+    )
+    ++ [
+      {
+        assertion = lib.count (s: s.sshIdentity) (lib.attrValues config.nixhold.secrets) <= 1;
+        message = ''
+          nixhold.secrets: at most one secret per host may set
+          sshIdentity = true (it becomes the single IdentityFile for
+          fleet-peer ssh).
+        '';
+      }
+    ];
 }

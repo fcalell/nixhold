@@ -408,9 +408,11 @@ options.nixhold.fleet = {
           ''; };
         loginPubkey = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null;
           description = ''
-            The operator's SSH login pubkey originating from this host
-            (a Nix value — typically `lib.fileContents` of the host's
-            committed `ssh-personal.pub`). Aggregated across hosts into
+            The operator's SSH login pubkey originating from this host.
+            Defaults to the committed `keys/hosts/<host>/identity.pub`
+            (written by the CLI when it bootstraps/rekeys the host's
+            `sshIdentity` secret); an explicit value overrides.
+            Aggregated across hosts into
             `derived.operatorAuthorizedKeys` and authorized on every
             host's operator account. `null` until the host's key exists.
           ''; };
@@ -799,17 +801,19 @@ config = lib.mkIf cfg.enable {
   };
 };
 
-# Operator-owned, no home-symlink (read by wrapper scripts, etc.):
+# Operator-owned, no home-symlink (read by wrapper scripts, etc.).
+# `owner` defaults to "user" (identity.username + mode 0600):
 nixhold.secrets.github-pat = {
-  owner       = "user";        # shortcut: identity.username + mode 0600
   description = "GitHub PAT for gh CLI";
   required    = true;
 };
 
-# Operator-owned, symlinked into $HOME:
-nixhold.secrets.ssh-personal = {
-  owner       = "user";
-  homePath    = ".ssh/personal";   # framework HM module symlinks here
+# Operator-owned SSH private key. sshKey marks the type (drives
+# `.pub` derivation and defaults homePath to ".ssh/<name>");
+# sshIdentity marks THE outbound key for fleet-peer ssh config:
+nixhold.secrets.personal = {
+  sshKey      = true;
+  sshIdentity = true;              # at most one per host
   description = "Operator SSH key for github.com and personal hosts";
   required    = true;
 };
@@ -828,18 +832,35 @@ Operator writes 3–6 fields; framework derives `name` (from the
 attribute key), `hostname` (from `config.networking.hostName`),
 the encrypted-file path, and HM symlinks.
 
-**Three API shortcuts the framework provides:**
+**API shortcuts the framework provides.** The guiding line:
+*conventions for where things live, options for what things do.*
+Derived paths (`secrets/hosts/<host>/<name>.age`, homePath
+defaults) may come from names; *behavior* is only ever triggered
+by an explicit option — never by a name pattern.
 
-- `owner = "user"` — expands to `owner =
-  config.nixhold.identity.username; mode = "0600"`. The default for
-  operator-owned secrets.
+- `owner` defaults to `"user"`, which expands to `owner =
+  config.nixhold.identity.username; mode = "0600"`. Operator-owned
+  secrets declare nothing; service modules pass their service
+  account explicitly.
 - `homePath` (optional, only meaningful with `owner = "user"`) —
   the framework HM module symlinks `~/${homePath}` to the decrypted
   path. Replaces what filename-glob did for SSH keys, generalized
-  for any operator secret that lives in `$HOME`.
-- Naming convention `ssh-*` with `owner = "user"` triggers
-  automatic `.pub` derivation: `~/${homePath}.pub` is generated via
-  `ssh-keygen -y` on activation. No extra field.
+  for any operator secret that lives in `$HOME`. Defaults to
+  `".ssh/<name>"` when `sshKey = true`, else `null`.
+- `sshKey = true` marks the secret as an SSH private key:
+  `~/${homePath}.pub` is derived via `ssh-keygen -y` at HM
+  activation (loudly — a readable key that fails derivation is an
+  error, not a silent skip). Replaces the earlier `ssh-*`
+  naming-convention trigger, which made names load-bearing and
+  poisoned the namespace for non-key secrets.
+- `sshIdentity = true` (implies `sshKey`; at most one per host,
+  assertion-enforced) marks the operator's outbound identity: the
+  framework wires it as `IdentityFile` in the fleet-peer ssh
+  matchBlocks, and the CLI commits its derived pubkey as
+  `keys/hosts/<host>/identity.pub` (on `secret bootstrap` and
+  `secret rekey`), which in turn is the eval-time default for
+  `fleet.hosts.<host>.loginPubkey`. Replaces the earlier
+  `ssh-personal` well-known name.
 
 The framework-wide manifest drives `nixhold secret list`,
 `nixhold secret bootstrap`, and missing-secret assertions — one source
@@ -856,8 +877,8 @@ attrset *is* the manifest.
 The declaration side above handles **activation**:
 `age.secrets.<name>` decrypts at boot using the host's SSH host key
 (agenix's default `age.identityPaths`, `/etc/ssh/ssh_host_ed25519_key`).
-The **editing** side (`nixhold secret new` / `edit` / `rekey`, and
-the bootstrap auto-walk) needs the recipient set agenix encrypts
+The **editing** side (`nixhold secret bootstrap` / `edit` / `rekey`,
+including the bootstrap auto-walk) needs the recipient set agenix encrypts
 to. The framework computes it; the operator never hand-maintains a
 `secrets.nix` rules file.
 
@@ -1184,7 +1205,7 @@ reads `layout` via `nix eval` to know where to write scaffolded
 files and where to find committed secrets/keys. Splitting CLI-side
 filesystem state from framework-side typed options is what
 preserves Principle 14 while keeping `nixhold host add` /
-`nixhold secret new` ergonomic. `layout.hostsFile` is a single Nix
+`nixhold secret bootstrap` ergonomic. `layout.hostsFile` is a single Nix
 file the CLI owns end-to-end — it manipulates the `hosts` attrset
 inside it as `nixhold host add`/`remove` run.
 
@@ -1733,7 +1754,7 @@ nixhold logs   <host> <service> [--lines N] [--since <when>] [--follow]
                                                    ssh + journalctl -u <unit> with sensible defaults
 
 # Secrets (bootstrap auto-walks during host add and deploy when missing)
-nixhold secret new   <host> <name>                 create a new secret (interactive)
+nixhold secret bootstrap <host> [name]             create missing declared secrets (all, or just <name>)
 nixhold secret edit  <host> <name>                 edit an existing secret
 nixhold secret rekey                               re-encrypt all secrets to current recipient set
 
@@ -1745,11 +1766,13 @@ nixhold profile new <name>                         scaffold a profile at nixhold
 **Surface count: 14 verbs.** Five verbs were dropped from the
 earlier design: `host list` (folded into `status --fleet`), `diff`
 (folded into `deploy --dry-run`), `secret list` (folded into
-`status`), `secret check` (folded into `lint`), `secret bootstrap`
-(auto-walks during `host add` and `deploy` when declared secrets
-are missing — still an internal workflow, just not a top-level
-verb). The principle: each verb does something the operator
-actually performs, not a flag-shaped alias of another verb.
+`status`), `secret check` (folded into `lint`), `secret new`
+(folded into `secret bootstrap <host> [name]` — `new` was
+bootstrap-for-one-name minus template/generator support, so
+bootstrap gained the optional `[name]` arg instead; bootstrap also
+still auto-walks during `host add` and `deploy`). The principle:
+each verb does something the operator actually performs, not a
+flag-shaped alias of another verb.
 
 Notable shapes:
 - **`--here` mode does not exist.** Local NixOS installs use the
@@ -2169,7 +2192,7 @@ HOST: myvps  (4 secrets declared, 3 encrypted, 1 missing)
   vaultwarden-env       [encrypted]   Vaultwarden ADMIN_TOKEN
   cloudflare-api-token  [missing]  *  Cloudflare API token for ACME DNS-01
   rclone-conf           [encrypted]   O365 rclone config
-  ssh-personal          [encrypted]   Operator SSH key
+  personal              [encrypted]   Operator SSH key
 
   * required
 ```
@@ -3564,9 +3587,9 @@ they don't re-surface.
   required-with-http) is the wrong shape.
 - **Filename-glob auto-discovery for secrets** (e.g.
   `secrets/hosts/<host>/ssh-*.age` → auto-wire). Replaced by
-  explicit `nixhold.secrets.<name>` with `owner = "user"` and optional
-  `homePath`. One declaration pattern, full manifest visibility,
-  bidirectional lint enforcement.
+  explicit `nixhold.secrets.<name>` with `sshKey = true` and
+  defaulted `owner` / `homePath`. One declaration pattern, full
+  manifest visibility, bidirectional lint enforcement.
 - **`hosts/<name>/home.nix` framework auto-detect.** Per-host HM
   additions go through `nixhold.home.extraModules` (declared option set
   in the host file). Auto-detect would be the one `pathExists` check
@@ -3587,8 +3610,10 @@ they don't re-surface.
   `nixos.nix`/`darwin.nix`) is rejected.
 - **`nixhold.ssh.keys` option** (or any parallel option for declaring
   operator-owned SSH keys outside `nixhold.secrets.*`). Subsumed by
-  `nixhold.secrets.ssh-<name> = { owner = "user"; homePath = ".ssh/<name>"; ... }`
-  with the `ssh-*` pubkey convention.
+  `nixhold.secrets.<name> = { sshKey = true; ... }` (owner defaults
+  to the operator; homePath defaults to `.ssh/<name>`; `.pub`
+  derived at activation). An earlier `ssh-*` naming-convention
+  trigger was rejected too: names must never carry behavior.
 - **Two-pass fleet evaluation** (each host re-evaluated with a
   fleet-wide view). Replaced by explicit `fleet.routes` for
   cross-host concerns. One-pass eval is principle 13.

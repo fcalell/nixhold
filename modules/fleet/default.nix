@@ -1,6 +1,21 @@
-{ lib, ... }:
+{ config, lib, ... }:
 let
   inherit (lib) mkOption types;
+
+  keysDir = config.nixhold.layout.keysDir;
+
+  # First line of a committed pubkey file, trailing newline trimmed
+  # (same pattern as modules/secrets/default.nix — authorized_keys
+  # entries must be single-line).
+  pubkeyLine =
+    path:
+    let
+      m = builtins.match "([^\n]*)\n?" (builtins.readFile path);
+    in
+    if m == null then
+      throw "nixhold.fleet: ${toString path} must contain exactly one key line (found extra lines)"
+    else
+      builtins.head m;
 
   archEnum = types.enum [
     "x86_64-linux"
@@ -50,83 +65,96 @@ let
     };
   };
 
-  hostSubmodule = types.submodule {
-    options = {
-      arch = mkOption {
-        type = archEnum;
-        description = "Host arch in standard Nix system-double form.";
-        example = "x86_64-linux";
+  hostSubmodule = types.submodule (
+    { name, ... }:
+    {
+      options = {
+        arch = mkOption {
+          type = archEnum;
+          description = "Host arch in standard Nix system-double form.";
+          example = "x86_64-linux";
+        };
+
+        profile = mkOption {
+          type = types.deferredModule;
+          description = ''
+            The profile attached to this host. A NixOS / Darwin
+            module value, referenced as
+            `nixhold.profiles.<name>` or a forker-authored
+            module. `mkFleet` adds it to the host's imports.
+          '';
+        };
+
+        modules = mkOption {
+          type = types.listOf types.deferredModule;
+          default = [ ];
+          description = ''
+            Operator's per-host modules: the host config file,
+            disko import, facter pointer, anything host-specific.
+            The framework places no naming or directory
+            constraint on these — principle 14 prohibits
+            filesystem-based discovery.
+          '';
+        };
+
+        networks = mkOption {
+          type = types.listOf types.str;
+          default = [ "tailnet" ];
+          description = ''
+            Networks this host is a member of. Each entry must be
+            a key in `mkFleet`'s `networks` arg. Default
+            `[ "tailnet" ]`; add `"public"` on gateway hosts.
+          '';
+        };
+
+        publicIp = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          description = ''
+            Stable public IPv4 for this host, if any. Set on the
+            single gateway / VPS in the fleet. v1 lint asserts at
+            most one host has a non-null `publicIp`.
+          '';
+          example = "203.0.113.42";
+        };
+
+        publicFqdn = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          description = ''
+            DNS name for this host's `publicIp` when an A record
+            exists. Operator-declared (DNS is operator-managed in
+            v1). Consumed by
+            `derived.address.<host>.<internet-typed-net>`.
+          '';
+          example = "homelab.example.com";
+        };
+
+        loginPubkey = mkOption {
+          type = types.nullOr types.str;
+          defaultText = lib.literalMD "first line of `keys/hosts/<host>/identity.pub` when committed, else `null`";
+          description = ''
+            The operator's SSH login pubkey originating from this
+            host. Defaults to the committed
+            `keys/hosts/<host>/identity.pub` (written by the CLI
+            when it bootstraps/rekeys the host's `sshIdentity`
+            secret); an explicit value overrides. Aggregated across
+            hosts into `derived.operatorAuthorizedKeys` and
+            authorized on every host's operator account. `null`
+            until the host's key exists.
+          '';
+        };
       };
 
-      profile = mkOption {
-        type = types.deferredModule;
-        description = ''
-          The profile attached to this host. A NixOS / Darwin
-          module value, referenced as
-          `nixhold.profiles.<name>` or a forker-authored
-          module. `mkFleet` adds it to the host's imports.
-        '';
+      config = {
+        loginPubkey =
+          let
+            p = keysDir + "/hosts/${name}/identity.pub";
+          in
+          lib.mkDefault (if builtins.pathExists p then pubkeyLine p else null);
       };
-
-      modules = mkOption {
-        type = types.listOf types.deferredModule;
-        default = [ ];
-        description = ''
-          Operator's per-host modules: the host config file,
-          disko import, facter pointer, anything host-specific.
-          The framework places no naming or directory
-          constraint on these — principle 14 prohibits
-          filesystem-based discovery.
-        '';
-      };
-
-      networks = mkOption {
-        type = types.listOf types.str;
-        default = [ "tailnet" ];
-        description = ''
-          Networks this host is a member of. Each entry must be
-          a key in `mkFleet`'s `networks` arg. Default
-          `[ "tailnet" ]`; add `"public"` on gateway hosts.
-        '';
-      };
-
-      publicIp = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = ''
-          Stable public IPv4 for this host, if any. Set on the
-          single gateway / VPS in the fleet. v1 lint asserts at
-          most one host has a non-null `publicIp`.
-        '';
-        example = "203.0.113.42";
-      };
-
-      publicFqdn = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = ''
-          DNS name for this host's `publicIp` when an A record
-          exists. Operator-declared (DNS is operator-managed in
-          v1). Consumed by
-          `derived.address.<host>.<internet-typed-net>`.
-        '';
-        example = "homelab.example.com";
-      };
-
-      loginPubkey = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = ''
-          The operator's SSH login pubkey originating from this
-          host (a Nix value — typically `lib.fileContents` of the
-          host's committed `ssh-personal.pub`). Aggregated across
-          hosts into `derived.operatorAuthorizedKeys` and
-          authorized on every host's operator account. `null`
-          until the host's key exists.
-        '';
-      };
-    };
-  };
+    }
+  );
 in
 {
   options.nixhold.fleet = {

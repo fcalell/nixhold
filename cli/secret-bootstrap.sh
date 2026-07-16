@@ -1,17 +1,18 @@
-# nixhold secret bootstrap <host>
+# nixhold secret bootstrap <host> [name]
 #
-# Walks the host's declared secrets (`nixhold.secrets`) and provisions
-# any whose ciphertext is missing:
+# Walks the host's declared secrets (`nixhold.secrets`) — or just
+# <name> when given — and provisions any whose ciphertext is missing:
 #   - generator set      -> run it, capture stdout, encrypt (non-interactive)
 #   - template set        -> prefill $EDITOR with it, encrypt what's saved
 #   - neither             -> open an empty $EDITOR, encrypt what's saved
-# Idempotent: existing .age files are skipped. Not a fresh-encrypt
-# tool for one secret — that's `secret new`.
+# Idempotent: existing .age files are skipped. Secrets with
+# `sshIdentity = true` additionally get their derived pubkey
+# committed as keys/hosts/<host>/identity.pub.
 
 cmd_secret_bootstrap() {
-  local host="${1:-}"
+  local host="${1:-}" only="${2:-}"
   if [ -z "$host" ]; then
-    nh_err "expected: nixhold secret bootstrap <host>"
+    nh_err "expected: nixhold secret bootstrap <host> [name]"
     return 1
   fi
   nh_require_cmd age jq nix
@@ -23,7 +24,19 @@ cmd_secret_bootstrap() {
   }
   sdir="$(nh_worktree_secrets_dir)" || return 2
   json="$(nh_host_eval "$host" "$platform" nixhold.secrets)" || return 2
-  names="$(printf '%s' "$json" | jq -r 'keys[]')"
+  if [ -n "$only" ]; then
+    if ! printf '%s' "$json" | jq -e --arg n "$only" 'has($n)' >/dev/null 2>&1; then
+      nh_err "secret '$only' is not declared on $host (add nixhold.secrets.$only first)"
+      return 1
+    fi
+    if [ -e "$sdir/hosts/$host/$only.age" ]; then
+      nh_err "$sdir/hosts/$host/$only.age already exists — use 'secret edit'"
+      return 1
+    fi
+    names="$only"
+  else
+    names="$(printf '%s' "$json" | jq -r 'keys[]')"
+  fi
   if [ -z "$names" ]; then
     nh_info "no secrets declared on $host"
     return 0
@@ -69,6 +82,9 @@ cmd_secret_bootstrap() {
       mkdir -p "$(dirname "$target")"
       age -R "$rfile" -o "$target" "$tmp"
       nh_ok "encrypted $target"
+      if [ "$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].sshIdentity // false')" = "true" ]; then
+        nh_commit_identity_pub "$host" "$tmp" || true
+      fi
     ); then
       added=$((added + 1))
     fi

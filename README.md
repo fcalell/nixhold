@@ -97,12 +97,15 @@ Day-to-day changes afterwards: `nixhold deploy mac`.
 - **Identity auto-wiring** — user, home, git author, agenix owner, nix
   trust from one `identity`.
 - **Secrets** — `nixhold.secrets.<name>` → agenix, recipients computed
-  from the operator + each host's key; `homePath` symlinks into `$HOME`.
+  from the operator + each host's key; `homePath` symlinks into `$HOME`;
+  `sshKey = true` derives the `.pub` and defaults `homePath`.
 - **Services + expose** — declare `nixhold.services.<name>` with
   `network.ports` + `expose`; Caddy and the firewall configure
   themselves from the declarations (tailnet TLS via `tailscale cert`).
-- **Cross-host SSH** — `hosts.<name>.loginPubkey` authorizes the
-  operator fleet-wide and generates `ssh` `matchBlocks` for every peer.
+- **Cross-host SSH** — `hosts.<name>.loginPubkey` (defaulted from the
+  CLI-committed `keys/hosts/<host>/identity.pub` of the `sshIdentity`
+  secret) authorizes the operator fleet-wide and generates `ssh`
+  `matchBlocks` for every peer.
 - **Profiles** — `nixhold.profiles.{server,desktopLinux,workstationDarwin}`,
   composable / extendable in your own repo.
 

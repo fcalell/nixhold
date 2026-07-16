@@ -48,9 +48,8 @@ Daily:
   logs <host> <service>             Tail journald for a service on a host.
 
 Secrets:
-  secret new <host> <name>          Create a new encrypted secret.
+  secret bootstrap <host> [name]    Provision declared-but-missing secrets.
   secret edit <host> <name>         Edit an existing secret.
-  secret bootstrap <host>           Provision declared-but-missing secrets.
   secret rekey                      Re-encrypt all secrets to current recipients.
 
 Scaffolding:
@@ -128,9 +127,13 @@ main() {
       sub="$1"
       shift
       case "$sub" in
-        new | edit | rekey | bootstrap)
+        edit | rekey | bootstrap)
           . "$NIXHOLD_LIB_ROOT/secret-$sub.sh"
           cmd_secret_${sub} "$@"
+          ;;
+        new)
+          nh_err "'secret new' was folded into 'secret bootstrap <host> [name]'"
+          exit 1
           ;;
         *)
           nh_err "unknown 'secret' subcommand: $sub"

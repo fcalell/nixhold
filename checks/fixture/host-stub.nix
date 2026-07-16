@@ -9,6 +9,16 @@
   # Exercise the caddy tailnet-TLS path (vhost + tailscale-cert units).
   nixhold.services.fixtureweb.enable = true;
 
+  # Exercise the operator-key path end-to-end: owner defaults to
+  # "user", homePath defaults to ".ssh/personal", the HM module emits
+  # the symlink + `.pub` activation, and the committed
+  # keys/hosts/fixture-server/identity.pub (derived from this
+  # throwaway key) defaults `fleet.hosts.fixture-server.loginPubkey`.
+  nixhold.secrets.personal = {
+    sshIdentity = true;
+    description = "Throwaway fixture SSH key (checked-in, not a real secret)";
+  };
+
   boot.loader.grub.enable = lib.mkDefault false;
   boot.loader.systemd-boot.enable = lib.mkDefault false;
 

@@ -68,6 +68,11 @@ cmd_secret_rekey() {
         # the committed ciphertext truncated.
         age -R "$rfile" -o "$target.tmp" "$tmp"
         mv "$target.tmp" "$target"
+        # Plaintext in hand: refresh the committed identity pubkey
+        # (also the backfill path for fleets predating identity.pub).
+        if [ "$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].sshIdentity // false')" = "true" ]; then
+          nh_commit_identity_pub "$host" "$tmp" || true
+        fi
         rm -f "$tmp"
         count=$((count + 1))
         nh_info "rekeyed hosts/$host/$name.age"

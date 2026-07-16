@@ -19,7 +19,7 @@ cmd_secret_edit() {
   sdir="$(nh_worktree_secrets_dir)" || return 2
   target="$sdir/hosts/$host/$name.age"
   if [ ! -e "$target" ]; then
-    nh_err "no such secret: $target (use 'secret new')"
+    nh_err "no such secret: $target (use 'secret bootstrap')"
     return 1
   fi
   json="$(nh_host_eval "$host" "$platform" nixhold.secrets)" || return 2

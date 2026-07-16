@@ -108,6 +108,33 @@ nh_recipients_file() {
   fi
 }
 
+# nh_commit_identity_pub <host> <plaintext-key-file> — derive the
+# pubkey of the host's `sshIdentity = true` secret and commit it as
+# keys/hosts/<host>/identity.pub — the eval-time default for
+# `fleet.hosts.<host>.loginPubkey`. Called by bootstrap (plaintext in
+# hand pre-encryption) and rekey (plaintext in hand post-decryption),
+# so the operator never hand-copies pubkeys. Warns (non-fatal) when
+# the plaintext is not a valid SSH private key.
+nh_commit_identity_pub() {
+  local host="$1" plain="$2" keys_dir out root
+  keys_dir="$(nh_worktree_keys_dir)" || return 0
+  out="$keys_dir/hosts/$host/identity.pub"
+  mkdir -p "$keys_dir/hosts/$host"
+  chmod 600 "$plain" 2>/dev/null || true
+  if ! ssh-keygen -y -f "$plain" >"$out.tmp" 2>/dev/null; then
+    rm -f "$out.tmp"
+    nh_warn "sshIdentity secret on $host is not a valid SSH private key — $out NOT written"
+    return 1
+  fi
+  mv "$out.tmp" "$out"
+  nh_ok "committed operator identity pubkey to $out"
+  # Stage so dirty-flake eval sees it (same reason host-add stages
+  # host.pub — untracked files are invisible to nix eval).
+  root="$(nh_fleet_root)" || return 0
+  git -C "$root" add --intent-to-add "$out" 2>/dev/null ||
+    nh_warn "git add of $out failed — 'git add' it before evaluating"
+}
+
 # nh_unwrap_identity <out> — decrypt the passphrase-wrapped operator
 # age identity to <out> (prompts for the passphrase). Caller chmods/
 # removes <out>. Prefers the operator-local copy; falls back to the
