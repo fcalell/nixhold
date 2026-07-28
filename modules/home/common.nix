@@ -69,7 +69,7 @@ in
       };
 
       users.${username} = hmArgs: {
-        imports = config.nixhold.home.extraModules;
+        imports = [ ./claude-code-native.nix ] ++ config.nixhold.home.extraModules;
 
         programs.ssh = {
           enable = lib.mkDefault true;
