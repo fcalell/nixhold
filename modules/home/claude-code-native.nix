@@ -34,9 +34,13 @@ in
     # harmlessly — this is the durable PATH wiring.
     home.sessionPath = [ "$HOME/.local/bin" ];
 
+    # The installer script re-invokes `curl` by name to download the
+    # binary, so curl must be on PATH for the whole pipeline — an
+    # absolute-path curl on the fetch alone is not enough.
     home.activation.claude-code-native-bootstrap = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
       if [ ! -x "$HOME/.local/bin/claude" ]; then
-        run ${pkgs.bash}/bin/bash -c "${pkgs.curl}/bin/curl -fsSL https://claude.ai/install.sh | ${pkgs.bash}/bin/bash"
+        run env PATH="${lib.makeBinPath [ pkgs.curl ]}:$PATH" ${pkgs.bash}/bin/bash -c \
+          "curl -fsSL https://claude.ai/install.sh | ${pkgs.bash}/bin/bash"
       fi
     '';
   };
