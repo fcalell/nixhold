@@ -59,7 +59,7 @@ in
         nixhold.secrets.${cfg.authKeySecret} = {
           owner = "root";
           mode = "0400";
-          description = "Tailscale pre-auth key for unattended tailnet join.";
+          description = "Tailscale pre-auth key (tskey-auth-…) — create at login.tailscale.com/admin/settings/keys";
         };
         services.tailscale.authKeyFile = config.age.secrets.${cfg.authKeySecret}.path;
       })
