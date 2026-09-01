@@ -29,11 +29,22 @@ cmd_secret_edit() {
   # `cmd_secret_edit` away from being called that way.
   (
     set -euo pipefail
-    rfile="$(mktemp -t nixhold-rcpt.XXXXXX)" || exit 2
-    idfile="$(mktemp -t nixhold-id.XXXXXX)" || exit 2
-    tmp="$(mktemp -t nixhold-secret.XXXXXX)" || exit 2
+    # One 0700 dir so the buffer can carry an identifying name
+    # (<host>.<name>, what the editor shows) without publishing it in a
+    # world-readable /tmp listing. Attr names are normally
+    # filename-safe; sanitized anyway so a quoted name cannot escape
+    # the workdir.
+    workdir="$(mktemp -d -t nixhold-secret.XXXXXX)" || exit 2
+    chmod 700 "$workdir"
+    trap 'rm -rf "$workdir"' EXIT
+    rfile="$workdir/recipients"
+    idfile="$workdir/identity"
+    safe="$host.$name"
+    safe="${safe//[^A-Za-z0-9._-]/_}"
+    tmp="$workdir/$safe"
+    : >"$idfile"
+    : >"$tmp"
     chmod 600 "$idfile" "$tmp"
-    trap 'rm -f "$rfile" "$idfile" "$tmp"' EXIT
 
     nh_recipients_file "$json" "$name" "$rfile" || exit 1
     nh_unwrap_identity "$idfile" || exit 1
@@ -41,6 +52,9 @@ cmd_secret_edit() {
       nh_err "could not decrypt $target with the operator identity"
       exit 1
     }
+    # The plaintext is encrypted back byte-for-byte, so nothing is ever
+    # prefilled into the buffer: identity lives in its filename.
+    nh_info "opening ${EDITOR:-vi} for $host/$name"
     "${EDITOR:-vi}" "$tmp"
     # Encrypt to a sibling temp + rename so an age failure can't
     # leave the committed ciphertext truncated.
