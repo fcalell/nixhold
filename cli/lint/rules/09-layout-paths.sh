@@ -20,7 +20,12 @@ if [ -z "$hosts" ]; then
 fi
 
 # File- and dir-valued keys only; `repoUrl` is a string, not a path.
-for key in secrets hostsFile modulesDir profilesDir keysDir ageRecipient ageIdentityWrapped; do
+# `modulesDir` and `profilesDir` are exempt: they are scaffold targets
+# only — nothing reads them, and `service new` / `profile new` mkdir -p
+# them on demand (even under a stale override, so nothing fails late) —
+# and a fleet that authors no fleet modules/profiles legitimately has
+# no such dir.
+for key in secrets hostsFile keysDir ageRecipient ageIdentityWrapped; do
   p="$(nh_worktree_layout_file "$key" 2>/dev/null)" || {
     echo "ERROR: could not probe nixhold.layout.$key — existence check skipped"
     [ "$worst" -lt 2 ] && worst=2
