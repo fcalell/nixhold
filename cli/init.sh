@@ -38,9 +38,12 @@ EOF
 
   # Restore-from-fleet: a committed wrapped identity means existing
   # secrets are encrypted to THAT key — restoring it is almost always
-  # what the operator wants on a fresh machine.
+  # what the operator wants on a fresh machine. Full fleet-root
+  # resolution (env → upward walk → baked default), so a checkout
+  # subdirectory still finds it; quiet on failure — init legitimately
+  # runs before any fleet exists.
   local committed=""
-  if [ -f "${NIXHOLD_FLEET:-$PWD}/flake.nix" ]; then
+  if nh_fleet_root >/dev/null 2>&1; then
     committed="$(nh_worktree_layout_file ageIdentityWrapped 2>/dev/null || true)"
   fi
   if [ -n "$committed" ] && [ -f "$committed" ]; then
@@ -56,7 +59,10 @@ EOF
 
   local tmp
   tmp="$(mktemp -t nixhold-identity.XXXXXX)"
-  trap 'rm -f "$tmp"' EXIT
+  # Expand now: the trap fires at shell exit, after this function's
+  # locals are gone.
+  # shellcheck disable=SC2064
+  trap "rm -f '$tmp'" EXIT
 
   age-keygen -o "$tmp" >/dev/null
   nh_info "wrapping identity with passphrase (you'll be prompted twice)"

@@ -1,22 +1,67 @@
-# nixhold host install <name> [--remote <user>@<ip>] [--disk <by-id>]
-#                             [--disko-from <path>] [--yes]
+# nixhold host install [<name>] [--remote <user>@<ip>] [--disk <by-id>]
+#                               [--disko-from <path>] [--yes]
 #
-# NixOS: generates a single-disk disko layout (unless --disko-from is
-# given), ships the host's cached SSH key via --extra-files so agenix
-# decrypts on first activation, and drives nixos-anywhere
-# (--build-on-remote: the target builds its own closure;
-# --generate-hardware-config nixos-facter: writes facter.json back).
+# Two entry points, one phase sequence:
+#   --remote  drive the install over SSH from any fleet machine
+#             (nixos-anywhere with --build-on-remote: the target
+#             builds its own closure).
+#   no flag   install THIS machine in place. Allowed only inside the
+#             installer environment, marked by the plain file
+#             /etc/nixhold-installer that the ISO drops — so a running
+#             fleet machine can never be reformatted by accident.
+#             There is no hostname auto-detection; the marker is the
+#             whole guard. ($NIXHOLD_INSTALLER_MARKER overrides the
+#             path — test hook only, never set in production.)
 #
-# Darwin: local, fresh-macOS capable (see nh_darwin_install) — ensures
-# the host age identity at /etc/ssh, commits/rekeys the recipient, and
-# activates via the fleet's pinned nix-darwin even when darwin-rebuild
-# isn't on PATH yet.
+# No <name> opens the host picker, installer environment only: every
+# NixOS host as a reformat candidate plus "new host…", which runs the
+# `host add` TUI and installs what it created. Darwin hosts dispatch
+# from arch and always run locally (see nh_darwin_install); the ISO is
+# NixOS-only.
 #
-# NOTE: the live install path (SSH to target, nixos-anywhere) cannot
-# be exercised in CI; the deterministic parts (disko generation, key
-# staging, command construction) are. The framework ships ONE disko
-# shape — single disk, GPT, no encryption; power users pass
+# Host key: cache first, else the committed escrow (see lib/escrow.sh)
+# — so a reformat driven from a machine that never ran `host add` for
+# this host still lands a key agenix can decrypt with. An install that
+# used a cached key with no escrow backfills the escrow.
+#
+# NOTE: the live install paths cannot be exercised in CI; the
+# deterministic parts (disk enumeration/rendering, disko generation,
+# key staging, command construction) are. The framework ships ONE
+# disko shape — single disk, GPT, no encryption; power users pass
 # --disko-from for anything else.
+
+# The dispatcher sources lib/ only; the bootstrap auto-walk lives in a
+# sibling verb.
+# shellcheck source=secret-bootstrap.sh
+. "$NIXHOLD_LIB_ROOT/secret-bootstrap.sh"
+
+# nh_installer_env — true inside the fleet installer ISO. The marker
+# is a fixed contract between the ISO module and this verb.
+nh_installer_env() {
+  [ -f "${NIXHOLD_INSTALLER_MARKER:-/etc/nixhold-installer}" ]
+}
+
+# nh_sudo <cmd…> — the ISO runs as root; a local install from a
+# root-less shell escalates the few phases that touch /mnt and /dev.
+nh_sudo() {
+  if [ "$(id -u)" -eq 0 ]; then
+    "$@"
+  else
+    sudo "$@"
+  fi
+}
+
+# nh_target_sh <remote> <sh-snippet> — run a snippet on the install
+# target: locally when installing this machine, over ssh in --remote
+# mode. Keeps disk enumeration and by-id resolution single-sourced.
+nh_target_sh() {
+  local remote="$1" script="$2"
+  if [ -z "$remote" ]; then
+    sh -c "$script"
+  else
+    nh_ssh "$remote" -- "$script"
+  fi
+}
 
 # nh_write_disko <device> <out> — emit a single-disk GPT disko module.
 nh_write_disko() {
@@ -57,24 +102,101 @@ nh_write_disko() {
 EOF
 }
 
-# nh_pick_disk <remote> — list the target's whole disks and prompt for
-# the root disk; print a stable /dev/disk/by-id path (falling back to
-# /dev/<name> if no by-id alias resolves).
-nh_pick_disk() {
-  local remote="$1" json opts chosen name byid
-  json="$(nh_ssh "$remote" -- lsblk -dnJ -o NAME,SIZE,TYPE,MODEL 2>/dev/null)" || {
-    nh_err "lsblk over ssh failed against $remote"
+# nh_disk_json <remote> — the target's block devices with their
+# children. One lsblk call feeds both the picker rows and the
+# confirmation's partition list, so the operator confirms exactly what
+# the picker described. PTTYPE/PARTTYPE are dropped on older util-linux
+# builds that lack the columns.
+nh_disk_json() {
+  local remote="$1" json
+  json="$(nh_target_sh "$remote" \
+    "lsblk -J -o NAME,SIZE,MODEL,TRAN,TYPE,PTTYPE,FSTYPE,LABEL,PARTTYPE,MOUNTPOINT" 2>/dev/null)" ||
+    json="$(nh_target_sh "$remote" \
+      "lsblk -J -o NAME,SIZE,MODEL,TRAN,TYPE,FSTYPE,LABEL,MOUNTPOINT" 2>/dev/null)" ||
     return 1
-  }
-  opts="$(printf '%s' "$json" | jq -r '.blockdevices[] | select(.type == "disk") | "\(.name)\t\(.size)\t\(.model // "?")"')"
-  if [ -z "$opts" ]; then
-    nh_err "no whole disks found on $remote"
-    return 1
-  fi
-  chosen="$(printf '%s\n' "$opts" | gum choose --header "Root disk to install onto (ERASED):")" || return 1
-  name="$(printf '%s' "$chosen" | cut -f1)"
-  [ -n "$name" ] || return 1
-  byid="$(nh_ssh "$remote" -- "for l in /dev/disk/by-id/*; do [ \"\$(readlink -f \"\$l\")\" = /dev/$name ] && { printf '%s' \"\$l\"; break; }; done" 2>/dev/null || true)"
+  printf '%s' "$json"
+}
+
+# nh_disk_rows — lsblk JSON on stdin, one padded picker row per
+# installable whole disk on stdout: name, size, model, bus, and a
+# current-contents summary (partition table, previous install, child
+# filesystems, or "empty") so the choice is about content rather than
+# device names.
+#
+# The installer medium is excluded: on a live image the ISO's own
+# device is the one with /iso (or the read-only store) mounted off a
+# child, which is the only mount present that early. Removable disks
+# are NOT excluded — a target may be an SSD in a USB enclosure.
+nh_disk_rows() {
+  jq -r '
+    def orq(d): if (. == null or . == "") then d else . end;
+    def mounts: ([ .mountpoint ] + (.mountpoints // []))
+      | map(select(. != null and . != ""));
+    def installer_medium:
+      ([ . ] + (.children // []))
+      | map(mounts) | add // []
+      | map(select(. == "/iso" or . == "/nix/.ro-store" or startswith("/iso/")))
+      | length > 0;
+    def pdesc:
+      [ (.size | orq("?")), (.fstype | orq("unformatted")) ]
+      + (if (.label | orq("")) == "" then [] else [ "\"" + .label + "\"" ] end)
+      | join(" ");
+    def summary:
+      (.children // []) as $c
+      | if ($c | length) == 0 then "empty"
+        else
+          ((.pttype | orq("")) | if . == "" then [] else [ . ] end) as $pt
+          | ([ $c[] | select((.label | orq("")) | ascii_downcase == "nixos") ] | length > 0) as $lbl
+          | ((([ $c[] | select(((.parttype | orq("")) | ascii_downcase) == "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+                               or (.fstype | orq("")) == "vfat") ] | length) > 0)
+             and (([ $c[] | select((.fstype | orq("")) == "ext4") ] | length) > 0)) as $shape
+          | ($pt
+             + (if $lbl then [ "previous NixOS install" ]
+                elif $shape then [ "previous Linux install" ]
+                else [] end)
+             + [ ([ $c[] | pdesc ]
+                  | if length > 4 then .[0:4] + [ "+" + ((length - 4) | tostring) + " more" ] else . end
+                  | join(", ")) ])
+            | join(" · ")
+        end;
+    .blockdevices[]
+    | select(.type == "disk")
+    # zram/ram are TYPE=disk to lsblk and can never be install targets.
+    | select(.name | test("^(zram|ram)[0-9]*$") | not)
+    | select(installer_medium | not)
+    | [ .name, (.size | orq("?")), (.model | orq("unknown")), (.tran | orq("-")), summary ]
+    | @tsv
+  ' | awk -F'\t' '{ printf "%-10s %8s  %-28.28s %-5s  %s\n", $1, $2, $3, $4, $5 }'
+}
+
+# nh_disk_partitions <disk-name> — lsblk JSON on stdin, the exact
+# partitions about to be erased (name, size, fstype, label) for the
+# destructive confirmation. Empty output = no partitions.
+nh_disk_partitions() {
+  local name="$1"
+  jq -r --arg n "$name" '
+    def orq(d): if (. == null or . == "") then d else . end;
+    .blockdevices[]
+    | select(.type == "disk" and .name == $n)
+    | (.children // [])[]
+    | [ ("/dev/" + .name), (.size | orq("?")), (.fstype | orq("-")), (.label | orq("-")) ]
+    | @tsv
+  ' | awk -F'\t' '{ printf "    %-14s %8s  %-10s %s\n", $1, $2, $3, $4 }'
+}
+
+# nh_disk_byid <remote> <name> — stable /dev/disk/by-id path for a
+# whole disk. Prefers a non-wwn alias (model+serial reads better in a
+# committed disko.nix) and picks deterministically by sort order;
+# falls back to /dev/<name> when the target exposes no alias.
+nh_disk_byid() {
+  local remote="$1" name="$2" links byid
+  links="$(nh_target_sh "$remote" "
+    for l in /dev/disk/by-id/*; do
+      [ -e \"\$l\" ] || continue
+      [ \"\$(readlink -f \"\$l\")\" = \"/dev/$name\" ] && printf '%s\n' \"\$l\"
+    done | sort" 2>/dev/null || true)"
+  byid="$(printf '%s\n' "$links" | grep -v '/wwn-' | head -n1 || true)"
+  [ -n "$byid" ] || byid="$(printf '%s\n' "$links" | head -n1 || true)"
   if [ -n "$byid" ]; then
     printf '%s' "$byid"
   else
@@ -83,11 +205,192 @@ nh_pick_disk() {
   fi
 }
 
+# nh_pick_disk <remote> — enriched picker plus the destructive
+# confirmation (default NO); prints the chosen disk as a by-id path.
+# The operator never types or copies a device path.
+nh_pick_disk() {
+  local remote="$1" json rows chosen name parts
+  json="$(nh_disk_json "$remote")" || {
+    nh_err "lsblk failed${remote:+ over ssh against $remote}"
+    return 1
+  }
+  rows="$(printf '%s' "$json" | nh_disk_rows)" || return 1
+  if [ -z "$rows" ]; then
+    nh_err "no installable whole disk found${remote:+ on $remote} (the installer medium is excluded)"
+    return 1
+  fi
+  chosen="$(printf '%s\n' "$rows" | gum choose --header "Root disk to install onto (ERASED):")" || return 1
+  name="$(printf '%s' "$chosen" | awk '{ print $1 }')"
+  [ -n "$name" ] || return 1
+
+  parts="$(printf '%s' "$json" | nh_disk_partitions "$name")"
+  nh_warn "/dev/$name is about to be ERASED — this is destroyed:"
+  if [ -n "$parts" ]; then
+    printf '%s\n' "$parts" >&2
+  else
+    printf '    (no partitions — the disk is empty)\n' >&2
+  fi
+  gum confirm --default=false "Erase /dev/$name and install?" || return 1
+
+  nh_disk_byid "$remote" "$name"
+}
+
+# nh_pick_host — installer-environment host picker. Prints
+# "existing<TAB><name>" or "new<TAB><name>"; the "new host…" entry
+# runs the `host add` TUI in place (without its --install path, which
+# would recurse back into this verb).
+nh_pick_host() {
+  local hosts rows chosen name
+  hosts="$(nix eval --json --no-warn-dirty "$(nh_fleet_root)#nixosConfigurations" \
+    --apply 'builtins.attrNames' 2>/dev/null | jq -r '.[]?' || true)"
+  rows=""
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    rows="${rows}${name}	(reformat — erases its disk)
+"
+  done <<<"$hosts"
+  rows="${rows}new host…"
+
+  chosen="$(printf '%s\n' "$rows" | gum choose --header "Install which host?")" || return 1
+  if [ "$chosen" = "new host…" ]; then
+    local newname
+    newname="$(nh_prompt_input "Name for the new host")"
+    if [ -z "$newname" ]; then
+      nh_err "no host name given"
+      return 1
+    fi
+    . "$NIXHOLD_LIB_ROOT/host-add.sh"
+    cmd_host_add "$newname" || return 1
+    printf 'new\t%s' "$newname"
+  else
+    printf 'existing\t%s' "$(printf '%s' "$chosen" | awk '{ print $1 }')"
+  fi
+}
+
+# nh_stage_host_key <name> <dir> — resolve the host's SSH key into
+# <dir> (cache, else committed escrow) and backfill the escrow when
+# the cache answered and nothing is committed yet (principle 16: every
+# host.pub has a sibling host.key.age).
+nh_stage_host_key() {
+  local name="$1" dir="$2" keys_dir
+  nh_resolve_host_key "$name" "$dir" || return 1
+  keys_dir="$(nh_worktree_keys_dir)" || return 0
+  if [ ! -f "$keys_dir/hosts/$name/host.key.age" ]; then
+    nh_escrow_host_key "$name" "$dir/ssh_host_ed25519_key" ||
+      nh_warn "host-key escrow for $name not written — 'nixhold lint' will flag it"
+  fi
+}
+
+# nh_commit_paths <root> <msg> <path…> — auto-commit is restricted to
+# what install generated; never a blanket `git commit -a`. Missing
+# paths are skipped, and a fleet without a git identity (the ISO)
+# commits under a framework one.
+nh_commit_paths() {
+  local root="$1" msg="$2"
+  shift 2
+  git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+    nh_warn "fleet is not a git worktree — commit the generated files yourself"
+    return 0
+  }
+  local present=() p
+  for p in "$@"; do
+    if [ -e "$p" ]; then present+=("$p"); fi
+  done
+  [ "${#present[@]}" -gt 0 ] || return 0
+  git -C "$root" add -- "${present[@]}" || {
+    nh_warn "git add failed — commit the generated files yourself"
+    return 0
+  }
+  if git -C "$root" diff --cached --quiet -- "${present[@]}"; then
+    nh_info "no changes to commit"
+    return 0
+  fi
+  local ident=()
+  if [ -z "$(git -C "$root" config user.email || true)" ]; then
+    ident=(-c user.name=nixhold -c user.email=nixhold@localhost)
+  fi
+  if git -C "$root" "${ident[@]}" commit -q -m "$msg" -- "${present[@]}"; then
+    nh_ok "committed: ${present[*]#"$root"/}"
+  else
+    nh_warn "commit failed — commit the generated files yourself"
+  fi
+}
+
+# nh_local_install <name> <root> <disko> <facter> — the ISO path: the
+# remote path's phases run in place. Ordered so the machine is
+# bootable before anything that can fail non-fatally (commit/push).
+nh_local_install() {
+  local name="$1" root="$2" disko_target="$3" facter_target="$4"
+
+  # Baked into the installer ISO; requiring them here is what makes
+  # the local path honest outside it.
+  nh_require_cmd disko nixos-facter nixos-install || {
+    nh_err "local install needs disko, nixos-facter and nixos-install on PATH — they ship in the nixhold installer ISO"
+    return 1
+  }
+
+  nh_info "partitioning + mounting per $disko_target"
+  nh_sudo disko --mode destroy,format,mount --yes-wipe-all-disks "$disko_target" || {
+    nh_err "disko failed — nothing was installed"
+    return 1
+  }
+
+  # Host key before the closure build: agenix decrypts with it on the
+  # first activation pass, which nixos-install runs.
+  local keydir
+  keydir="$(mktemp -d)"
+  # shellcheck disable=SC2064 # expand $keydir now, it goes out of scope
+  trap "rm -rf '$keydir'" EXIT
+  nh_stage_host_key "$name" "$keydir" || return 1
+  nh_sudo install -d -m 0755 /mnt/etc/ssh
+  nh_sudo install -m 0600 "$keydir/ssh_host_ed25519_key" /mnt/etc/ssh/ssh_host_ed25519_key
+  nh_sudo install -m 0644 "$keydir/ssh_host_ed25519_key.pub" /mnt/etc/ssh/ssh_host_ed25519_key.pub
+  nh_ok "staged the host key into /mnt/etc/ssh"
+
+  nh_info "generating the hardware report"
+  nh_sudo nixos-facter -o "$facter_target" || {
+    nh_err "nixos-facter failed"
+    return 1
+  }
+  nh_stage_for_eval "$root" "$disko_target" "$facter_target"
+  nh_ok "wrote $facter_target"
+
+  # Before the build, so a host first-boots with every required
+  # secret decryptable (the passphrase is already in hand here).
+  nh_bootstrap_if_missing "$name" nixos
+
+  nh_info "building $name's system closure"
+  local out
+  out="$(nix build --no-link --print-out-paths --no-warn-dirty \
+    "$root#nixosConfigurations.$name.config.system.build.toplevel")" || {
+    nh_err "closure build failed"
+    return 1
+  }
+
+  nh_info "installing $out into /mnt"
+  nh_sudo nixos-install --root /mnt --system "$out" --no-root-passwd || {
+    nh_err "nixos-install failed"
+    return 1
+  }
+  nh_ok "installed $name"
+}
+
+# nh_stage_for_eval <root> <path…> — a dirty git flake includes
+# modified tracked files but NOT untracked ones, so a freshly written
+# facter.json is invisible to the build that must read it.
+nh_stage_for_eval() {
+  local root="$1"
+  shift
+  git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  git -C "$root" add --intent-to-add -- "$@" 2>/dev/null ||
+    nh_warn "git add of the generated hardware files failed — 'git add' them before evaluating"
+}
+
 # nh_darwin_install <name> <root> — local darwin install, fresh-macOS
 # capable. Does the three jobs the NixOS path gets from nixos-anywhere:
 #   1. host age identity — ensure /etc/ssh/ssh_host_ed25519_key exists
-#      (agenix's darwin identityPath): install the `host add`-cached
-#      key, or generate one in place;
+#      (agenix's darwin identityPath): install the resolved host key
+#      (cache or escrow), or generate one in place;
 #   2. recipients — commit that key's pubkey as
 #      keys/hosts/<name>/host.pub and rekey secrets when it changed;
 #   3. activate — sudo darwin-rebuild; on a machine that has never
@@ -102,16 +405,19 @@ nh_darwin_install() {
   fi
 
   local hostkey="/etc/ssh/ssh_host_ed25519_key"
-  local cache="$NIXHOLD_CACHE_DIR/host-keys/$name"
 
   # 1. Host identity. Fresh macOS has no /etc/ssh host keys until
   #    sshd has run at least once.
   if [ ! -f "$hostkey" ]; then
     sudo install -d -m 0755 /etc/ssh
-    if [ -f "$cache/ssh_host_ed25519_key" ]; then
-      nh_info "installing cached host key to $hostkey (sudo)"
-      sudo install -m 0600 "$cache/ssh_host_ed25519_key" "$hostkey"
-      sudo install -m 0644 "$cache/ssh_host_ed25519_key.pub" "$hostkey.pub"
+    local keydir
+    keydir="$(mktemp -d)"
+    # shellcheck disable=SC2064 # expand $keydir now, it goes out of scope
+    trap "rm -rf '$keydir'" EXIT
+    if nh_stage_host_key "$name" "$keydir"; then
+      nh_info "installing the resolved host key to $hostkey (sudo)"
+      sudo install -m 0600 "$keydir/ssh_host_ed25519_key" "$hostkey"
+      sudo install -m 0644 "$keydir/ssh_host_ed25519_key.pub" "$hostkey.pub"
     else
       nh_info "generating host key at $hostkey (sudo)"
       sudo ssh-keygen -t ed25519 -N "" -C "nixhold-host-$name" -f "$hostkey" >/dev/null
@@ -165,7 +471,7 @@ nh_darwin_install() {
 }
 
 cmd_host_install() {
-  local name="" remote="" disk="" disko_from="" yes=0
+  local name="" remote="" disk="" disko_from="" yes=0 new_host=0 picked=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --remote) remote="$2"; shift 2 ;;
@@ -174,9 +480,15 @@ cmd_host_install() {
       --yes) yes=1; shift ;;
       -h | --help)
         cat <<'EOF'
-Usage: nixhold host install <name> [--remote <user>@<ip>]
-                                    [--disk <by-id>] [--disko-from <path>]
-                                    [--yes]
+Usage: nixhold host install [<name>] [--remote <user>@<ip>]
+                                     [--disk <by-id>] [--disko-from <path>]
+                                     [--yes]
+
+  <name> omitted   pick a host (installer environment only): any fleet
+                   host to reformat, or "new host…" to add one first.
+  --remote         drive the install over SSH from a fleet machine.
+                   Without it the install targets THIS machine, which
+                   is refused outside the installer ISO.
 EOF
         return 0
         ;;
@@ -184,14 +496,27 @@ EOF
       *) if [ -z "$name" ]; then name="$1"; shift; else nh_err "extra arg: $1"; return 1; fi ;;
     esac
   done
+
+  nh_require_cmd nix jq
+  local root
+  root="$(nh_fleet_root)" || return 2
+
+  # Host selection. The picker exists because the ISO operator has no
+  # fleet knowledge in front of them — outside it, a name is required.
   if [ -z "$name" ]; then
-    nh_err "expected: nixhold host install <name>"
-    return 1
+    if ! nh_installer_env; then
+      nh_err "expected: nixhold host install <name> (the host picker is installer-environment only)"
+      return 1
+    fi
+    nh_require_cmd gum
+    local pick
+    pick="$(nh_pick_host)" || return 1
+    name="$(printf '%s' "$pick" | cut -f2)"
+    if [ "$(printf '%s' "$pick" | cut -f1)" = "new" ]; then new_host=1; fi
+    [ -n "$name" ] || return 1
   fi
 
-  nh_require_cmd nix ssh jq
-  local root platform arch
-  root="$(nh_fleet_root)" || return 2
+  local platform arch
   platform="$(nh_host_platform "$name")" || {
     nh_err "host '$name' not found in fleet"
     return 1
@@ -213,10 +538,11 @@ EOF
       ;;
   esac
 
-  if [ -z "$remote" ]; then
-    nh_err "--remote <user>@<ip> required for NixOS hosts (boot the target into a reachable SSH state first)"
+  if [ -z "$remote" ] && ! nh_installer_env; then
+    nh_err "local install refused — pass --remote <user>@<ip> or boot the installer ISO"
     return 1
   fi
+  if [ -n "$remote" ]; then nh_require_cmd ssh; fi
 
   local hostcfg_dir disko_target facter_target
   hostcfg_dir="$root/hosts/$name"
@@ -224,67 +550,103 @@ EOF
   facter_target="$hostcfg_dir/facter.json"
   mkdir -p "$hostcfg_dir"
 
-  # 1. Disk layout.
+  # 1. Disk layout. --disk skips the prompt for scripted runs;
+  #    --disko-from is the power-user escape from the one shipped
+  #    shape.
   if [ -n "$disko_from" ]; then
     cp "$disko_from" "$disko_target"
     nh_ok "copied disko layout from $disko_from"
-  elif [ -f "$disko_target" ] && nh_prompt_confirm "Reuse existing $disko_target?"; then
+  elif [ -z "$disk" ] && [ -f "$disko_target" ] &&
+    ! grep -q 'REPLACE-ME' "$disko_target" &&
+    nh_prompt_confirm "Reuse existing $disko_target?"; then
     nh_info "reusing $disko_target"
   else
     if [ -z "$disk" ]; then
       nh_require_cmd gum
-      disk="$(nh_pick_disk "$remote")" || return 1
+      disk="$(nh_pick_disk "$remote")" || {
+        nh_info "aborted"
+        return 1
+      }
+      picked=1
     fi
     [ -n "$disk" ] || { nh_err "no disk selected"; return 1; }
     nh_write_disko "$disk" "$disko_target"
     nh_ok "wrote $disko_target (device $disk)"
   fi
 
-  # 2. Confirm — this is the one destructive verb. The gum disk
-  #    picker warns, but the --disk / --disko-from / reuse-existing
-  #    paths would otherwise reformat with zero prompt.
-  if [ "$yes" -ne 1 ]; then
-    nh_warn "nixos-anywhere will ERASE the disk(s) declared in $disko_target on $name @ $remote and reinstall from scratch"
+  # 2. Confirm. The picker already confirmed against the partition
+  #    list; the --disk / --disko-from / reuse-existing paths would
+  #    otherwise reformat with zero prompt.
+  if [ "$yes" -ne 1 ] && [ "$picked" -ne 1 ]; then
+    nh_warn "the disk(s) declared in $disko_target will be ERASED and $name reinstalled from scratch${remote:+ (target: $remote)}"
     nh_prompt_confirm "Proceed with the destructive install of $name?" || {
       nh_info "aborted"
       return 0
     }
   fi
 
-  # 3. Stage the host's cached SSH key so agenix decrypts on the first
-  #    activation pass (placed before nixos-install runs).
-  #    nixos-anywhere is checked BEFORE key material lands in $TMPDIR,
-  #    and the trap cleans the staging dir on every exit path.
-  nh_require_cmd nixos-anywhere
-  local cache extra
-  cache="$NIXHOLD_CACHE_DIR/host-keys/$name"
-  if [ ! -f "$cache/ssh_host_ed25519_key" ]; then
-    nh_err "no cached host key at $cache — run 'nixhold host add $name' first"
-    return 1
-  fi
-  extra="$(mktemp -d)"
-  # shellcheck disable=SC2064 — expand $extra now, it goes out of scope
-  trap "rm -rf '$extra'" EXIT
-  mkdir -p "$extra/etc/ssh"
-  install -m 0600 "$cache/ssh_host_ed25519_key" "$extra/etc/ssh/ssh_host_ed25519_key"
-  install -m 0644 "$cache/ssh_host_ed25519_key.pub" "$extra/etc/ssh/ssh_host_ed25519_key.pub"
-
-  nh_info "ensure hosts.$name.modules imports: ./hosts/$name/disko.nix, inputs.disko.nixosModules.disko, { nixhold.hardware.facterReport = ./hosts/$name/facter.json; }"
-
-  # 4. Install. The target builds its own closure (--build-on-remote);
-  #    nixos-facter writes the hardware report back to facter.json.
-  nh_info "running nixos-anywhere against $name @ $remote"
-  if nixos-anywhere \
-    --flake "$root#$name" \
-    --generate-hardware-config nixos-facter "$facter_target" \
-    --extra-files "$extra" \
-    --build-on-remote \
-    --target-host "$remote"; then
-    nh_ok "installed $name"
-    nh_info "commit the generated hardware files: $disko_target and $facter_target"
+  local rc=0
+  if [ -z "$remote" ]; then
+    nh_local_install "$name" "$root" "$disko_target" "$facter_target" || rc=$?
   else
-    local rc=$?
-    nh_err "nixos-anywhere failed (exit $rc)"
-    return "$rc"
+    # 3. Stage the host's SSH key so agenix decrypts on the first
+    #    activation pass (placed before nixos-install runs).
+    #    nixos-anywhere is checked BEFORE key material lands in
+    #    $TMPDIR, and the trap cleans the staging dir on every exit
+    #    path.
+    nh_require_cmd nixos-anywhere
+    local extra
+    extra="$(mktemp -d)"
+    # shellcheck disable=SC2064 # expand $extra now, it goes out of scope
+    trap "rm -rf '$extra'" EXIT
+    mkdir -p "$extra/etc/ssh"
+    nh_stage_host_key "$name" "$extra/etc/ssh" || return 1
+
+    # Before the build, so the host first-boots with every required
+    # secret decryptable.
+    nh_bootstrap_if_missing "$name" nixos
+
+    # 4. Install. The target builds its own closure
+    #    (--build-on-remote); nixos-facter writes the hardware report
+    #    back to facter.json.
+    nh_info "running nixos-anywhere against $name @ $remote"
+    nixos-anywhere \
+      --flake "$root#$name" \
+      --generate-hardware-config nixos-facter "$facter_target" \
+      --extra-files "$extra" \
+      --build-on-remote \
+      --target-host "$remote" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      nh_ok "installed $name"
+    else
+      nh_err "nixos-anywhere failed (exit $rc)"
+    fi
   fi
+
+  # 5. The machine is bootable by now; the repo side is best-effort.
+  #    disko + facter are install-time outputs, committed on success —
+  #    auto-commit never reaches beyond them, except for a host this
+  #    run created, whose `host add` outputs would otherwise live only
+  #    on an ephemeral ISO checkout.
+  if [ "$rc" -eq 0 ]; then
+    local keys_dir sdir msg="host $name: install (disko + facter)"
+    local paths=("$disko_target" "$facter_target")
+    if [ "$new_host" -eq 1 ]; then
+      keys_dir="$(nh_worktree_keys_dir)"
+      sdir="$(nh_worktree_secrets_dir)"
+      paths+=("$root/hosts.nix" "$hostcfg_dir" "$keys_dir/hosts/$name" "$sdir/hosts/$name")
+      msg="host $name: add + install"
+    fi
+    nh_commit_paths "$root" "$msg" "${paths[@]}"
+    if [ "$new_host" -eq 1 ]; then
+      # A reformat pushes nothing; a new host must reach the fleet
+      # repo or the next operator never sees it.
+      if git -C "$root" push; then
+        nh_ok "pushed $name to the fleet repo"
+      else
+        nh_warn "push failed — $name is installed but the fleet repo does not know it yet; push $root (hosts.nix, hosts/$name, keys/hosts/$name, secrets/hosts/$name) from a machine with repo access"
+      fi
+    fi
+  fi
+  return "$rc"
 }

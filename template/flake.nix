@@ -14,15 +14,10 @@
         email = "you@example.com";
       };
 
-      layout = {
-        secrets = ./secrets;
-        hostsFile = ./hosts.nix;
-        modulesDir = ./modules;
-        profilesDir = ./profiles;
-        keysDir = ./keys;
-        ageRecipient = ./keys/operator.pub;
-        ageIdentityWrapped = ./keys/operator.age;
-      };
+      # `layout` is optional: every path defaults to a subpath of
+      # this flake (./secrets, ./keys/operator.pub, …). The repo
+      # itself can't be derived — set it to build the installer ISO.
+      # layout.repoUrl = "owner/repo";
 
       # Declare every network your hosts talk over here. Hosts
       # reference networks by name in their `networks` field.

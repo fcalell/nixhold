@@ -3,12 +3,14 @@ let
   inherit (lib) mkOption types;
 in
 {
-  # The `layout` contract: seven required paths, all set by the
-  # operator in `mkFleet`'s `layout` arg, all readable from any
-  # host as `config.nixhold.layout.*`. The framework eval never
-  # reads from these paths directly — they're CLI-side state. The
-  # CLI reads them via `nix eval` to know where to scaffold and
-  # where committed secrets/keys live.
+  # The `layout` contract: the CLI's filesystem coordinates, all
+  # readable from any host as `config.nixhold.layout.*`. Every path
+  # is defaulted by `mkFleet` as a subpath of the forker's flake
+  # root; `mkFleet`'s `layout` arg is optional and overrides
+  # per-field. The framework eval never reads from these paths
+  # directly — they're CLI-side state. The CLI reads them via `nix
+  # eval` to know where to scaffold and where committed
+  # secrets/keys live.
   options.nixhold.layout = {
     secrets = mkOption {
       type = types.path;
@@ -84,6 +86,21 @@ in
         never decrypted to disk during normal activation.
       '';
       example = lib.literalExpression "./keys/operator.age";
+    };
+
+    repoUrl = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      description = ''
+        The fleet repository as `owner/repo` (github.com is
+        assumed; it is cloned and pushed over SSH using the
+        committed deploy key `keys/repo.key.age`). The one layout
+        field nothing can derive from the flake root. Required only
+        to build the installer ISO — which must reach the fleet
+        repo with nothing but the operator passphrase — and unused
+        otherwise.
+      '';
+      example = "alice/nix";
     };
   };
 }

@@ -95,6 +95,14 @@ EOF
   cp "$cache/ssh_host_ed25519_key.pub" "$keys_dir/hosts/$name/host.pub"
   nh_ok "committed host pubkey to $keys_dir/hosts/$name/host.pub"
 
+  # Escrow the private half beside it (operator recipient only), so the
+  # host is re-imageable from repo + passphrase alone from birth.
+  # Non-interactive (recipient, not identity); a fleet with no operator
+  # pubkey yet gets a warning rather than a half-added host — lint
+  # flags the missing escrow.
+  nh_escrow_host_key "$name" "$cache/ssh_host_ed25519_key" ||
+    nh_warn "host key for $name is NOT escrowed — run 'nixhold init' then 'nixhold host rotate-key $name'"
+
   # Scaffold the host's module files so it evaluates now and builds
   # after `host install` fills in disko.nix + facter.json.
   local statever=""

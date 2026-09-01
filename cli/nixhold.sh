@@ -28,6 +28,8 @@ export NIX_CONFIG
 . "$NIXHOLD_LIB_ROOT/lib/ssh.sh"
 # shellcheck source=lib/secrets.sh
 . "$NIXHOLD_LIB_ROOT/lib/secrets.sh"
+# shellcheck source=lib/escrow.sh
+. "$NIXHOLD_LIB_ROOT/lib/escrow.sh"
 
 usage() {
   cat <<'EOF'
@@ -35,15 +37,17 @@ nixhold — manage a nixhold-declared fleet.
 
 Bootstrap:
   init                              Provision the operator age identity.
+  iso [--flash <device>]            Build (and write) the fleet installer image.
 
 Hosts:
   host add <name> [--install <u@h>] Register a host (and optionally install).
-  host install <name> [--remote …]  Install or re-image a host.
+  host install [<name>] [--remote …] Install or re-image a host (picker on the ISO).
   host rotate-key <name>            Rotate host SSH+age key, rekey secrets.
   host remove <name>                Delete host from the fleet.
 
 Daily:
   deploy <name> [--mode …]          Build + activate a host's config.
+  update [--yes]                    Pull, update inputs, review, deploy.
   status [--host …] [--fleet]       Show declared services / secrets / expose.
   logs <host> <service>             Tail journald for a service on a host.
 
@@ -79,10 +83,20 @@ main() {
       . "$NIXHOLD_LIB_ROOT/init.sh"
       cmd_init "$@"
       ;;
+    iso)
+      shift
+      . "$NIXHOLD_LIB_ROOT/iso.sh"
+      cmd_iso "$@"
+      ;;
     deploy)
       shift
       . "$NIXHOLD_LIB_ROOT/deploy.sh"
       cmd_deploy "$@"
+      ;;
+    update)
+      shift
+      . "$NIXHOLD_LIB_ROOT/update.sh"
+      cmd_update "$@"
       ;;
     status)
       shift

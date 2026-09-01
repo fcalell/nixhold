@@ -28,12 +28,10 @@ transitively via `inputs.nixhold.inputs.*`.
         fullName = "Alice Example";
         email = "alice@example.com";
       };
-      layout = {
-        secrets = ./secrets;
-        keysDir = ./keys;
-        ageRecipient = ./keys/op-age.pub;
-        ageIdentityWrapped = ./keys/op.age;
-      };
+      # Optional: every layout path defaults to a subpath of this
+      # flake (./secrets, ./keys/operator.pub, …). Only the repo
+      # itself can't be derived, and only the ISO needs it.
+      layout.repoUrl = "alice/nix";
       networks.tailnet = {
         type = "tailscale";
         magicDnsSuffix = "tailXXXXXX.ts.net";

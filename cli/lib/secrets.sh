@@ -136,21 +136,22 @@ nh_commit_identity_pub() {
 }
 
 # nh_unwrap_identity <out> — decrypt the passphrase-wrapped operator
-# age identity to <out> (prompts for the passphrase). Caller chmods/
-# removes <out>. Prefers the operator-local copy; falls back to the
-# fleet-committed `layout.ageIdentityWrapped` so edit/rekey work on a
-# machine that hasn't been through `nixhold init` (both are
-# passphrase-wrapped, so the fallback costs nothing in security).
+# age identity to <out> (age prompts for the passphrase on the TTY).
+# Caller chmods/removes <out>. Prefers the operator-local copy; falls
+# back to the fleet-committed `layout.ageIdentityWrapped`, so a fresh
+# clone edits secrets without ever running `nixhold init` (both copies
+# are passphrase-wrapped, so the fallback costs nothing in security —
+# it only costs a prompt per invocation instead of per machine).
 nh_unwrap_identity() {
   local out="$1" src="$NIXHOLD_IDENTITY_FILE" committed
   if [ ! -f "$src" ]; then
-    if committed="$(nh_worktree_layout_file ageIdentityWrapped)" && [ -f "$committed" ]; then
-      nh_info "no $NIXHOLD_IDENTITY_FILE — using fleet-committed identity $committed"
-      src="$committed"
-    else
-      nh_err "no operator identity at $NIXHOLD_IDENTITY_FILE — run 'nixhold init'"
+    committed="$(nh_worktree_layout_file ageIdentityWrapped)" || committed=""
+    if [ -z "$committed" ] || [ ! -f "$committed" ]; then
+      nh_err "no operator identity at $NIXHOLD_IDENTITY_FILE and no committed one in reach — run 'nixhold init', or run this from a fleet checkout that commits layout.ageIdentityWrapped"
       return 1
     fi
+    nh_info "no $NIXHOLD_IDENTITY_FILE — using the fleet-committed identity $committed ('nixhold init' persists it locally)"
+    src="$committed"
   fi
   nh_info "unlock operator identity (passphrase prompt)"
   age -d -o "$out" "$src"

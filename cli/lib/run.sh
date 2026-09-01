@@ -8,17 +8,121 @@ nh_warn() { printf '\033[33mwarn:\033[0m %s\n' "$*" >&2; }
 nh_info() { printf '\033[36m·\033[0m %s\n' "$*" >&2; }
 nh_ok() { printf '\033[32m✓\033[0m %s\n' "$*" >&2; }
 
-# Locate the operator's fleet flake — the cwd unless overridden by
-# $NIXHOLD_FLEET. Subcommands that scaffold files only refuse to
-# run outside a flake, but `init` works without one (it provisions
-# the operator-scoped identity, not fleet state).
+# Locate the operator's fleet flake. Resolution order: $NIXHOLD_FLEET
+# → nearest ancestor of $PWD holding a flake.nix (so a second worktree
+# wins over the baked default while you stand in it) →
+# $NIXHOLD_FLEET_DEFAULT, which programs.nixhold bakes into the
+# wrapped CLI. Subcommands that scaffold files refuse to run outside a
+# fleet, but `init` works without one (it provisions the
+# operator-scoped identity, not fleet state).
+#
+# Contract: only the path reaches stdout — every caller consumes this
+# through command substitution — so prompts and diagnostics go to
+# stderr.
+_NH_FLEET_ROOT="${_NH_FLEET_ROOT:-}"
+
 nh_fleet_root() {
-  local root="${NIXHOLD_FLEET:-$PWD}"
-  if [ ! -f "$root/flake.nix" ]; then
-    nh_err "no flake.nix at $root — pass NIXHOLD_FLEET=/path or cd into a fleet"
+  # Memo: command-substitution callers each run in their own subshell,
+  # so this mainly keeps one verb from walking (or prompting) twice.
+  if [ -n "$_NH_FLEET_ROOT" ]; then
+    printf '%s' "$_NH_FLEET_ROOT"
+    return 0
+  fi
+
+  if [ -n "${NIXHOLD_FLEET:-}" ]; then
+    if [ ! -f "$NIXHOLD_FLEET/flake.nix" ]; then
+      nh_err "no flake.nix at $NIXHOLD_FLEET (from \$NIXHOLD_FLEET)"
+      return 1
+    fi
+    _NH_FLEET_ROOT="$NIXHOLD_FLEET"
+    printf '%s' "$_NH_FLEET_ROOT"
+    return 0
+  fi
+
+  local dir="$PWD"
+  while :; do
+    if [ -f "$dir/flake.nix" ]; then
+      _NH_FLEET_ROOT="$dir"
+      printf '%s' "$_NH_FLEET_ROOT"
+      return 0
+    fi
+    [ "$dir" = "/" ] && break
+    dir="${dir%/*}"
+    [ -z "$dir" ] && dir="/"
+  done
+
+  local fallback="${NIXHOLD_FLEET_DEFAULT:-}"
+  if [ -n "$fallback" ]; then
+    # The module bakes the option string verbatim, so a leading $HOME
+    # arrives unexpanded; expand it without eval.
+    # shellcheck disable=SC2016 # the patterns are literal '$HOME' text
+    case "$fallback" in
+      '$HOME') fallback="$HOME" ;;
+      '$HOME/'*) fallback="$HOME/${fallback#\$HOME/}" ;;
+    esac
+    if [ -f "$fallback/flake.nix" ]; then
+      _NH_FLEET_ROOT="$fallback"
+      printf '%s' "$_NH_FLEET_ROOT"
+      return 0
+    fi
+    if [ -d "$fallback" ]; then
+      nh_err "$fallback (from \$NIXHOLD_FLEET_DEFAULT) exists but holds no flake.nix"
+      return 1
+    fi
+    nh_clone_fleet "$fallback" || return 1
+    _NH_FLEET_ROOT="$fallback"
+    printf '%s' "$_NH_FLEET_ROOT"
+    return 0
+  fi
+
+  nh_err "no fleet found — cd into a checkout (flake.nix here or above), set NIXHOLD_FLEET=/path, or enable programs.nixhold so the default checkout is baked in"
+  return 1
+}
+
+# nh_clone_fleet <dir> — the fresh-machine path: the baked default
+# checkout doesn't exist yet (first login after an ISO install), so
+# offer to clone $NIXHOLD_REPO_URL ("owner/repo", github.com assumed)
+# there. Cloned over the operator's normal SSH credentials — the repo
+# deploy key is ISO-only. Interactive by construction: no TTY means no
+# offer.
+nh_clone_fleet() {
+  local dir="$1" repo="${NIXHOLD_REPO_URL:-}" remote reply=""
+  if [ -z "$repo" ]; then
+    nh_err "no fleet at $dir and no repo baked in (set layout.repoUrl) — clone your fleet there or set NIXHOLD_FLEET"
     return 1
   fi
-  printf '%s' "$root"
+  remote="git@github.com:${repo%.git}.git"
+  if [ ! -t 2 ]; then
+    nh_err "no fleet at $dir — clone $remote there (not offering: no terminal)"
+    return 1
+  fi
+  nh_require_cmd git || return 1
+
+  nh_info "no fleet checkout at $dir"
+  if command -v gum >/dev/null 2>&1 && [ -t 0 ]; then
+    if gum confirm "Clone $remote into $dir?"; then reply=y; fi
+  else
+    printf 'Clone %s into %s? [y/N] ' "$remote" "$dir" >&2
+    read -r reply </dev/tty || reply=""
+  fi
+  case "$reply" in
+    y | Y | yes | Yes) ;;
+    *)
+      nh_err "declined — clone $remote to $dir, or run from a fleet checkout"
+      return 1
+      ;;
+  esac
+
+  mkdir -p "${dir%/*}" 2>/dev/null || true
+  if ! git clone "$remote" "$dir" >&2; then
+    nh_err "clone of $remote failed — check your SSH access to github.com"
+    return 1
+  fi
+  if [ ! -f "$dir/flake.nix" ]; then
+    nh_err "cloned $remote to $dir but it holds no flake.nix"
+    return 1
+  fi
+  nh_ok "cloned fleet to $dir"
 }
 
 # Evaluate an attr under the framework view of a host's config.

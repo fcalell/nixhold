@@ -43,11 +43,28 @@ cmd_host_rotate_key() {
   nh_ok "generated new host keypair"
 
   mkdir -p "$keys_dir/hosts/$name"
-  local oldpub_backup=""
+  local oldpub_backup="" oldescrow_backup=""
   if [ -f "$keys_dir/hosts/$name/host.pub" ]; then
     oldpub_backup="$(mktemp -t nixhold-oldpub.XXXXXX)"
     cp "$keys_dir/hosts/$name/host.pub" "$oldpub_backup"
   fi
+  if [ -f "$keys_dir/hosts/$name/host.key.age" ]; then
+    oldescrow_backup="$(mktemp -t nixhold-oldescrow.XXXXXX)"
+    cp "$keys_dir/hosts/$name/host.key.age" "$oldescrow_backup"
+  fi
+
+  # Escrow before the pubkey swap. An escrow ahead of its host.pub only
+  # holds a key nothing uses yet; a host.pub ahead of its escrow is the
+  # recovery dead end the escrow exists to prevent. Both are rolled
+  # back together if the rekey below fails. A failure here aborts
+  # before anything is swapped — rekey would fail on the same missing
+  # operator key anyway.
+  if ! nh_escrow_host_key "$name" "$newkey"; then
+    rm -f "$newkey" "$newkey.pub" "$oldpub_backup" "$oldescrow_backup"
+    nh_err "could not escrow the new host key — rotation aborted (nothing changed)"
+    return 1
+  fi
+
   cp "$newkey.pub" "$keys_dir/hosts/$name/host.pub"
   # A previously-uncommitted host.pub is untracked, and untracked
   # files are invisible to dirty git-flake eval — the recipients
@@ -68,11 +85,17 @@ cmd_host_rotate_key() {
     else
       rm -f "$keys_dir/hosts/$name/host.pub"
     fi
+    if [ -n "$oldescrow_backup" ]; then
+      cp "$oldescrow_backup" "$keys_dir/hosts/$name/host.key.age"
+      rm -f "$oldescrow_backup"
+    else
+      rm -f "$keys_dir/hosts/$name/host.key.age"
+    fi
     rm -f "$newkey" "$newkey.pub"
     nh_err "rekey failed — rotation rolled back (old key and recipients unchanged)"
     return 1
   fi
-  rm -f "$oldpub_backup"
+  rm -f "$oldpub_backup" "$oldescrow_backup"
 
   # Swap the cache to the new key, keeping the old one for recovery.
   if [ -f "$cache/ssh_host_ed25519_key" ]; then
