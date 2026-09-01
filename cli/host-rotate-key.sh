@@ -6,6 +6,21 @@
 # lost key cache (L10 recovery) or a routine key rotation; follow with
 # `nixhold host install <name>` (to ship the new key) or `deploy`.
 
+# nh_unstage_intent <root> <path> — drop an `add --intent-to-add`
+# index entry for a file the rollback deleted, so a rolled-back
+# rotation leaves no phantom "deleted file" in git status.
+nh_unstage_intent() {
+  local root="$1" path="$2" rel
+  git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  rel="$(git -C "$root" ls-files --full-name --error-unmatch -- "$path" 2>/dev/null)" || return 0
+  # Only ever drop an entry this run added: a path that exists in HEAD
+  # is committed state, and staging its deletion is not a rollback.
+  if git -C "$root" cat-file -e "HEAD:$rel" 2>/dev/null; then
+    return 0
+  fi
+  git -C "$root" rm --cached --force --quiet -- "$path" >/dev/null 2>&1 || true
+}
+
 cmd_host_rotate_key() {
   local name="${1:-}"
   if [ -z "$name" ]; then
@@ -84,15 +99,20 @@ cmd_host_rotate_key() {
       rm -f "$oldpub_backup"
     else
       rm -f "$keys_dir/hosts/$name/host.pub"
+      nh_unstage_intent "$root" "$keys_dir/hosts/$name/host.pub"
     fi
     if [ -n "$oldescrow_backup" ]; then
       cp "$oldescrow_backup" "$keys_dir/hosts/$name/host.key.age"
       rm -f "$oldescrow_backup"
     else
       rm -f "$keys_dir/hosts/$name/host.key.age"
+      nh_unstage_intent "$root" "$keys_dir/hosts/$name/host.key.age"
     fi
+    # The replacement private key never reached the cache: the old
+    # cached key is still the host's key, so "nothing changed" is
+    # literally true.
     rm -f "$newkey" "$newkey.pub"
-    nh_err "rekey failed — rotation rolled back (old key and recipients unchanged)"
+    nh_err "rekey failed — rotation rolled back (old key, recipients and ciphertexts unchanged)"
     return 1
   fi
   rm -f "$oldpub_backup" "$oldescrow_backup"

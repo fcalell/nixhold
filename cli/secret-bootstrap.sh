@@ -42,7 +42,13 @@ cmd_secret_bootstrap() {
     return 0
   fi
 
-  local added=0 name target generator template desc
+  # errexit is IGNORED inside the per-secret subshell below: it is the
+  # condition of an `if`, which disables -e for the whole subshell (and
+  # this verb is itself run as `cmd_secret_bootstrap … || …` by host
+  # add / deploy). Every step whose failure must abort that secret is
+  # checked explicitly. Exit codes out of the subshell: 0 provisioned,
+  # 2 skipped (nothing to encrypt), anything else failed.
+  local added=0 failed=0 rc name target generator template desc
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     target="$sdir/hosts/$host/$name.age"
@@ -55,20 +61,24 @@ cmd_secret_bootstrap() {
     desc="$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].description // ""')"
     nh_info "bootstrap $name${desc:+ — $desc}"
 
-    if (
+    rc=0
+    (
       set -euo pipefail
-      rfile="$(mktemp -t nixhold-rcpt.XXXXXX)"
-      tmp="$(mktemp -t nixhold-secret.XXXXXX)"
+      rfile="$(mktemp -t nixhold-rcpt.XXXXXX)" || exit 1
+      tmp="$(mktemp -t nixhold-secret.XXXXXX)" || exit 1
       chmod 600 "$tmp"
       trap 'rm -f "$rfile" "$tmp"' EXIT
 
-      nh_recipients_file "$json" "$name" "$rfile"
+      nh_recipients_file "$json" "$name" "$rfile" || exit 1
       if [ -n "$generator" ]; then
         nh_info "running generator for $name"
         # The generator is operator-declared config; run it in this
         # already-isolated subshell rather than spawning an external
         # interpreter (bash may not be on the CLI's runtime PATH).
-        { eval "$generator"; } >"$tmp"
+        { eval "$generator"; } >"$tmp" || {
+          nh_err "generator for $name failed — nothing encrypted"
+          exit 1
+        }
       elif [ -n "$template" ]; then
         printf '%s' "$template" >"$tmp"
         "${EDITOR:-vi}" "$tmp"
@@ -79,22 +89,33 @@ cmd_secret_bootstrap() {
         nh_warn "empty content for $name — skipping"
         exit 2
       fi
-      mkdir -p "$(dirname "$target")"
-      age -R "$rfile" -o "$target" "$tmp"
+      mkdir -p "$(dirname "$target")" || exit 1
+      if ! age -R "$rfile" -o "$target" "$tmp"; then
+        rm -f "$target"
+        nh_err "encryption of $target failed"
+        exit 1
+      fi
       nh_ok "encrypted $target"
       if [ "$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].sshIdentity // false')" = "true" ]; then
         nh_commit_identity_pub "$host" "$tmp" || true
       fi
-    ); then
-      added=$((added + 1))
-    fi
+    ) || rc=$?
+    case "$rc" in
+      0) added=$((added + 1)) ;;
+      2) ;; # skipped on purpose (empty content), already warned
+      *) failed=1 ;;
+    esac
   done <<<"$names"
 
   if [ "$added" -gt 0 ]; then
     nh_ok "bootstrapped $added secret(s) on $host"
     nh_info "review + commit: git -C \"$(nh_fleet_root)\" add and commit $sdir/hosts/$host"
-  else
+  elif [ "$failed" -eq 0 ]; then
     nh_info "nothing to bootstrap on $host (all present or skipped)"
+  fi
+  if [ "$failed" -ne 0 ]; then
+    nh_err "some secrets on $host were NOT provisioned — fix the errors above and re-run"
+    return 1
   fi
 }
 

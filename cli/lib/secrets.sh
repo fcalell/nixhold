@@ -117,6 +117,13 @@ nh_recipients_file() {
 # the plaintext is not a valid SSH private key.
 nh_commit_identity_pub() {
   local host="$1" plain="$2" keys_dir out root
+  # An absent/empty plaintext means the decrypt (or the generator)
+  # already failed: refuse before ssh-keygen turns that into a
+  # misleading "not a valid SSH private key".
+  if [ ! -s "$plain" ]; then
+    nh_warn "no plaintext for the sshIdentity secret on $host — identity.pub NOT written"
+    return 1
+  fi
   keys_dir="$(nh_worktree_keys_dir)" || return 0
   out="$keys_dir/hosts/$host/identity.pub"
   mkdir -p "$keys_dir/hosts/$host"
@@ -142,8 +149,14 @@ nh_commit_identity_pub() {
 # clone edits secrets without ever running `nixhold init` (both copies
 # are passphrase-wrapped, so the fallback costs nothing in security —
 # it only costs a prompt per invocation instead of per machine).
+#
+# A typo costs a whole verb (rekey walks every host), so an
+# interactive operator gets 3 attempts; age reads the passphrase from
+# the controlling TTY itself, so a retry is just re-invoking it. With
+# no terminal in reach there is nobody to re-prompt: fail on the first
+# miss. <out> exists only on success.
 nh_unwrap_identity() {
-  local out="$1" src="$NIXHOLD_IDENTITY_FILE" committed
+  local out="$1" src="$NIXHOLD_IDENTITY_FILE" committed attempts=1 n=1
   if [ ! -f "$src" ]; then
     committed="$(nh_worktree_layout_file ageIdentityWrapped)" || committed=""
     if [ -z "$committed" ] || [ ! -f "$committed" ]; then
@@ -153,6 +166,21 @@ nh_unwrap_identity() {
     nh_info "no $NIXHOLD_IDENTITY_FILE — using the fleet-committed identity $committed ('nixhold init' persists it locally)"
     src="$committed"
   fi
-  nh_info "unlock operator identity (passphrase prompt)"
-  age -d -o "$out" "$src"
+  if [ -t 0 ] || [ -t 2 ]; then
+    attempts=3
+  fi
+  while :; do
+    nh_info "unlock operator identity (passphrase prompt)"
+    if age -d -o "$out" "$src"; then
+      return 0
+    fi
+    rm -f "$out"
+    if [ "$n" -ge "$attempts" ]; then
+      break
+    fi
+    nh_err "incorrect passphrase — $((attempts - n)) attempt(s) left"
+    n=$((n + 1))
+  done
+  nh_err "could not unlock the operator identity at $src"
+  return 1
 }

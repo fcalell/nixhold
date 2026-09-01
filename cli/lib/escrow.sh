@@ -51,7 +51,11 @@ nh_escrow_host_key() {
     nh_err "escrow encryption failed for $host (recipient $rcpt)"
     return 1
   fi
-  mv "$out.tmp" "$out"
+  if ! mv "$out.tmp" "$out"; then
+    rm -f "$out.tmp"
+    nh_err "could not write the escrow at $out"
+    return 1
+  fi
   chmod 0644 "$out"
   nh_ok "escrowed host key to $out"
 
@@ -96,14 +100,15 @@ nh_resolve_host_key() {
   fi
 
   # Subshell + trap: the unwrapped operator identity never outlives the
-  # decrypt, even on failure.
+  # decrypt, even on failure. errexit is ignored inside — the subshell
+  # is an `if` condition — so each step is checked explicitly.
   if ! (
     set -euo pipefail
-    idfile="$(mktemp -t nixhold-id.XXXXXX)"
+    idfile="$(mktemp -t nixhold-id.XXXXXX)" || exit 1
     chmod 600 "$idfile"
     trap 'rm -f "$idfile"' EXIT
-    nh_unwrap_identity "$idfile"
-    age -d -i "$idfile" -o "$dest/ssh_host_ed25519_key" "$esc"
+    nh_unwrap_identity "$idfile" || exit 1
+    age -d -i "$idfile" -o "$dest/ssh_host_ed25519_key" "$esc" || exit 1
   ); then
     rm -f "$dest/ssh_host_ed25519_key"
     nh_err "could not decrypt $esc (wrong passphrase, or the escrow predates the current operator key)"
@@ -153,18 +158,20 @@ nh_ensure_repo_deploy_key() {
   # Generate inside a private dir the trap wipes: the deploy key's
   # plaintext exists only between ssh-keygen and age. The ciphertext is
   # copied out before the trap fires; the pubkey is the subshell's only
-  # stdout.
+  # stdout. errexit is ignored inside — the caller tests our exit code
+  # — so every step exits explicitly; otherwise a failed cp would still
+  # report a key that was never written.
   pub="$(
     (
       set -euo pipefail
-      d="$(mktemp -d -t nixhold-repokey.XXXXXX)"
+      d="$(mktemp -d -t nixhold-repokey.XXXXXX)" || exit 1
       chmod 700 "$d"
       trap 'rm -rf "$d"' EXIT
-      ssh-keygen -t ed25519 -N "" -C "nixhold-repo-deploy" -f "$d/key" >/dev/null
-      age -R "$rcpt" -o "$d/key.age" "$d/key"
-      mkdir -p "$keys_dir"
-      cp "$d/key.age" "$out"
-      chmod 0644 "$out"
+      ssh-keygen -t ed25519 -N "" -C "nixhold-repo-deploy" -f "$d/key" >/dev/null || exit 1
+      age -R "$rcpt" -o "$d/key.age" "$d/key" || exit 1
+      mkdir -p "$keys_dir" || exit 1
+      cp "$d/key.age" "$out" || exit 1
+      chmod 0644 "$out" || exit 1
       cat "$d/key.pub"
     )
   )" || {

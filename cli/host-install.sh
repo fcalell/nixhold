@@ -414,29 +414,52 @@ nh_darwin_install() {
     keydir="$(mktemp -d)"
     # shellcheck disable=SC2064 # expand $keydir now, it goes out of scope
     trap "rm -rf '$keydir'" EXIT
+    # Checked explicitly, not through errexit: this verb runs under
+    # callers that test its exit code (-e is ignored there), and a
+    # missed failure here commits a host.pub that is not the machine's
+    # actual key — every rekeyed secret would then be undecryptable.
     if nh_stage_host_key "$name" "$keydir"; then
       nh_info "installing the resolved host key to $hostkey (sudo)"
-      sudo install -m 0600 "$keydir/ssh_host_ed25519_key" "$hostkey"
-      sudo install -m 0644 "$keydir/ssh_host_ed25519_key.pub" "$hostkey.pub"
+      sudo install -m 0600 "$keydir/ssh_host_ed25519_key" "$hostkey" || {
+        nh_err "could not install the host key at $hostkey"
+        return 1
+      }
+      sudo install -m 0644 "$keydir/ssh_host_ed25519_key.pub" "$hostkey.pub" || {
+        nh_err "could not install $hostkey.pub"
+        return 1
+      }
     else
       nh_info "generating host key at $hostkey (sudo)"
-      sudo ssh-keygen -t ed25519 -N "" -C "nixhold-host-$name" -f "$hostkey" >/dev/null
+      sudo ssh-keygen -t ed25519 -N "" -C "nixhold-host-$name" -f "$hostkey" >/dev/null || {
+        nh_err "could not generate a host key at $hostkey"
+        return 1
+      }
     fi
   fi
   if [ ! -f "$hostkey.pub" ]; then
     nh_info "deriving $hostkey.pub (sudo)"
-    sudo sh -c "ssh-keygen -y -f '$hostkey' > '$hostkey.pub' && chmod 0644 '$hostkey.pub'"
+    sudo sh -c "ssh-keygen -y -f '$hostkey' > '$hostkey.pub' && chmod 0644 '$hostkey.pub'" || {
+      nh_err "$hostkey is not a valid SSH private key — cannot derive its pubkey"
+      return 1
+    }
   fi
 
   # 2. The committed recipient must be the machine's ACTUAL key —
   #    agenix decrypts with $hostkey, regardless of what host.pub says.
   local keys_dir committed machine_pub
-  keys_dir="$(nh_worktree_keys_dir)"
+  keys_dir="$(nh_worktree_keys_dir)" || return 2
   committed="$keys_dir/hosts/$name/host.pub"
   machine_pub="$(awk '{print $1 " " $2}' "$hostkey.pub")"
+  if [ -z "$machine_pub" ]; then
+    nh_err "could not read $hostkey.pub — refusing to touch the committed recipient"
+    return 1
+  fi
   if [ ! -f "$committed" ] || [ "$(awk '{print $1 " " $2}' "$committed")" != "$machine_pub" ]; then
-    mkdir -p "$keys_dir/hosts/$name"
-    cp "$hostkey.pub" "$committed"
+    mkdir -p "$keys_dir/hosts/$name" || return 1
+    cp "$hostkey.pub" "$committed" || {
+      nh_err "could not write $committed"
+      return 1
+    }
     if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
       git -C "$root" add --intent-to-add "$committed" 2>/dev/null || true
     fi

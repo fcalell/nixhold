@@ -25,16 +25,31 @@ cmd_secret_rekey() {
     return 0
   fi
 
+  # errexit is IGNORED throughout this subshell whenever the caller
+  # tests our exit code — `host rotate-key` runs `if ! cmd_secret_rekey`
+  # and `host install` runs `cmd_secret_rekey || …`, which disables -e
+  # for the whole callee (re-setting it here changes nothing). Every
+  # failure that must stop or mark the run is therefore checked
+  # explicitly below; `set -e` remains only for direct invocation.
   (
     set -euo pipefail
     # One private workdir for identity + per-secret temp files; the
     # trap removes it whole, so a mid-loop failure can't leak
     # decrypted plaintext into $TMPDIR.
-    workdir="$(mktemp -d -t nixhold-rekey.XXXXXX)"
+    workdir="$(mktemp -d -t nixhold-rekey.XXXXXX)" || {
+      nh_err "could not create a private workdir — nothing was rekeyed"
+      exit 2
+    }
     chmod 700 "$workdir"
     trap 'rm -rf "$workdir"' EXIT
     idfile="$workdir/identity"
-    nh_unwrap_identity "$idfile"
+    # Ahead of any per-secret work: with no identity nothing can be
+    # decrypted, and a caller that rolls back (rotate-key) must see the
+    # failure while every ciphertext is still untouched.
+    nh_unwrap_identity "$idfile" || {
+      nh_err "operator identity unavailable — no secret was rekeyed"
+      exit 1
+    }
 
     local count=0 failed=0 host platform json name target rfile tmp
     while IFS= read -r host; do
@@ -63,11 +78,26 @@ cmd_secret_rekey() {
           failed=1
           continue
         fi
-        age -d -i "$idfile" -o "$tmp" "$target"
+        if ! age -d -i "$idfile" -o "$tmp" "$target"; then
+          rm -f "$tmp"
+          nh_warn "hosts/$host/$name.age is not decryptable by the operator identity — NOT rekeyed"
+          failed=1
+          continue
+        fi
         # Encrypt to a sibling temp + rename so a failure can't leave
         # the committed ciphertext truncated.
-        age -R "$rfile" -o "$target.tmp" "$tmp"
-        mv "$target.tmp" "$target"
+        if ! age -R "$rfile" -o "$target.tmp" "$tmp"; then
+          rm -f "$target.tmp" "$tmp"
+          nh_warn "re-encryption of hosts/$host/$name.age failed — the original is untouched"
+          failed=1
+          continue
+        fi
+        if ! mv "$target.tmp" "$target"; then
+          rm -f "$target.tmp" "$tmp"
+          nh_warn "could not replace hosts/$host/$name.age — the original is untouched"
+          failed=1
+          continue
+        fi
         # Plaintext in hand: refresh the committed identity pubkey
         # (also the backfill path for fleets predating identity.pub).
         if [ "$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].sshIdentity // false')" = "true" ]; then
