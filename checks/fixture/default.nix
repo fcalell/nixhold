@@ -16,8 +16,10 @@ self.lib.mkFleet {
     # mkFleet roots the layout defaults at `inputs.self`; a forker's
     # self is their fleet repo, so the fixture substitutes its own
     # directory — that is what makes the defaults resolve to the
-    # keys/ and secrets/ trees committed beside this file.
-    self = ./.;
+    # keys/ and secrets/ trees committed beside this file. It is a
+    # store path of its own, exactly like a real `self` — see
+    # ./self.nix for why that shape matters.
+    self = import ./self.nix;
     nixhold = self // {
       inputs = inputs;
     };

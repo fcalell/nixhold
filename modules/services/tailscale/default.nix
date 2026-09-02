@@ -1,13 +1,8 @@
-# Tailscale service.
+# Tailscale service — option namespace.
 #
-# By default the framework supplies the daemon + firewall integration
-# and joining is a one-time out-of-band `tailscale up` (auth against
-# the operator's Tailscale account). Set `authKeySecret` to the name
-# of a `nixhold.secrets.<name>` holding a pre-auth key (generated on
-# the Tailscale admin console's Keys page) for unattended join on
-# activation — the framework declares that secret and wires
-# `services.tailscale.authKeyFile`. Bootstrap the key with
-# `nixhold secret edit <host> <name>` before install.
+# Split from the implementation (./nixos.nix) for the reason spelled
+# out in ../openssh/default.nix: the namespace is baseline-wide,
+# the implementation is per-platform and profile-attached.
 { config, lib, ... }:
 let
   cfg = config.nixhold.services.tailscale;
@@ -16,6 +11,17 @@ in
 {
   options.nixhold.services.tailscale = {
     enable = lib.mkEnableOption "the Tailscale daemon";
+
+    implementation = lib.mkOption {
+      internal = true;
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = ''
+        Set by the platform implementation module when one is
+        attached. Enabling a service whose implementation this host
+        never imported would otherwise be a silent no-op.
+      '';
+    };
 
     authKeySecret = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
@@ -46,23 +52,8 @@ in
     };
   };
 
-  config = lib.mkIf cfg.enable (
-    lib.mkMerge [
-      {
-        services.tailscale = {
-          enable = true;
-          openFirewall = lib.mkDefault true;
-        };
-      }
-
-      (lib.mkIf (cfg.authKeySecret != null) {
-        nixhold.secrets.${cfg.authKeySecret} = {
-          owner = "root";
-          mode = "0400";
-          description = "Tailscale pre-auth key (tskey-auth-…) — create at login.tailscale.com/admin/settings/keys";
-        };
-        services.tailscale.authKeyFile = config.age.secrets.${cfg.authKeySecret}.path;
-      })
-    ]
-  );
+  config.assertions = lib.optional (cfg.enable && cfg.implementation == null) {
+    assertion = false;
+    message = "nixhold.services.tailscale is enabled but no implementation is attached on this host — import `nixhold.modules.services.tailscale` (NixOS only).";
+  };
 }

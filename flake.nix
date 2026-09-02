@@ -43,6 +43,7 @@
     let
       forAllSystems = nixpkgs.lib.genAttrs [
         "x86_64-linux"
+        "aarch64-linux"
         "aarch64-darwin"
       ];
 
@@ -66,8 +67,8 @@
       # without pulling in the whole catalogue.
       modules = {
         services = {
-          openssh = ./modules/services/openssh.nix;
-          tailscale = ./modules/services/tailscale.nix;
+          openssh = ./modules/services/openssh/nixos.nix;
+          tailscale = ./modules/services/tailscale/nixos.nix;
         };
         infra = {
           caddy = ./modules/infra/caddy.nix;
@@ -115,6 +116,15 @@
         in
         nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
           fixture-server = fixture.nixosConfigurations.fixture-server.config.system.build.toplevel;
+
+          # The fleet's own installer image. Evaluating it covers the
+          # whole ISO module — including the "THIN by contract"
+          # assertion that no baked ciphertext is a subpath of the
+          # fleet checkout, which is why the fixture hands mkFleet a
+          # store path for `self` (see checks/fixture/self.nix): a
+          # bare `./.` would make the fleet source indistinguishable
+          # from the framework's own.
+          fixture-iso = fixture.packages.x86_64-linux.installerIso;
         }
         // nixpkgs.lib.optionalAttrs (system == "aarch64-darwin") {
           fixture-mac = fixture.darwinConfigurations.fixture-mac.system;

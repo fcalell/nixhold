@@ -117,7 +117,7 @@ read from disk. A minimal fork passes only `inputs`, `identity`,
 |---|---|
 | `inputs` | the forker's flake-call attrset; heavy deps resolved from `inputs.nixhold.inputs.*`; `inputs.self` roots the layout defaults |
 | `identity` | `{ username, fullName, email }` |
-| `layout` (optional) | CLI filesystem contract; every field defaults from `inputs.self`: `secrets` → `/secrets`, `hostsFile` → `/hosts.nix`, `modulesDir` → `/modules`, `profilesDir` → `/profiles`, `keysDir` → `/keys`, `ageRecipient` → `/keys/operator.pub`, `ageIdentityWrapped` → `/keys/operator.age`. `repoUrl` (`owner/repo`, github.com assumed, cloned over SSH via the deploy key) is the one non-derivable field — required to build the installer ISO, unused otherwise. Defaulting is computed values off `self`, not filesystem discovery (principle 14 intact) |
+| `layout` (optional) | CLI filesystem contract; every field defaults from `inputs.self`: `secrets` → `/secrets`, `hostsFile` → `/hosts.nix`, `modulesDir` → `/modules`, `profilesDir` → `/profiles`, `keysDir` → `/keys`, `ageRecipient` → `/keys/operator.pub`, `ageIdentityWrapped` → `/keys/operator.age`. `repoUrl` is the one non-derivable field — a bare `owner/repo` slug (github.com assumed, cloned over SSH via the deploy key), typed to reject URL schemes and a `.git` suffix since both the remote and `programs.nixhold.fleetDir` are built out of it; required to build the installer ISO, unused otherwise. Defaulting is computed values off `self`, not filesystem discovery (principle 14 intact) |
 | `networks` | `{ <name> = { type, magicDnsSuffix?, domain?, dns?, tls? }; }` |
 | `hosts` | `{ <name> = { arch, profile, modules, networks, publicIp?, publicFqdn?, loginPubkey? }; }` |
 
@@ -138,9 +138,16 @@ Rules:
 - Outputs: `nixosConfigurations`, `darwinConfigurations`, plus
   re-exported `packages`/`apps` (the `nixhold` CLI), `formatter`
   (nixfmt), and `packages.<arch>.installerIso` per Linux arch with
-  ≥1 host. **No `checks` gate** — lint shells out to `nix eval`
-  and can't run inside a pure flake-check sandbox; build-blocking
-  invariants live as module assertions instead.
+  ≥1 host — emitted only once the image is actually buildable:
+  `layout.repoUrl` set *and* both baked ciphertexts
+  (`layout.ageIdentityWrapped`, `keys/repo.key.age`) present. A
+  fleet that hasn't reached `nixhold iso` yet simply has no such
+  attribute, so `nix flake check` / `nix flake show` stay green;
+  `nixhold iso` is the one place that explains what is missing, and
+  lint warns about the absent deploy key. **No `checks` gate** —
+  lint shells out to `nix eval` and can't run inside a pure
+  flake-check sandbox; build-blocking invariants live as module
+  assertions instead.
 - `profile` is a Nix value (attr reference), never a string. Typos
   fail at eval. No name-resolution layer anywhere.
 - Platform module bundles are single exports
@@ -173,11 +180,18 @@ Concepts, not filesystem (principle 14):
 
 - **Modules (layer 1)** declare typed options; activate nothing by
   themselves. Baseline kinds (identity, secrets, fleet, types,
-  layout, home) auto-import on every host. Services + infra are
-  exposed as flake outputs and imported only by profiles or
-  `hosts.<n>.modules` — a host that doesn't import a service
-  module has no `nixhold.services.<x>` options at all
-  (platform-confusion impossible by construction).
+  layout, home) auto-import on every host — and so does the shipped
+  services' *option namespace* (`modules/services/default.nix`, the
+  declarations only). `nixhold.services` is therefore part of every
+  host's readable surface on both platforms, which is what lets
+  `nixhold status` walk it without knowing which profile a host
+  drew. The platform *implementations* stay separate — the value
+  behind `modules.services.<name>` is `<service>/nixos.nix`, which
+  re-imports the same declarations and adds the NixOS config — and
+  are imported only by profiles or `hosts.<n>.modules`. Enabling a
+  service whose implementation this host never imported is an
+  assertion failure, not a silent no-op; infra modules keep the
+  older shape (no options unless imported).
 - **Profiles (layer 2)** are opinionated host-kind bundles: import
   service/infra modules, set defaults. Shipped:
   `server`, `desktopLinux`, `workstationDarwin` (matching the
@@ -471,8 +485,17 @@ equals repo + passphrase, the same boundary as principle 16:
   `--remote` path needs zero target-side typing);
 - two ciphertexts: `keys/operator.age` (wrapped operator
   identity) and `keys/repo.key.age` (repo deploy key) — the
-  passphrase alone unlocks clone, push, escrow, and secrets;
-- `layout.repoUrl` (required to build the ISO);
+  passphrase alone unlocks clone, push, escrow, and secrets. Each
+  is re-added *by content* (`builtins.path`) rather than coerced
+  out of the fleet checkout, which would put the whole checkout —
+  hosts, ciphertexts, escrows — in the squashfs. The ISO module
+  asserts it: every `/etc/nixhold/keys/*` entry must be a store
+  path of its own, and the `fixture-iso` check evaluates the
+  fixture's image so a regression fails in CI;
+- `layout.repoUrl` (required to build the ISO), plus
+  `$NIXHOLD_IDENTITY_FILE` and `$NIXHOLD_REPO_KEY_FILE` pointing
+  the CLI at the two ciphertexts, and github.com's published SSH
+  host keys so the first clone needs no fingerprint prompt;
 - a console banner printing the DHCP address + the one command to
   run; avahi (`root@nixhold-installer.local`).
 

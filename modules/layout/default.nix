@@ -1,6 +1,23 @@
 { lib, ... }:
 let
   inherit (lib) mkOption types;
+
+  # `owner/repo` and nothing else. Both consumers *build* strings out
+  # of this value — the SSH remote (`git@github.com:<slug>.git`) and
+  # `programs.nixhold.fleetDir` (`<operator home>/<basename>`) — so a
+  # scheme, a host, or a `.git` suffix silently yields a broken remote
+  # and a nonsense checkout path. Constraining the type turns that into
+  # an eval error at the one place the value is declared.
+  repoSlug =
+    let
+      shape = types.strMatching "[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*";
+    in
+    shape
+    // {
+      name = "repoSlug";
+      description = ''GitHub repository slug "owner/repo" (no URL scheme, no host, no ".git" suffix)'';
+      check = v: shape.check v && !(lib.hasSuffix ".git" v);
+    };
 in
 {
   # The `layout` contract: the CLI's filesystem coordinates, all
@@ -89,16 +106,18 @@ in
     };
 
     repoUrl = mkOption {
-      type = types.nullOr types.str;
+      type = types.nullOr repoSlug;
       default = null;
       description = ''
-        The fleet repository as `owner/repo` (github.com is
-        assumed; it is cloned and pushed over SSH using the
-        committed deploy key `keys/repo.key.age`). The one layout
-        field nothing can derive from the flake root. Required only
-        to build the installer ISO — which must reach the fleet
-        repo with nothing but the operator passphrase — and unused
-        otherwise.
+        The fleet repository as `owner/repo` — a bare slug, not a
+        URL: github.com is assumed, and the remote
+        (`git@github.com:owner/repo.git`) is built from it, as is
+        `programs.nixhold.fleetDir`. It is cloned and pushed over
+        SSH using the committed deploy key `keys/repo.key.age`.
+        The one layout field nothing can derive from the flake
+        root. Required only to build the installer ISO — which
+        must reach the fleet repo with nothing but the operator
+        passphrase — and unused otherwise.
       '';
       example = "alice/nix";
     };

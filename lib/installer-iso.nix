@@ -10,6 +10,19 @@
 # so it goes stale only when the repo location, the login keys, the
 # operator identity, or the deploy key change.
 #
+# "Thin" is a property of how the ciphertexts are baked, not just of
+# what is named here: `mkFleet` hands over paths *inside the fleet
+# checkout*, and a path coerced straight into `environment.etc`
+# carries its whole store path — the entire checkout (hosts,
+# ciphertexts, escrows) — into the squashfs. `builtins.path` re-adds
+# each file as a store path of its own, by content, so the closure
+# holds the two files and nothing around them.
+#
+# The CLI finds both through the environment (see `NIXHOLD_*` below):
+# `$NIXHOLD_IDENTITY_FILE` is the wrapped operator identity every
+# verb unwraps, `$NIXHOLD_REPO_KEY_FILE` the deploy key
+# `nh_repo_git` clones and pushes the fleet repo with.
+#
 # Nothing baked here is unencrypted-secret: stick + passphrase
 # equals repo + passphrase, the same boundary as principle 16.
 {
@@ -19,34 +32,35 @@
   repoDeployKey,
   diskoPackage,
 }:
-{ lib, pkgs, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 let
   # `<owner>/<repo>` → `<repo>`, matching `programs.nixhold.fleetDir`:
   # the clone the operator makes on the target lands at the same
   # relative place the installed system will look for it.
   repoBasename = lib.last (lib.splitString "/" repoUrl);
 
-  # Both ciphertexts are baked by path, which means they must exist
-  # when the image is built. This is build-input checking of two
-  # declared layout artifacts, not filesystem discovery — the same
-  # exception principle 14 already grants the committed pubkeys under
-  # `layout.keysDir`. Nothing is enumerated; both paths are values
-  # computed by `mkFleet`.
-  bake =
-    what: hint: path:
-    if builtins.pathExists path then
-      path
-    else
-      throw "nixhold installer ISO: no ${what} at ${toString path} — ${hint}";
+  # One ciphertext → one store path, holding that file and nothing
+  # else. `mode` (rather than the default symlink) copies the byte
+  # content into the image's /etc, so the running system never follows
+  # a link back into a store path it did not need. `mkFleet` only
+  # emits `installerIso` once both files exist, so there is no
+  # existence check to make here.
+  bake = name: path: {
+    source = builtins.path {
+      inherit path;
+      inherit name;
+    };
+    mode = "0400";
+  };
 
   keysEtc = {
-    "nixhold/keys/operator.age".source =
-      bake "wrapped operator identity" "run `nixhold init` and commit `layout.ageIdentityWrapped`"
-        ageIdentityWrapped;
-
-    "nixhold/keys/repo.key.age".source =
-      bake "repo deploy key escrow" "run `nixhold iso`, which generates and escrows it before building"
-        repoDeployKey;
+    "nixhold/keys/operator.age" = bake "nixhold-operator.age" ageIdentityWrapped;
+    "nixhold/keys/repo.key.age" = bake "nixhold-repo.key.age" repoDeployKey;
   };
 in
 {
@@ -101,6 +115,18 @@ in
     "nixhold-installer".text = "${repoUrl}\n";
   };
 
+  # THIN by contract, asserted instead of merely stated: every file
+  # this image bakes under /etc/nixhold/keys must be a store path of
+  # its own. A path taken straight out of the fleet checkout is a
+  # store *sub*path, and carrying one here puts the whole checkout —
+  # every host, ciphertext and escrow — into the squashfs. The check
+  # is on the merged config, so it also holds for entries a fleet
+  # adds itself.
+  assertions = lib.mapAttrsToList (name: entry: {
+    assertion = builtins.dirOf (toString entry.source) == builtins.storeDir;
+    message = "nixhold installer ISO: /etc/${name} is baked from ${toString entry.source}, which lives inside another store path — all of it would land in the image. Re-add the file by content with `builtins.path`.";
+  }) (lib.filterAttrs (name: _: lib.hasPrefix "nixhold/keys/" name) config.environment.etc);
+
   # `environment.variables` (not `sessionVariables`) — these have to
   # reach the autologin root console shell, which reads /etc/profile.
   # The CLI's own resolution honours a pre-set value, so an operator
@@ -108,7 +134,27 @@ in
   environment.variables = {
     NIXHOLD_REPO_URL = repoUrl;
     NIXHOLD_IDENTITY_FILE = "/etc/nixhold/keys/operator.age";
+    NIXHOLD_REPO_KEY_FILE = "/etc/nixhold/keys/repo.key.age";
     NIXHOLD_FLEET_DEFAULT = "/root/${repoBasename}";
+  };
+
+  # The clone is the first thing `host install` does, on a machine
+  # with no known_hosts and no operator at the keyboard to confirm a
+  # fingerprint. github.com's published host keys ship with the image,
+  # so the deploy key meets a host it already trusts.
+  programs.ssh.knownHosts = {
+    "github.com-ed25519" = {
+      hostNames = [ "github.com" ];
+      publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+    };
+    "github.com-ecdsa" = {
+      hostNames = [ "github.com" ];
+      publicKey = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=";
+    };
+    "github.com-rsa" = {
+      hostNames = [ "github.com" ];
+      publicKey = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=";
+    };
   };
 
   # Tool belt, no `gh`: the deploy key is the git-host credential, so

@@ -84,16 +84,39 @@ let
 
   nixosConfigurations = lib.mapAttrs mkNixosHost linuxHosts;
 
-  # The ISO authorizes the operator's login keys on root. Read them
-  # off a built host instead of re-deriving: `fleet.derived` is the
-  # single place per-host `loginPubkey` defaults resolve, and every
-  # host in a fleet sees the same union.
+  # The ISO authorizes the operator's login keys on root. It needs
+  # exactly one derived value, so evaluate exactly the modules that
+  # derive it — the same `nixhold.fleet` namespace every host carries,
+  # with no platform, no profile and no operator modules attached.
+  # Reading it off a host instead would couple the image to that
+  # host's whole eval: an unrelated error anywhere in the
+  # alphabetically-first Linux host would surface as an ISO failure.
+  fleetNamespace = lib.evalModules {
+    modules = [
+      ../modules/layout
+      ../modules/fleet
+      ../modules/fleet/derived.nix
+      {
+        nixhold.layout = resolvedLayout;
+        nixhold.fleet = fleetView;
+      }
+    ];
+  };
+
   operatorAuthorizedKeys =
-    (lib.head (lib.attrValues nixosConfigurations)).config.nixhold.fleet.derived.operatorAuthorizedKeys;
+    let
+      keys = fleetNamespace.config.nixhold.fleet.derived.operatorAuthorizedKeys;
+    in
+    if keys == [ ] then
+      throw "nixhold installer ISO: no operator login pubkeys — the image would boot with root unreachable. Run `nixhold secret bootstrap <host> <name>` for a secret declared `sshIdentity = true` (it commits `keys/hosts/<host>/identity.pub`), or set `hosts.<host>.loginPubkey`"
+    else
+      keys;
 
   # One image per Linux arch the fleet actually has a host on — the
   # ISO exists to install *this* fleet's hosts.
   isoArches = lib.unique (lib.mapAttrsToList (_: h: h.arch) linuxHosts);
+
+  repoDeployKey = resolvedLayout.keysDir + "/repo.key.age";
 
   mkInstallerIso =
     arch:
@@ -102,25 +125,31 @@ let
       modules = [
         "${nixpkgs}/nixos/modules/installer/cd-dvd/installation-cd-minimal.nix"
         (import ./installer-iso.nix {
-          inherit operatorAuthorizedKeys;
+          inherit operatorAuthorizedKeys repoDeployKey;
           repoUrl = resolvedLayout.repoUrl;
           ageIdentityWrapped = resolvedLayout.ageIdentityWrapped;
-          repoDeployKey = resolvedLayout.keysDir + "/repo.key.age";
           diskoPackage = inputs.nixhold.inputs.disko.packages.${arch}.disko;
         })
       ];
     }).config.system.build.isoImage;
 
-  # The attr is always present so discovery stays predictable: a
-  # fleet that hasn't named its repo gets the reason on force,
-  # not a missing attribute.
-  isoPackages = lib.genAttrs isoArches (arch: {
-    installerIso =
-      if resolvedLayout.repoUrl == null then
-        throw "nixhold: set layout.repoUrl (\"owner/repo\") to build the installer ISO — the image has to know which fleet repo to clone"
-      else
-        mkInstallerIso arch;
-  });
+  # The attr exists only for a fleet the image can actually be built
+  # for: a repo to clone plus both ciphertexts on disk. Emitting it
+  # unconditionally would make `nix flake check` / `nix flake show`
+  # fail on every fleet that has not reached `nixhold iso` yet, since
+  # both force the attribute. `nixhold iso` is the verb that explains
+  # what is missing, and lint warns about the absent deploy key —
+  # neither needs the package to exist to do that.
+  isoBakeable =
+    resolvedLayout.repoUrl != null
+    && builtins.pathExists resolvedLayout.ageIdentityWrapped
+    && builtins.pathExists repoDeployKey;
+
+  isoPackages = lib.optionalAttrs isoBakeable (
+    lib.genAttrs isoArches (arch: {
+      installerIso = mkInstallerIso arch;
+    })
+  );
 
   mkDarwinHost =
     name: host:
