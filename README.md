@@ -6,7 +6,8 @@ one source of truth. Set identity, network topology, and a host
 roster; the framework wires the system user, home-manager, agenix
 secrets, Caddy/TLS, firewall, cross-host SSH, and an operator CLI.
 
-Status: **pre-v1.** The architecture is the source of truth in
+Status: **pre-v1.** The implemented design is the source of truth in
+[ARCHITECTURE.md](./ARCHITECTURE.md); planned work is in
 [ROADMAP.md](./ROADMAP.md); this README is the practical quickstart.
 
 ## How a fleet consumes it
@@ -107,4 +108,5 @@ Day-to-day changes afterwards: `nixhold deploy mac`.
 - **Profiles** — `nixhold.profiles.{server,desktopLinux,workstationDarwin}`,
   composable / extendable in your own repo.
 
-See [ROADMAP.md](./ROADMAP.md) for the full design and rationale.
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design and
+rationale, and [ROADMAP.md](./ROADMAP.md) for what is still planned.

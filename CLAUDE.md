@@ -5,10 +5,14 @@ dogfoods it lives in a separate repo at `~/nix/`.
 
 ## Source of truth
 
-**`ROADMAP.md` is the architecture spec.** Every architectural
-decision is locked there. Before designing anything new, read the
-relevant section. Before implementing anything, cross-reference
-it.
+**`ARCHITECTURE.md` is the architecture spec** — the framework as
+implemented; every decision there is locked. **`ROADMAP.md` is the
+plan** — only work that is not implemented yet, each item with its
+trigger. Before designing anything new, read the relevant
+ARCHITECTURE section and check whether the ROADMAP already holds
+the item. Before implementing anything, cross-reference both. When
+a roadmap item lands, it moves into ARCHITECTURE and leaves the
+ROADMAP.
 
 ## Standing directives
 
@@ -22,9 +26,9 @@ it.
   invocation over an underlying tool," per Principle 15.
 - One operator, 1–10 hosts target scale. No multi-operator, no
   per-secret ACLs, no observability stack, no LUKS.
-- Architectural changes go through ROADMAP first. Draft the
+- Architectural changes go through ARCHITECTURE first. Draft the
   section, surface 2–4 decisions for the user to lock, then edit
-  ROADMAP. Implementation follows the locked design.
+  ARCHITECTURE. Implementation follows the locked design.
 
 ## Repo layout
 

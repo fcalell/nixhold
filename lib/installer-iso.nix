@@ -1,4 +1,4 @@
-# The fleet installer ISO's own module, per ROADMAP "Fleet
+# The fleet installer ISO's own module, per ARCHITECTURE "Fleet
 # installer ISO". Not part of either baseline bundle — the only
 # consumer is `mkFleet`, which pairs it with nixpkgs'
 # `installation-cd-minimal` and exposes the result as

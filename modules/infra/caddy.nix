@@ -4,15 +4,15 @@
 # `pathPrefix`) collapse into a single vhost with multiple handle
 # blocks.
 #
-# Addressing depends on network type (see ROADMAP "Tailnet TLS
-# provisioning"):
+# Addressing depends on network type (see ARCHITECTURE "Tailnet
+# TLS"):
 #   - tailscale → FQDN is the node's own MagicDNS name
 #     (`<host>.<magicDnsSuffix>`); `subdomain` is rejected, services
 #     differentiate by pathPrefix; TLS is a `tailscale cert` fetched by
 #     a systemd oneshot + weekly timer, reloaded via a path unit.
 #   - internet  → FQDN is `<subdomain>.<domain>`; TLS via caddy ACME.
 #
-# Auth follows the network type (see ROADMAP "Tailnet identity
+# Auth follows the network type (see ARCHITECTURE "Tailnet identity
 # auth"): a tailscale endpoint with `auth = true` (the default) gets a
 # `forward_auth` to tailscale's nginx-auth daemon, which resolves the
 # source address to a tailnet login and copies the identity headers to
@@ -20,7 +20,7 @@
 # network, which has no identity mechanism yet — strips those same
 # headers on the way in, so a backend can never see a forged one.
 #
-# Auto-activates from data — no enable knob, per ROADMAP
+# Auto-activates from data — no enable knob, per ARCHITECTURE
 # "infra activation: auto from declared data". A host with zero
 # HTTP endpoints does not start caddy; the auth daemon likewise
 # activates only when an authenticated endpoint exists.

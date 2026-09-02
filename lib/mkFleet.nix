@@ -1,6 +1,6 @@
 # mkFleet — single forker-facing entrypoint.
 #
-# Signature locked in ROADMAP "Fleet contract — mkFleet":
+# Signature locked in ARCHITECTURE "Fleet contract — mkFleet":
 #   { inputs, identity, networks, hosts, layout ? { } }
 #
 # Reads no files from disk (principle 14). Dispatches per arch
