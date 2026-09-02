@@ -4,7 +4,8 @@
 # directory — nh_fleet_root resolves the checkout.
 #   1. git pull --ff-only in the fleet root
 #   2. nix flake update (flake.lock)
-#   3. per-host deploy --dry-run delta review
+#   3. per-host: bootstrap missing secrets (on the bare terminal),
+#      then a deploy --dry-run delta review
 #   4. pick the hosts to deploy (gum multi-select; --yes = all)
 # Nothing new from either step 1 or 2 exits early: there is no
 # delta to review.
@@ -24,10 +25,10 @@ cmd_update() {
   local root
   root="$(nh_fleet_root)" || return 1
 
+  # Scratch for the lock snapshot + per-host dry-run logs, wiped by the
+  # dispatcher's exit handler (a trap here would replace it).
   local tmp
-  tmp="$(mktemp -d -t nixhold-update.XXXXXX)"
-  # shellcheck disable=SC2064 # expand $tmp now, it goes out of scope
-  trap "rm -rf '$tmp'" EXIT
+  tmp="$(nh_tmpdir update)" || return 1
 
   local head_before="" head_after=""
   nh_update_pull "$root" || return 1
@@ -58,7 +59,7 @@ cmd_update() {
   # actually build/activate: every NixOS host (the target builds its
   # own closure) plus darwin only when we ARE the mac — deploy
   # refuses remote darwin, and a skip beats failing the whole run.
-  local hosts entry line name platform rc
+  local hosts entry line name platform rc missing
   local fleet=() eligible=() deltas=() unknown=()
   hosts="$(nh_update_hosts "$root")" || return 1
   [ -n "$hosts" ] || { nh_err "fleet has no hosts"; return 1; }
@@ -67,6 +68,7 @@ cmd_update() {
   done <<<"$hosts"
 
   . "$NIXHOLD_LIB_ROOT/deploy.sh"
+  . "$NIXHOLD_LIB_ROOT/secret-bootstrap.sh"
 
   # Iterated as an array, not a here-string: deploy keeps the
   # operator's stdin (bootstrap can still open an editor).
@@ -78,6 +80,29 @@ cmd_update() {
       continue
     fi
     eligible+=("$name")
+
+    # Secret bootstrap runs HERE, before the tee pipeline below —
+    # deploy auto-walks it even for --dry-run, and inside the pipe its
+    # `gum confirm` and $EDITOR would own a pipe instead of the
+    # terminal (stdin is the operator's; stdout/stderr are not). After
+    # this walk deploy's own is a no-op; a host whose required secrets
+    # are still missing skips the dry-run entirely rather than
+    # re-entering the editor from inside the pipe — its real deploy,
+    # further down, runs on the bare terminal and can still prompt.
+    rc=0
+    nh_bootstrap_if_missing "$name" "$platform" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      nh_warn "$name: secret bootstrap failed — delta unknown; fix the errors above, then 'nixhold deploy $name'"
+      unknown+=("$name")
+      continue
+    fi
+    missing="$(nh_missing_required_secrets "$name" "$platform")" || missing=""
+    if [ -n "$missing" ]; then
+      nh_warn "$name: required secret(s) still missing (${missing//$'\n'/, }) — delta unknown; 'nixhold deploy $name' bootstraps them on the terminal"
+      unknown+=("$name")
+      continue
+    fi
+
     nh_info "── $name ($platform) — dry-run"
     rc=0
     cmd_deploy "$name" --dry-run --yes 2>&1 | tee "$tmp/$name.dry" >&2 || rc=$?
@@ -166,8 +191,10 @@ nh_update_pull() {
   # --no-rebase is load-bearing: with pull.rebase=true in the
   # operator's gitconfig, even --ff-only goes through the rebase
   # machinery, which refuses outright on unstaged changes.
+  # nh_repo_git: the one place that decides between the operator's own
+  # SSH credentials and the installer's baked deploy key.
   nh_info "git pull --ff-only ($root)"
-  if ! git -C "$root" pull --ff-only --no-rebase >&2; then
+  if ! nh_repo_git -C "$root" pull --ff-only --no-rebase >&2; then
     nh_err "git pull --ff-only failed — reconcile the checkout (rebase/merge or stash), then re-run"
     return 1
   fi

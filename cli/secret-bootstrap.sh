@@ -65,6 +65,11 @@ cmd_secret_bootstrap() {
   fi
   nh_info "$total secret(s) to provision on $host: $plan"
 
+  # Warm the recipient-check probes HERE: each per-secret subshell
+  # below inherits the memo but cannot write it back, so probing lazily
+  # would re-run those nix evals once per secret.
+  nh_probe_recipient_inputs
+
   # Iterated as an array, not a here-string-fed `read` loop: a redirect
   # on the loop would hand $EDITOR (and the gate prompt) a stdin that
   # is not the operator's terminal.
@@ -86,7 +91,7 @@ cmd_secret_bootstrap() {
     if [ -n "$generator" ]; then
       nh_info "  running its generator — no editor, no prompt"
     else
-      nh_info "  opening ${EDITOR:-vi} — save content to encrypt, save EMPTY to skip"
+      nh_info "  opening $(nh_editor_cmd) — save content to encrypt, save EMPTY to skip"
     fi
 
     rc=0
@@ -107,7 +112,7 @@ cmd_secret_bootstrap() {
       : >"$tmp"
       chmod 600 "$tmp"
 
-      nh_recipients_file "$json" "$name" "$rfile" || exit 1
+      nh_recipients_file "$json" "$host" "$name" "$rfile" || exit 1
       if [ -n "$generator" ]; then
         # The generator is operator-declared config; run it in this
         # already-isolated subshell rather than spawning an external
@@ -127,7 +132,7 @@ cmd_secret_bootstrap() {
           printf '%s' "$template" >"$tmp"
         fi
         if nh_prompt_gate "edit $host/$name"; then
-          "${EDITOR:-vi}" "$tmp"
+          nh_run_editor "$tmp" || exit 1
         else
           # Declining at the gate and saving an empty buffer are one
           # path: truncate and fall into the empty check below.
@@ -168,17 +173,28 @@ cmd_secret_bootstrap() {
   fi
 }
 
-# nh_bootstrap_if_missing <host> <platform> — used by `deploy` to
-# auto-walk bootstrap when a required secret has no ciphertext yet.
-nh_bootstrap_if_missing() {
-  local host="$1" platform="$2" sdir json any=0 name
-  sdir="$(nh_worktree_secrets_dir)" || return 0
-  json="$(nh_host_eval "$host" "$platform" nixhold.secrets 2>/dev/null)" || return 0
+# nh_missing_required_secrets <host> <platform> — prints the name of
+# every `required` secret with no ciphertext in the worktree, one per
+# line. Non-zero only when the host can't be probed at all (an absent
+# ciphertext is data, not an error).
+nh_missing_required_secrets() {
+  local host="$1" platform="$2" sdir json name
+  sdir="$(nh_worktree_secrets_dir)" || return 1
+  json="$(nh_host_eval "$host" "$platform" nixhold.secrets 2>/dev/null)" || return 1
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    [ -e "$sdir/hosts/$host/$name.age" ] || any=1
+    [ -e "$sdir/hosts/$host/$name.age" ] || printf '%s\n' "$name"
   done < <(printf '%s' "$json" | jq -r 'to_entries[] | select(.value.required) | .key')
-  if [ "$any" -eq 1 ]; then
+}
+
+# nh_bootstrap_if_missing <host> <platform> — used by `deploy` to
+# auto-walk bootstrap when a required secret has no ciphertext yet.
+# Interactive: it can open $EDITOR, so callers must run it with the
+# operator's terminal on stdin AND stdout/stderr (see cmd_update).
+nh_bootstrap_if_missing() {
+  local host="$1" platform="$2" missing
+  missing="$(nh_missing_required_secrets "$host" "$platform")" || return 0
+  if [ -n "$missing" ]; then
     nh_warn "required secrets missing on $host — running bootstrap first"
     cmd_secret_bootstrap "$host"
   fi

@@ -46,7 +46,7 @@ cmd_secret_edit() {
     : >"$tmp"
     chmod 600 "$idfile" "$tmp"
 
-    nh_recipients_file "$json" "$name" "$rfile" || exit 1
+    nh_recipients_file "$json" "$host" "$name" "$rfile" || exit 1
     nh_unwrap_identity "$idfile" || exit 1
     age -d -i "$idfile" -o "$tmp" "$target" || {
       nh_err "could not decrypt $target with the operator identity"
@@ -54,8 +54,8 @@ cmd_secret_edit() {
     }
     # The plaintext is encrypted back byte-for-byte, so nothing is ever
     # prefilled into the buffer: identity lives in its filename.
-    nh_info "opening ${EDITOR:-vi} for $host/$name"
-    "${EDITOR:-vi}" "$tmp"
+    nh_info "opening $(nh_editor_cmd) for $host/$name"
+    nh_run_editor "$tmp" || exit 1
     # Encrypt to a sibling temp + rename so an age failure can't
     # leave the committed ciphertext truncated.
     age -R "$rfile" -o "$target.tmp" "$tmp" || {

@@ -72,9 +72,11 @@ cmd_secret_rekey() {
         [ -e "$target" ] || continue
         rfile="$workdir/recipients"
         tmp="$workdir/plain"
-        printf '%s' "$json" | jq -r --arg n "$name" '.[$n].recipients[]' >"$rfile"
-        if [ ! -s "$rfile" ]; then
-          nh_warn "hosts/$host/$name.age has no recipients (missing operator/host pubkeys?) — NOT rekeyed"
+        # Shared validation: a recipient set missing the operator or
+        # the owning host is refused here, so a rekey can never quietly
+        # re-encrypt a host's secrets to the operator alone.
+        if ! nh_recipients_file "$json" "$host" "$name" "$rfile"; then
+          nh_warn "hosts/$host/$name.age NOT rekeyed — see the error above"
           failed=1
           continue
         fi

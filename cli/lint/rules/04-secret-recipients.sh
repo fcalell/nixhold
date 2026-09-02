@@ -22,7 +22,7 @@ while IFS= read -r h; do
   [ -n "$bad" ] || continue
   while IFS= read -r s; do
     [ -n "$s" ] || continue
-    echo "VIOLATION: $h/$s — host key not a recipient (commit keys/hosts/$h/host.pub, then 'nixhold secret rekey')"
+    echo "VIOLATION: $h/$s — host key not a recipient (add keys/hosts/$h/host.pub — an UNTRACKED file is invisible to nix eval, so 'git add --intent-to-add' it — then 'nixhold secret rekey')"
     worst=3
   done <<<"$bad"
 done < <(nh_all_hosts)
