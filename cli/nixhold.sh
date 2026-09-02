@@ -38,6 +38,9 @@ export NIX_CONFIG
 trap nh_run_at_exit EXIT
 trap 'nh_run_at_exit; exit 130' INT
 trap 'nh_run_at_exit; exit 143' TERM
+# A closed terminal (ssh session dropped, terminal window shut) is the
+# other way a verb dies mid-flight with plaintext staged.
+trap 'nh_run_at_exit; exit 129' HUP
 
 usage() {
   cat <<'EOF'

@@ -16,7 +16,11 @@ nh_install_committed_key() {
   local name="$1" target="${2:-}" keydir
   keydir="$(nh_tmpdir hostkey)" || return 1
   nh_resolve_host_key "$name" "$keydir" || return 1
-  nh_install_host_key "$keydir/ssh_host_ed25519_key" "$target"
+  # <name> travels with the target so the connection carrying the
+  # private key is pinned to the key the machine is running: the
+  # committed one, or — while a rotation is pending — the superseded
+  # one `host rotate-key` recorded (see lib/ssh.sh).
+  nh_install_host_key "$keydir/ssh_host_ed25519_key" "$target" "$name"
 }
 
 cmd_host_install_key() {

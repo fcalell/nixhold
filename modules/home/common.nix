@@ -43,7 +43,7 @@ let
   sshSettings =
     lib.mapAttrs
       (
-        _: addr:
+        peerName: addr:
         {
           HostName = addr;
           User = username;
@@ -51,6 +51,14 @@ let
         // lib.optionalAttrs (identityKey != null) {
           IdentityFile = identityKey;
           IdentitiesOnly = true;
+        }
+        # A peer whose host key is committed is pinned system-wide by
+        # modules/fleet/known-hosts.nix, so there is nothing left to
+        # trust on first use: an unknown or changed key is a failure,
+        # not a prompt. Peers without a committed key (added but not
+        # yet keyed) keep ssh's default accept-on-first-use.
+        // lib.optionalAttrs (fleet.hostPubkey.${peerName} or null != null) {
+          StrictHostKeyChecking = "yes";
         }
       )
       (

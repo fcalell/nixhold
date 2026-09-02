@@ -35,8 +35,8 @@ in
         Root of the operator's encrypted secrets tree. The
         convention `secrets/hosts/<host>/<name>.age` is enforced —
         the framework derives the per-secret file path from this
-        root, `config.networking.hostName`, and the attribute name
-        in `nixhold.secrets`.
+        root, `nixhold.fleet.selfName` (the fleet key, not the OS
+        hostname), and the attribute name in `nixhold.secrets`.
       '';
       example = lib.literalExpression "./secrets";
     };

@@ -158,11 +158,17 @@ nh_pubkey_line() {
   return 1
 }
 
-# nh_host_has_ciphertexts <host> — true when the host already owns at
-# least one .age file in the worktree.
+# nh_host_has_ciphertexts <host> — does the host already own .age files
+# in the worktree? Tri-state, because the answer gates a refusal:
+#   0  yes, at least one
+#   1  no, none
+#   2  cannot tell (the secrets directory could not be resolved)
+# Collapsing 2 into 1 would turn a transient probe failure into
+# "encrypt to the operator alone", which is the outcome the caller
+# exists to prevent.
 nh_host_has_ciphertexts() {
   local host="$1" sdir f
-  sdir="$(nh_worktree_secrets_dir 2>/dev/null)" || return 1
+  sdir="$(nh_worktree_secrets_dir 2>/dev/null)" || return 2
   for f in "$sdir/hosts/$host"/*.age; do
     if [ -e "$f" ]; then
       return 0
@@ -231,10 +237,19 @@ nh_check_recipients() {
     fi
     return 0
   fi
-  if nh_host_has_ciphertexts "$host"; then
-    nh_err "$label: no readable $host_pub, yet $host already owns encrypted secrets — refusing to encrypt to the operator alone (the host could no longer decrypt at activation). Restore its pubkey, or run 'nixhold host rotate-key $host'."
-    return 1
-  fi
+  local owns=0
+  nh_host_has_ciphertexts "$host" || owns=$?
+  case "$owns" in
+    0)
+      nh_err "$label: no readable $host_pub, yet $host already owns encrypted secrets — refusing to encrypt to the operator alone (the host could no longer decrypt at activation). Restore its pubkey, or run 'nixhold host rotate-key $host'."
+      return 1
+      ;;
+    1) ;;
+    *)
+      nh_err "$label: no readable $host_pub, and whether $host already owns encrypted secrets could not be determined (nixhold.layout.secrets is not resolvable here) — refusing to encrypt to the operator alone on a guess. Fix the fleet checkout, then re-run."
+      return 1
+      ;;
+  esac
   nh_warn "$label: no $host_pub yet — encrypting to the operator only; commit the host key and run 'nixhold secret rekey' before $host can decrypt it"
 }
 

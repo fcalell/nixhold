@@ -221,10 +221,18 @@ nh_require_cmd() {
 
 nh_tmp_root() {
   local root="${TMPDIR:-/tmp}/nixhold-$$"
-  if [ ! -d "$root" ]; then
-    mkdir -p "$root" || return 1
-    chmod 700 "$root" || return 1
+  # Plain `mkdir`, not `mkdir -p`: the parent always exists, and -p
+  # would happily adopt whatever already sits at $root — a symlink, or
+  # another user's directory. A failing mkdir is therefore either the
+  # normal same-process re-entry (the root is there and it is OURS: a
+  # real directory, owned by this uid) or an entry we must refuse.
+  if ! mkdir "$root" 2>/dev/null; then
+    if [ -L "$root" ] || [ ! -d "$root" ] || [ ! -O "$root" ]; then
+      nh_err "cannot stage key material in $root — either ${TMPDIR:-/tmp} is not writable, or something already sits at that path that is not a directory of ours (remove it, or point \$TMPDIR elsewhere)"
+      return 1
+    fi
   fi
+  chmod 700 "$root" || return 1
   printf '%s' "$root"
 }
 
@@ -360,12 +368,15 @@ nh_repo_deploy_key() {
 # plaintext lives in this process's scratch root, so a persisted
 # command would point at a path the next invocation has already wiped.
 nh_repo_git() {
-  local key="" rc=0
+  local key="" rc=0 sshcmd
   key="$(nh_repo_deploy_key)" || rc=$?
   case "$rc" in
     0)
-      GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" \
-        git "$@"
+      # git re-splits GIT_SSH_COMMAND through the shell, so the key path
+      # is quoted for it: the scratch root lives under $TMPDIR, which is
+      # the operator's and may contain spaces.
+      printf -v sshcmd 'ssh -i %q -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new' "$key"
+      GIT_SSH_COMMAND="$sshcmd" git "$@"
       return $?
       ;;
     1) git "$@" ;;

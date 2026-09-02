@@ -117,6 +117,13 @@
         nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
           fixture-server = fixture.nixosConfigurations.fixture-server.config.system.build.toplevel;
 
+          # The internet-facing host. One caddy listener serves every
+          # vhost, so the internet posture and the unauthenticated
+          # tailnet one cannot share a host — the branches caddy and
+          # the firewall take for an internet endpoint are only
+          # reachable here.
+          fixture-gateway = fixture.nixosConfigurations.fixture-gateway.config.system.build.toplevel;
+
           # The fleet's own installer image. Evaluating it covers the
           # whole ISO module — including the "THIN by contract"
           # assertion that no baked ciphertext is a subpath of the

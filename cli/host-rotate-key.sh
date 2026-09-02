@@ -38,6 +38,7 @@ _NH_ROTATE_ACTIVE=0
 _NH_ROTATE_NAME=""
 _NH_ROTATE_ROOT=""
 _NH_ROTATE_DIR=""
+_NH_ROTATE_CACHE=""
 _NH_ROTATE_OLDPUB=""
 _NH_ROTATE_OLDESCROW=""
 _NH_ROTATE_NEWKEY=""
@@ -46,6 +47,13 @@ nh_rotate_rollback() {
   [ "$_NH_ROTATE_ACTIVE" -eq 1 ] || return 0
   _NH_ROTATE_ACTIVE=0
   local dir="$_NH_ROTATE_DIR"
+
+  # No rotation happened, so nothing is superseded: drop the "the
+  # machine still runs the previous key" record before it can widen a
+  # later connection's pin set (lib/ssh.sh).
+  if [ -n "$_NH_ROTATE_CACHE" ]; then
+    rm -f "$_NH_ROTATE_CACHE/host.pub.prev"
+  fi
 
   if [ -n "$_NH_ROTATE_OLDPUB" ] && [ -f "$_NH_ROTATE_OLDPUB" ]; then
     cp "$_NH_ROTATE_OLDPUB" "$dir/host.pub" ||
@@ -153,6 +161,17 @@ EOF
       nh_err "could not back up $dir/host.pub — rotation aborted (nothing changed)"
       return 1
     }
+    # host.pub is about to name the NEW key while the machine goes on
+    # answering with this one until the install step below succeeds.
+    # Recorded beside the superseded escrow (same lifetime, same
+    # meaning: "the key $name is still running"), it is what lets
+    # nh_ssh PIN the connection that ships the replacement instead of
+    # trusting it blind — the connection that carries the new private
+    # key. Deleted the moment the machine has the new key.
+    cp "$dir/host.pub" "$cache/host.pub.prev" || {
+      nh_err "could not record the superseded pubkey at $cache/host.pub.prev — rotation aborted (nothing changed)"
+      return 1
+    }
   fi
   if [ -f "$dir/host.key.age" ]; then
     oldescrow_backup="$backups/host.key.age"
@@ -174,6 +193,7 @@ EOF
   _NH_ROTATE_NAME="$name"
   _NH_ROTATE_ROOT="$root"
   _NH_ROTATE_DIR="$dir"
+  _NH_ROTATE_CACHE="$cache"
   _NH_ROTATE_OLDPUB="$oldpub_backup"
   _NH_ROTATE_OLDESCROW="$oldescrow_backup"
   _NH_ROTATE_NEWKEY="$newkey"
@@ -260,8 +280,9 @@ nh_rotate_install() {
   fi
 
   # The machine now holds the rotated key, so the superseded escrow is
-  # no longer anyone's only copy of a live key.
-  rm -f "$cache/host.key.age.prev"
+  # no longer anyone's only copy of a live key — and the superseded
+  # pubkey is no longer a key any connection to $name should accept.
+  rm -f "$cache/host.key.age.prev" "$cache/host.pub.prev"
   nh_ok "$name now runs the rotated key"
   nh_info "commit keys/ + secrets/, then 'nixhold deploy $name' so the host receives the re-encrypted ciphertexts"
 }

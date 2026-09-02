@@ -32,8 +32,14 @@ in
         (owner root, 0400) and points
         `services.tailscale.authKeyFile` at it, so the host
         auto-joins the tailnet on activation. `null` (default) leaves
-        joining to a manual `tailscale up`. Pre-auth keys expire, so a
-        stored key is mainly a first-boot convenience.
+        joining to a manual `tailscale up`. Create the key single-use
+        (not reusable), pre-authorized, with a short expiry — and NOT
+        ephemeral, which would remove the node when it goes offline.
+        The committed ciphertext is spent after the first join (the
+        node persists its own state); it matters again only on a
+        reinstall, so re-bootstrap it then. A reusable, long-lived key
+        would let anyone holding the repo plus a host key join the
+        tailnet — and tailnet membership is the authorization boundary.
       '';
       example = "tailscale-authkey";
     };

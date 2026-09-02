@@ -324,13 +324,39 @@ behavior; behavior is always an explicit option.
 | `sshKey` | marks an SSH private key; `.pub` derived at HM activation via `ssh-keygen -y` (failure is loud) | false |
 | `sshIdentity` | implies sshKey; ≤1 per host (assertion). THE outbound key: wired as IdentityFile in fleet-peer ssh config; CLI commits its pubkey as `keys/hosts/<host>/identity.pub`, which defaults `fleet.hosts.<host>.loginPubkey` | false |
 
-The framework derives per-entry: the ciphertext `file` path (from
-hostname + name), `recipients` (readOnly: operator recipient from
+The framework derives per-entry: the ciphertext's checkout location
+`sourceFile` (fleet key + name; existence checks and messages only)
+and `file`, the same bytes re-added to the store by content —
+what agenix reads; `recipients` (readOnly: operator recipient from
 `layout.ageRecipient` + owning host's committed `host.pub`),
 `resolvedOwner`/`resolvedMode`, `age.secrets.<name>` activation
 wiring, HM symlinks. The option attrset **is** the manifest — the
 CLI reads `config.nixhold.secrets` directly; there is no separate
 `declared` attribute.
+
+**Ciphertexts enter the store by content (locked).** A layout path
+is a subpath of the fleet's own source store path, and its string
+context references the *whole* checkout. Handing such a path to
+agenix (or any derivation / activation script) makes every host's
+ciphertexts, the wrapped operator identity, the deploy key and every
+host-key escrow a runtime dependency of that host's toplevel —
+world-readable in `/nix/store` for any local account, which on the
+fleet includes an unprivileged kiosk user. This was live on the mac
+(the agenix activation script referenced the checkout) and is now
+closed: `file` is `builtins.path` of the single ciphertext, the same
+idiom the ISO's `bake` uses. The rule generalises: a flake-relative
+path is only ever consulted with `pathExists`/`readFile` (no
+context) or copied by content; it never reaches a derivation as-is.
+
+**Host identity is the fleet key (locked).** Everything derived per
+host — secret paths, recipients, `derived.self`, committed pubkeys —
+keys off `nixhold.fleet.selfName`, the host's attribute name in the
+`hosts` argument, which `mkFleet` sets. `networking.hostName` is
+only `mkDefault`ed to it: a host renamed by an MDM policy keeps its
+ciphertexts, and no two fleet entries can be made to share a
+recipient set by an OS-level rename. The MagicDNS FQDN (caddy vhost,
+peer addresses) legitimately follows the OS hostname, since that is
+what tailscale registers.
 
 Recipient/editing model:
 
@@ -429,7 +455,7 @@ Endpoint fields:
 | `protocol` | `https` (default) / `http` / `ws` / `wss`. HTTP-family only in v1 |
 | `subdomain` | internet networks: vhost = `<subdomain>.<domain>`. **Ignored on tailscale networks** (see TLS). Forbidden on localhost |
 | `backend` | required; references `network.ports.<name>` — one endpoint = one (vhost, backend) pair |
-| `pathPrefix` | endpoints sharing a vhost carve paths; caddy emits one vhost with handle blocks |
+| `pathPrefix` | endpoints sharing a vhost carve paths; caddy emits one vhost with a `redir <p> <p>/` and a `handle <p>/*` per endpoint (`uri strip_prefix` inside when `stripPrefix`), so `/tv` never claims `/tvx`; prefixes on one FQDN must not be path-segment prefixes of each other (assertion) |
 | `description` | free text for status; recommended on localhost endpoints |
 | `extraConfig` | raw Caddyfile lines inside the endpoint's handle block — escape hatch; the model still owns vhost/FQDN/TLS |
 | `auth` | bool, default `true`: require the network's identity mechanism (tailscale → node identity, see Tailnet identity auth). `false` is the explicit opt-out. Required-explicit on `internet` endpoints, which have no mechanism yet |
@@ -482,12 +508,42 @@ are operator-managed like DNS. Backends keep binding 127.0.0.1, so
 the only ways in are caddy or the box itself. whois needs a live
 tailscaled, so the fixture check covers the emitted config only;
 the runtime proof is one request from a tailnet device and one from
-outside.
+outside. Authentication, not authorization: any non-tagged node of
+the tailnet passes; which devices may reach the host is the
+Tailscale ACL's decision, per-user gating beyond that is the
+backend's (the identity headers exist for it).
+
+**Exposure invariants (locked).** caddy's listener is not
+per-interface: one `:443` on every address serves every vhost, and
+what keeps a tailnet vhost tailnet-only is the interface-scoped
+firewall rule. An internet endpoint opens 80/443 everywhere, so a
+host serving internet endpoints may not also serve tailnet endpoints
+that opted out of auth (assertion) — authenticated ones fail closed
+on a non-tailnet source, opted-out ones would be world-reachable
+under a valid tailnet cert. Per-interface listeners (`bind` to the
+tailnet address) would lift that restriction and are deferred. The
+caddy admin API lives on an owner-only unix socket
+(`/run/caddy/admin.sock`), never on localhost:2019, where any local
+uid could `POST /load` a config without the auth gate; nixpkgs'
+reload reads the address from the config, so reloads keep working.
+The tailnet cert oneshot retries on failure (`Restart=on-failure`)
+so a first boot that precedes the tailnet join converges, writes
+cert and key into a staging dir and moves them into place, and the
+path unit watches the half moved last; caddy is revived by that
+reload-or-restart, not by its own restart policy.
 
 **Infra consumers** (server bundle): caddy (HTTP endpoints →
-vhosts, TLS strategy from network type), firewall (opens public
-ports only for internet-network endpoints; tailnet needs no
-opening), DNS declaration (below). Multi-network exposure works by
+vhosts, TLS strategy from network type), firewall (80/443 tcp+udp on
+every interface for internet-network endpoints; 443 tcp+udp scoped to
+the tailscale interface for tailnet endpoints — the LAN stays
+closed), DNS declaration (below). Both read one derived list,
+`nixhold.infra.endpoints` (internal): every non-localhost endpoint
+annotated with its resolved backend port, network type and FQDN.
+Nothing is filtered silently — an unknown network, a network lacking
+the field its type needs, a backend not in the service's ports, a
+`subdomain` where the type forbids or requires it, a malformed
+`pathPrefix` are assertions, so a typo cannot yield a service the
+operator believes exposed that is simply not served. Multi-network exposure works by
 declaring endpoints on different networks; same subdomain on the
 same network is a lint failure, across networks is fine.
 
@@ -532,6 +588,28 @@ Properties: one CLI; verb-first; darwin auto-dispatch from arch;
 idempotent; repo + passphrase is the whole source of truth; two
 install entry points (local on the ISO by default, `--remote`
 from a fleet machine), one phase sequence.
+
+**Host-key trust (locked).** The fleet commits every host's key as
+`keys/hosts/<host>/host.pub`, so nothing that talks to a fleet host
+over ssh accepts a key on first use when a committed one exists.
+Every host renders `programs.ssh.knownHosts.<peer>` (bare name +
+every derived address) from the committed pubkeys, and the framework
+peer matchBlocks set `StrictHostKeyChecking yes` for pinned peers.
+The CLI pins the same way (`nh_ssh … --host <name>`: a scratch
+known_hosts under the process scratch root, strict checking; a
+rotation window additionally accepts the superseded key recorded as
+`host.pub.prev` until the new one is installed). Trust-on-first-use
+survives only where there is nothing to pin to: a host the fleet
+has never seen, and the installer ISO, whose key is random per boot
+(`host install --remote` rides nixos-anywhere's own no-check ssh —
+install over a LAN you control). A machine running a key the fleet
+does not know is unreachable from the CLI by design; reconcile on
+the machine (`host escrow` adopts the live key, `host install-key`
+puts the fleet's back), or over the operator's own ssh after
+checking the fingerprint out of band. Plaintext key material the CLI
+stages lives only under the one 0700 scratch root wiped on
+EXIT/INT/TERM/HUP; per-subshell traps are not used for cleanup, since
+bash resets them inside `( … )`.
 
 ---
 
@@ -791,6 +869,12 @@ journald is uniform; no namespace reserved before a consumer.
 | Cross-host routing (service on A, gateway B) | real consumer; lint rule holds the door open |
 | `lan` network type + identity for LAN clients (internal CA / mTLS — a LAN address carries no identity signal); L4 protocols (`tcp`/`udp`/`grpc`) | first LAN-only / L4 consumer |
 | Identity on `internet` endpoints (forward_auth against an IdP / OIDC) | first internet endpoint that wants framework auth rather than app auth |
+| Per-interface caddy listeners (`bind` to the tailnet address) so a mixed-posture host no longer depends on the firewall rule; port 80 on the tailnet interface for the redirect vhost | first host serving both internet and tailnet endpoints |
+| sshd scoped to the tailnet interface when the host is on no internet network (derive from `derived.self.networks`); today `openFirewall` opens 22 on every interface, key-only + fail2ban, and LAN ssh is the recovery path if the tailnet join fails | operator decision — trades LAN recovery for LAN closure |
+| Per-service loopback boundary (unix sockets / network namespaces): backends on 127.0.0.1 are reachable by every local uid, so a host running an untrusted local user (a kiosk) can drive them without caddy's auth | first host that wants a local uid isolated from its services |
+| ISO prints its ssh host-key fingerprint on the console and `host install --remote` shows the one it connects to | install over a LAN the operator does not control |
+| `status` compares each reachable host's live `/etc/ssh/ssh_host_ed25519_key.pub` with the committed `host.pub` (lint cannot: needs the network); lint still cannot prove escrow ↔ host.pub without the passphrase | first drift incident |
+| `nix flake check --no-build` vs the fixture's `builtins.path` self (an unrealised store path once a check forces `readFile` under it); builds-allowed check is the smoke test today | the no-build form is wanted in CI |
 | Additional shared option types (`data`, `health`, `metrics`, `logs`, `schedule`) | designed alongside their consumer module |
 | Backup as a framework concern; state migration (`service move`) | not foreseeable |
 | Operator key recovery beyond passphrase (Shamir, hardware) | use case surfaces |

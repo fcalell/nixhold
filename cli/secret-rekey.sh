@@ -33,15 +33,16 @@ cmd_secret_rekey() {
   # explicitly below; `set -e` remains only for direct invocation.
   (
     set -euo pipefail
-    # One private workdir for identity + per-secret temp files; the
-    # trap removes it whole, so a mid-loop failure can't leak
-    # decrypted plaintext into $TMPDIR.
-    workdir="$(mktemp -d -t nixhold-rekey.XXXXXX)" || {
+    # One private workdir for identity + per-secret temp files, under
+    # the process scratch root the dispatcher wipes on
+    # EXIT/INT/TERM/HUP — so neither a mid-loop failure nor a Ctrl-C at
+    # the passphrase prompt leaks the identity or decrypted plaintext
+    # into $TMPDIR. (A trap installed here would not fire on Ctrl-C:
+    # bash resets trapped signals inside a subshell.)
+    workdir="$(nh_tmpdir rekey)" || {
       nh_err "could not create a private workdir — nothing was rekeyed"
       exit 2
     }
-    chmod 700 "$workdir"
-    trap 'rm -rf "$workdir"' EXIT
     idfile="$workdir/identity"
     # Ahead of any per-secret work: with no identity nothing can be
     # decrypted, and a caller that rolls back (rotate-key) must see the

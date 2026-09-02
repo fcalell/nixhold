@@ -33,10 +33,11 @@ cmd_secret_edit() {
     # (<host>.<name>, what the editor shows) without publishing it in a
     # world-readable /tmp listing. Attr names are normally
     # filename-safe; sanitized anyway so a quoted name cannot escape
-    # the workdir.
-    workdir="$(mktemp -d -t nixhold-secret.XXXXXX)" || exit 2
-    chmod 700 "$workdir"
-    trap 'rm -rf "$workdir"' EXIT
+    # the workdir. It lives under the process scratch root: bash resets
+    # trapped signals inside this subshell, so a trap here would NOT
+    # run on Ctrl-C and would leave the decrypted secret behind — the
+    # dispatcher's handler does run, on EXIT/INT/TERM/HUP alike.
+    workdir="$(nh_tmpdir secret)" || exit 2
     rfile="$workdir/recipients"
     idfile="$workdir/identity"
     safe="$host.$name"

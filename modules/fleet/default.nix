@@ -4,18 +4,11 @@ let
 
   keysDir = config.nixhold.layout.keysDir;
 
-  # First line of a committed pubkey file, trailing newline trimmed
-  # (same pattern as modules/secrets/default.nix — authorized_keys
-  # entries must be single-line).
-  pubkeyLine =
-    path:
-    let
-      m = builtins.match "([^\n]*)\n?" (builtins.readFile path);
-    in
-    if m == null then
-      throw "nixhold.fleet: ${toString path} must contain exactly one key line (found extra lines)"
-    else
-      builtins.head m;
+  # First line of a committed pubkey file, trailing newline trimmed —
+  # `authorized_keys` entries must be single-line. Shared with
+  # ./known-hosts.nix so the two readers of `keys/hosts/<host>/*.pub`
+  # cannot drift apart.
+  pubkeyLine = import ../../lib/pubkey-line.nix "nixhold.fleet";
 
   archEnum = types.enum [
     "x86_64-linux"
@@ -178,14 +171,32 @@ in
       '';
     };
 
+    selfName = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      description = ''
+        This host's own key in `nixhold.fleet.hosts` — its fleet
+        identity, set by `mkFleet` from the attribute name in the
+        `hosts` argument. Everything the framework derives per
+        host (its entry in `hosts`, its secrets tree, its
+        committed host pubkey) keys off this, NOT off
+        `config.networking.hostName`: the OS hostname is merely
+        `mkDefault`ed to it, and a host may legitimately carry a
+        different one (an MDM-managed name, a rename) without its
+        ciphertexts or recipients moving. `null` only when the
+        namespace is evaluated outside `mkFleet` — the framework's
+        own checks — where no single host owns it.
+      '';
+    };
+
     derived = {
       self = mkOption {
         type = types.nullOr types.raw;
         readOnly = true;
         description = ''
           This host's own entry in `nixhold.fleet.hosts`,
-          resolved by `config.networking.hostName`. The single
-          canonicalization point for hostname ↔ fleet-key
+          resolved by `nixhold.fleet.selfName`. The single
+          canonicalization point for fleet-key → host-entry
           mapping. `null` if this host isn't a key in `hosts`
           (e.g. during framework checks against a synthetic
           fixture). Typed `raw` to pass the already-processed

@@ -64,7 +64,7 @@ EOF
   keys_dir="$(nh_worktree_keys_dir)" || return 2
   committed="$keys_dir/hosts/$name/host.pub"
   live="$(nh_tmpdir livekey)" || return 1
-  nh_read_live_host_key "$live/ssh_host_ed25519_key" "$target" || return 1
+  nh_read_live_host_key "$live/ssh_host_ed25519_key" "$target" "$name" || return 1
 
   if nh_key_matches_pub "$live/ssh_host_ed25519_key" "$committed"; then
     nh_info "the live key is the committed recipient — refreshing its escrow"

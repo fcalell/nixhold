@@ -41,5 +41,5 @@ cmd_logs() {
 
   # ssh joins argv with spaces for the remote shell — re-quote so
   # values like `--since "2 hours ago"` survive.
-  nh_ssh "$user@$addr" -- "$(printf '%q ' "${args[@]}")"
+  nh_ssh "$user@$addr" --host "$host" -- "$(printf '%q ' "${args[@]}")"
 }

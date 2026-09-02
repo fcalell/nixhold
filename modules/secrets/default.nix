@@ -3,34 +3,26 @@ let
   inherit (lib) mkOption types;
 
   layoutSecrets = config.nixhold.layout.secrets;
-  # Lazy: only forced when a secret path is actually computed. On
-  # darwin `networking.hostName` defaults to null (mkFleet normally
-  # mkDefaults it to the fleet host name), which would otherwise fail
-  # string interpolation with an opaque coercion error.
+  # The fleet attribute key, NOT `config.networking.hostName`: the OS
+  # hostname is only mkDefault'ed to it, so a host renamed by an MDM
+  # policy (or by the operator) would otherwise silently re-point its
+  # ciphertext paths and its recipient set at a host that does not
+  # exist. Lazy: only forced when a secret path is actually computed.
   hostName =
     let
-      hn = config.networking.hostName or null;
+      hn = config.nixhold.fleet.selfName;
     in
     if hn == null || hn == "" then
-      throw "nixhold.secrets: networking.hostName is unset; it must equal the fleet host name (mkFleet sets it by default)"
+      throw "nixhold.secrets: nixhold.fleet.selfName is unset; mkFleet sets it from the host's key in its `hosts` argument"
     else
       hn;
   username = config.nixhold.identity.username;
 
   layout = config.nixhold.layout;
 
-  # First line of a committed pubkey file, trailing newline trimmed.
-  # age recipients and SSH host pubkeys are single-line; agenix
-  # forwards the value to age verbatim, which rejects a stray newline.
-  pubkeyLine =
-    path:
-    let
-      m = builtins.match "([^\n]*)\n?" (builtins.readFile path);
-    in
-    if m == null then
-      throw "nixhold.secrets: ${toString path} must contain exactly one key line (found extra lines)"
-    else
-      builtins.head m;
+  # Single-line pubkey reader shared with modules/fleet (age rejects a
+  # stray newline in a recipient just as sshd does in authorized_keys).
+  pubkeyLine = import ../../lib/pubkey-line.nix "nixhold.secrets";
 
   # Recipients every secret on THIS host is encrypted to: the operator
   # (so they can edit/rekey from any device with the wrapped key) plus
@@ -187,14 +179,38 @@ let
           '';
         };
 
+        sourceFile = mkOption {
+          type = types.path;
+          readOnly = true;
+          description = ''
+            The ciphertext's place in the fleet checkout, derived
+            as `<layout.secrets>/hosts/<host>/<name>.age`. Being a
+            subpath of the checkout, it carries a reference to the
+            *whole* checkout, so it is only ever used for existence
+            checks and operator-facing messages — never handed to a
+            derivation or an activation script. Activation reads
+            `file`.
+          '';
+        };
+
         file = mkOption {
           type = types.path;
           readOnly = true;
           description = ''
-            Encrypted source file path. Derived as
-            `<layout.secrets>/hosts/<hostName>/<name>.age`. This
-            path is what agenix reads at activation. No operator
-            knob — the convention is the API.
+            The ciphertext as agenix reads it at activation:
+            `sourceFile` re-added to the store by content
+            (`builtins.path`), so it is a store path holding that
+            one file. agenix interpolates this into its activation
+            script, which makes it a runtime dependency of
+            `system.build.toplevel` — handing over the checkout
+            subpath instead would put the entire fleet source (every
+            host's ciphertexts, the wrapped operator identity, the
+            host-key escrows) into every host's world-readable
+            `/nix/store`. Same idiom as the installer ISO's `bake`.
+            Falls back to `sourceFile` while the ciphertext does not
+            exist yet — there is no content to copy then, and the
+            assertion below is what reports it. No operator knob —
+            the convention is the API.
           '';
         };
 
@@ -241,8 +257,16 @@ let
             "0600"
           else
             "0400";
-        file = layoutSecrets + "/hosts/${hostName}/${name}.age";
-        active = config.required || builtins.pathExists config.file;
+        sourceFile = layoutSecrets + "/hosts/${hostName}/${name}.age";
+        file =
+          if builtins.pathExists config.sourceFile then
+            builtins.path {
+              path = config.sourceFile;
+              name = "nixhold-secret-${hostName}-${name}.age";
+            }
+          else
+            config.sourceFile;
+        active = config.required || builtins.pathExists config.sourceFile;
         recipients = recipientsForHost;
       };
     }
@@ -276,9 +300,9 @@ in
     lib.concatLists (
       lib.mapAttrsToList (name: s: [
         {
-          assertion = !s.required || builtins.pathExists s.file;
+          assertion = !s.required || builtins.pathExists s.sourceFile;
           message = ''
-            nixhold.secrets.${name}: missing ciphertext ${toString s.file}.
+            nixhold.secrets.${name}: missing ciphertext ${toString s.sourceFile}.
             Run `nixhold secret bootstrap <host>` (or declare it with
             `required = false` until it is bootstrapped).
           '';

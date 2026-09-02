@@ -7,6 +7,7 @@
     ./types
     ./fleet
     ./fleet/derived.nix
+    ./fleet/known-hosts.nix
     # Option namespace only (see ./services/default.nix). The NixOS
     # implementations stay profile-attached; what the baseline
     # guarantees is that `nixhold.services` is readable on every host,

@@ -59,10 +59,28 @@ self.lib.mkFleet {
       publicFqdn = "fixture-server.fixture.example.invalid";
     };
 
+    # The internet-facing half of the caddy coverage. It is a host of
+    # its own because caddy's listener is not per-interface: a host
+    # that serves an internet endpoint may not also serve
+    # unauthenticated tailnet ones (assertion in modules/infra/caddy.nix),
+    # so fixture-server keeps the tailnet branches and this one carries
+    # the ACME vhost.
+    fixture-gateway = {
+      arch = "x86_64-linux";
+      profile = self.profiles.server;
+      modules = [ ./gateway-stub.nix ];
+      networks = [
+        "tailnet"
+        "public"
+      ];
+    };
+
     fixture-mac = {
       arch = "aarch64-darwin";
       profile = self.profiles.workstationDarwin;
-      modules = [ ];
+      # The darwin side of the host-key pinning check: from here
+      # fixture-server is a peer *with* a committed host key.
+      modules = [ ./known-hosts-assertions.nix ];
       networks = [ "tailnet" ];
     };
   };

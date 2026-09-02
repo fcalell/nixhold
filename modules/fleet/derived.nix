@@ -1,21 +1,17 @@
 { config, lib, ... }:
 let
   fleet = config.nixhold.fleet;
-  hostName = config.networking.hostName or null;
 in
 {
   config.nixhold.fleet.derived = {
-    self = if hostName == null then null else fleet.hosts.${hostName} or null;
+    # Keyed off the fleet attribute name, never the OS hostname —
+    # see the `nixhold.fleet.selfName` description.
+    self = if fleet.selfName == null then null else fleet.hosts.${fleet.selfName} or null;
 
-    publicHosts = lib.attrNames (
-      lib.filterAttrs (_: h: h.publicIp != null) fleet.hosts
-    );
+    publicHosts = lib.attrNames (lib.filterAttrs (_: h: h.publicIp != null) fleet.hosts);
 
     hostsByNetwork = lib.mapAttrs (
-      netName: _:
-      lib.attrNames (
-        lib.filterAttrs (_: h: lib.elem netName h.networks) fleet.hosts
-      )
+      netName: _: lib.attrNames (lib.filterAttrs (_: h: lib.elem netName h.networks) fleet.hosts)
     ) fleet.network;
 
     address = lib.mapAttrs (

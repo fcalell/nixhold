@@ -99,10 +99,12 @@ cmd_secret_bootstrap() {
       set -euo pipefail
       # One 0700 dir per secret so the buffer can carry an identifying
       # name (<host>.<name>, what the editor shows) without publishing
-      # it in a world-readable /tmp listing.
-      workdir="$(mktemp -d -t nixhold-secret.XXXXXX)" || exit 1
-      chmod 700 "$workdir"
-      trap 'rm -rf "$workdir"' EXIT
+      # it in a world-readable /tmp listing. Under the process scratch
+      # root, not a bare mktemp: a trap installed in this subshell does
+      # not run on Ctrl-C (bash resets trapped signals inside one), and
+      # the buffer holds the generated key material in plaintext. The
+      # dispatcher's handler wipes the root on every exit path.
+      workdir="$(nh_tmpdir secret)" || exit 1
       rfile="$workdir/recipients"
       # Attr names are normally filename-safe; sanitized anyway so a
       # quoted name cannot escape the workdir.

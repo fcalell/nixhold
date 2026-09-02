@@ -34,7 +34,9 @@ let
           Name of the network this endpoint is reachable on.
           Must be a key in `mkFleet`'s `networks` arg, or
           `"localhost"` (built-in, for 127.0.0.1-bound
-          endpoints). Lint rejects unknown values.
+          endpoints). An unknown name — or a network missing the
+          field its type needs to address the endpoint — is an
+          assertion (`modules/infra/endpoints.nix`).
         '';
         example = "tailnet";
       };
@@ -48,9 +50,12 @@ let
         ];
         default = "https";
         description = ''
-          Endpoint protocol. v1: HTTP-family only. TLS strategy
-          is per-network (declared on the network), not
-          per-endpoint.
+          Endpoint protocol. v1: HTTP-family only — all four
+          values route through the same vhost (a websocket is an
+          upgrade on the same connection), so this is
+          documentation of what the backend speaks, not a routing
+          switch. TLS strategy is per-network (declared on the
+          network), not per-endpoint.
         '';
       };
 
@@ -58,10 +63,14 @@ let
         type = types.nullOr types.str;
         default = null;
         description = ''
-          Subdomain under the network's domain (internet
-          networks) or MagicDNS suffix (tailscale networks).
-          Required on non-`localhost` networks; forbidden on
-          `localhost`. Lint enforces.
+          Subdomain under the network's domain. Required on
+          `internet` networks (the FQDN is
+          `<subdomain>.<domain>`); rejected on `tailscale`
+          networks, where the FQDN is the node's own MagicDNS name
+          — `tailscale cert` issues for that name only, so tailnet
+          endpoints share one vhost and differentiate by
+          `pathPrefix` — and on `localhost`, which gets no vhost
+          at all. Assertions in `modules/infra/endpoints.nix`.
         '';
         example = "vault";
       };
@@ -70,7 +79,10 @@ let
         type = types.str;
         description = ''
           Name of the port the endpoint resolves to. References
-          `nixhold.services.<svc>.network.ports.<this-name>`.
+          `nixhold.services.<svc>.network.ports.<this-name>`; a
+          name that resolves to no declared port is an assertion
+          (`modules/infra/endpoints.nix`) as well as a lint
+          violation.
         '';
         example = "rocket";
       };
@@ -80,11 +92,18 @@ let
         default = null;
         description = ''
           If set, this endpoint claims only
-          `<subdomain>.<domain>/<prefix>`. Multiple endpoints
-          can share a subdomain by carving different prefixes;
-          caddy emits a single vhost with multiple location
-          blocks. `expose.routes` does not exist — multi-path
-          services declare multiple endpoints.
+          `<fqdn>/<prefix>`. Multiple endpoints can share an FQDN
+          by carving different prefixes; caddy emits a single
+          vhost with one `handle <prefix>/*` block each, plus a
+          redirect from the bare prefix to `<prefix>/`.
+          `expose.routes` does not exist — multi-path services
+          declare multiple endpoints.
+
+          An absolute path with no trailing slash (`/vault`).
+          Because the routing form matches whole path segments,
+          `/task` and `/tasks` are disjoint, but two prefixes on
+          one FQDN where one is a segment prefix of the other
+          (`/tv`, `/tv/x`) are an assertion.
         '';
         example = "/api";
       };
@@ -94,11 +113,12 @@ let
         default = true;
         description = ''
           Whether `pathPrefix` is stripped before proxying. `true`
-          (default) emits caddy `handle_path` — the backend sees
-          paths relative to the prefix. Set `false` (caddy `handle`)
-          for apps that mount themselves under the prefix and expect
-          it passed through, e.g. vaultwarden with a path in
-          `DOMAIN`. Only meaningful when `pathPrefix` is set.
+          (default) adds a caddy `uri strip_prefix` inside the
+          endpoint's handle block — the backend sees paths relative
+          to the prefix. Set `false` for apps that mount themselves
+          under the prefix and expect it passed through, e.g.
+          vaultwarden with a path in `DOMAIN`. Only meaningful when
+          `pathPrefix` is set.
         '';
       };
 
@@ -126,6 +146,14 @@ let
           identity mechanism yet, so endpoints there must set
           `false` explicitly (assertion) and own their auth at the
           app level.
+
+          This is authentication, not authorization: it proves the
+          request comes from a non-tagged node of the expected
+          tailnet and tells the backend who, but any such node passes.
+          Which devices and users may reach this host is the
+          Tailscale ACL's decision; per-user gating beyond that is the
+          backend's own business (the identity headers are there for
+          it).
         '';
       };
 

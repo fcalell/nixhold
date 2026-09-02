@@ -41,6 +41,13 @@
 # nh_target_sh <remote> <sh-snippet> — run a snippet on the install
 # target: locally when installing this machine, over ssh in --remote
 # mode. Keeps disk enumeration and by-id resolution single-sourced.
+#
+# No --host: in --remote mode the machine answering is the installer
+# ISO, whose host key is generated fresh on every boot, so the fleet's
+# committed key for <name> is NOT what it presents and there is nothing
+# to pin to. These snippets read block devices; the host key itself
+# never travels over them (it goes through nixos-anywhere's
+# --extra-files, below).
 nh_target_sh() {
   local remote="$1" script="$2"
   if [ -z "$remote" ]; then
@@ -685,6 +692,12 @@ EOF
     #    (--build-on-remote); nixos-facter writes the hardware report
     #    back to facter.json.
     nh_info "running nixos-anywhere against $name @ $remote"
+    # nixos-anywhere drives its own ssh with UserKnownHostsFile=/dev/null
+    # and StrictHostKeyChecking=no (its hard defaults, not ours) and the
+    # host key cannot be pinned anyway: the machine answering is the
+    # installer ISO, whose key is random per boot. The connection is
+    # therefore trust-on-first-use, and it carries $name's private key
+    # in --extra-files — run installs over a network you trust.
     nixos-anywhere \
       --flake "$root#$name" \
       --generate-hardware-config nixos-facter "$facter_target" \

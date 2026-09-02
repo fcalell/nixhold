@@ -92,7 +92,24 @@ EOF
         local args=(switch)
         [ "$mode" != "switch" ] && args=("$mode")
         [ "$dry_run" -eq 1 ] && args=(dry-build)
-        nixos-rebuild "${args[@]}" \
+        # nixos-rebuild spawns its own ssh; $NIX_SSHOPTS is the only way
+        # in. Pin it to $name's committed host key exactly as nh_ssh
+        # does, so a deploy cannot activate a closure on whatever
+        # answered at that address. Nothing to pin (no host.pub yet, or
+        # a scratch path ssh's word-split env var cannot carry) leaves
+        # ssh on its own known_hosts, which asks rather than assumes.
+        local pin="" pinrc=0
+        pin="$(nh_ssh_pin_opts "$name" "${target##*@}")" || pinrc=$?
+        case "$pinrc" in
+          0) ;;
+          1) nh_info "no committed host key for $name yet — ssh verifies $target against your own known_hosts" ;;
+          *)
+            pin=""
+            nh_warn "could not pin $target to $name's committed host key — ssh falls back to your own known_hosts"
+            ;;
+        esac
+        NIX_SSHOPTS="${NIX_SSHOPTS:-}${pin:+ $pin}" \
+          nixos-rebuild "${args[@]}" \
           --flake "$root#$name" \
           --target-host "$target" \
           --build-host "$target" \

@@ -54,12 +54,19 @@ let
     (
       { lib, ... }:
       {
+        # The OS hostname only *defaults* to the fleet key — a host
+        # may be renamed (MDM, corporate naming) without changing
+        # which fleet entry it is. `nixhold.fleet.selfName` carries
+        # that identity, so secrets, recipients and `derived.self`
+        # stay put when the OS name moves.
         networking.hostName = lib.mkDefault name;
         nixpkgs.hostPlatform = lib.mkDefault host.arch;
         nixhold = {
           inherit identity;
           layout = resolvedLayout;
-          fleet = fleetView;
+          fleet = fleetView // {
+            selfName = name;
+          };
         };
       }
     )

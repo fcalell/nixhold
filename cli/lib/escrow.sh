@@ -154,14 +154,17 @@ nh_resolve_host_key() {
     return 1
   fi
 
-  # Subshell + trap: the unwrapped operator identity never outlives the
-  # decrypt, even on failure. errexit is ignored inside — the subshell
-  # is an `if` condition — so each step is checked explicitly.
+  # Subshell: the unwrapped operator identity is staged in the process
+  # scratch root, which the dispatcher's EXIT/INT/TERM/HUP handler wipes
+  # — a trap installed HERE would not, since bash resets trapped signals
+  # inside a subshell and Ctrl-C would leave the identity behind.
+  # errexit is ignored inside (the subshell is an `if` condition), so
+  # each step is checked explicitly.
   if ! (
     set -euo pipefail
-    idfile="$(mktemp -t nixhold-id.XXXXXX)" || exit 1
+    iddir="$(nh_tmpdir id)" || exit 1
+    idfile="$(mktemp "$iddir/id.XXXXXX")" || exit 1
     chmod 600 "$idfile"
-    trap 'rm -f "$idfile"' EXIT
     nh_unwrap_identity "$idfile" || exit 1
     age -d -i "$idfile" -o "$dest/ssh_host_ed25519_key" "$esc" || exit 1
   ); then
@@ -301,14 +304,18 @@ nh_key_target() {
   return 1
 }
 
-# nh_read_live_host_key <dest> [target] — copy the machine's live
-# /etc/ssh/ssh_host_ed25519_key into <dest> (0600): locally through
+# nh_read_live_host_key <dest> [target] [host] — copy the machine's
+# live /etc/ssh/ssh_host_ed25519_key into <dest> (0600): locally through
 # sudo, or over ssh when <target> is given. Remote reads use `sudo -n`:
 # the key travels on the connection's stdout, so there is no channel
 # left for a password prompt — connect as root or as a passwordless-
 # sudo user.
+#
+# <host> is the fleet host <target> is expected to be: a PRIVATE key
+# comes back over that connection, so it is pinned to the key the fleet
+# has committed for <host> whenever there is one (see lib/ssh.sh).
 nh_read_live_host_key() {
-  local dest="$1" target="${2:-}" src="/etc/ssh/ssh_host_ed25519_key"
+  local dest="$1" target="${2:-}" host="${3:-}" src="/etc/ssh/ssh_host_ed25519_key"
   # shellcheck disable=SC2016 # runs on the TARGET's shell, not ours
   local remote_read='if [ "$(id -u)" -eq 0 ]; then cat /etc/ssh/ssh_host_ed25519_key; else sudo -n cat /etc/ssh/ssh_host_ed25519_key; fi'
   if ! (umask 077 && : >"$dest"); then
@@ -322,7 +329,7 @@ nh_read_live_host_key() {
       return 1
     fi
   else
-    if ! nh_ssh "$target" -- "$remote_read" >"$dest"; then
+    if ! nh_ssh "$target" --host "$host" -- "$remote_read" >"$dest"; then
       nh_err "could not read $src on $target — connect as root, or as a user with passwordless sudo"
       rm -f "$dest"
       return 1
@@ -339,13 +346,19 @@ nh_read_live_host_key() {
   }
 }
 
-# nh_install_host_key <privkey> [target] — make <privkey> the machine's
-# /etc/ssh/ssh_host_ed25519_key: the single "ship the key to the box"
-# path, used by `host install` (darwin, in place) and `host rotate-key`
-# (local or over ssh). Derives the pubkey beside it and restarts sshd
-# so the running daemon stops serving the superseded identity.
+# nh_install_host_key <privkey> [target] [host] — make <privkey> the
+# machine's /etc/ssh/ssh_host_ed25519_key: the single "ship the key to
+# the box" path, used by `host install` (darwin, in place) and `host
+# rotate-key` (local or over ssh). Derives the pubkey beside it and
+# restarts sshd so the running daemon stops serving the superseded
+# identity.
+#
+# <host> is the fleet host <target> is expected to be; the key travels
+# TO the machine on that connection, so it is pinned exactly as the
+# read path is (see lib/ssh.sh — mid-rotation the pin is the key the
+# machine still runs, not the one just committed).
 nh_install_host_key() {
-  local key="$1" target="${2:-}"
+  local key="$1" target="${2:-}" host="${3:-}"
   if [ ! -s "$key" ]; then
     nh_err "no host private key at $key — nothing to install"
     return 1
@@ -353,7 +366,7 @@ nh_install_host_key() {
   if [ -z "$target" ]; then
     nh_install_host_key_local "$key"
   else
-    nh_install_host_key_remote "$key" "$target"
+    nh_install_host_key_remote "$key" "$target" "$host"
   fi
 }
 
@@ -382,15 +395,18 @@ nh_install_host_key_local() {
 }
 
 nh_install_host_key_remote() {
-  local key="$1" target="$2" hostpart="${2##*@}"
+  local key="$1" target="$2" host="${3:-}" hostpart="${2##*@}"
   # One snippet, run by the target's shell: the private key arrives on
-  # stdin and never touches an argv or a shared /tmp path we chose.
+  # stdin and never touches an argv or a shared /tmp path we chose. The
+  # trap is the target's own cleanup — `set -e` means any failing step
+  # below would otherwise leave the private key sitting in its /tmp.
   # shellcheck disable=SC2016 # runs on the TARGET's shell, not ours
   local script='
 set -eu
 umask 077
 if [ "$(id -u)" -eq 0 ]; then S=""; else S="sudo -n"; fi
 t="$(mktemp)"
+trap '"'"'rm -f "$t" "$t.pub"'"'"' EXIT
 cat >"$t"
 chmod 600 "$t"
 ssh-keygen -y -f "$t" >"$t.pub"
@@ -401,17 +417,20 @@ rm -f "$t" "$t.pub"
 if command -v systemctl >/dev/null 2>&1; then $S systemctl try-restart sshd.service || true; fi
 '
   nh_info "installing the host key on $target"
-  if ! nh_ssh "$target" -- "$script" <"$key"; then
+  if ! nh_ssh "$target" --host "$host" -- "$script" <"$key"; then
     nh_err "could not install the host key on $target — connect as root, or as a user with passwordless sudo"
     return 1
   fi
   nh_ok "installed the host key on $target"
-  # The target now answers with a different host key; the operator's
-  # known_hosts still pins the old one, which fails closed and looks
-  # like an attack.
+  # The target now answers with a different host key. The CLI's own pin
+  # is regenerated per connection from the committed host.pub — which is
+  # this key — but the OPERATOR's ~/.ssh/known_hosts (the file
+  # `ssh-keygen -R` edits, used by their plain `ssh` and by
+  # nixos-rebuild) still records the superseded one, which fails closed
+  # and looks like an attack.
   if command -v ssh-keygen >/dev/null 2>&1; then
     ssh-keygen -R "$hostpart" >/dev/null 2>&1 ||
-      nh_warn "could not drop the old known_hosts entry for $hostpart — 'ssh-keygen -R $hostpart' if ssh complains the host key changed"
+      nh_warn "could not drop the old entry for $hostpart from ~/.ssh/known_hosts — 'ssh-keygen -R $hostpart' if ssh complains the host key changed"
   fi
 }
 
@@ -465,18 +484,18 @@ nh_ensure_repo_deploy_key() {
   rcpt="$(nh_operator_recipient_file)" || return 1
   nh_require_cmd age ssh-keygen || return 1
 
-  # Generate inside a private dir the trap wipes: the deploy key's
-  # plaintext exists only between ssh-keygen and age. The ciphertext is
-  # copied out before the trap fires; the pubkey is the subshell's only
-  # stdout. errexit is ignored inside — the caller tests our exit code
-  # — so every step exits explicitly; otherwise a failed cp would still
-  # report a key that was never written.
+  # Generate inside the process scratch root, which the dispatcher's
+  # EXIT/INT/TERM/HUP handler wipes: the deploy key's plaintext exists
+  # only between ssh-keygen and age, and a subshell-local trap would not
+  # survive a Ctrl-C here. The ciphertext is copied out first; the
+  # pubkey is the subshell's only stdout. errexit is ignored inside —
+  # the caller tests our exit code — so every step exits explicitly;
+  # otherwise a failed cp would still report a key that was never
+  # written.
   pub="$(
     (
       set -euo pipefail
-      d="$(mktemp -d -t nixhold-repokey.XXXXXX)" || exit 1
-      chmod 700 "$d"
-      trap 'rm -rf "$d"' EXIT
+      d="$(nh_tmpdir repokey)" || exit 1
       ssh-keygen -t ed25519 -N "" -C "nixhold-repo-deploy" -f "$d/key" >/dev/null || exit 1
       age -R "$rcpt" -o "$d/key.age" "$d/key" || exit 1
       mkdir -p "$keys_dir" || exit 1
