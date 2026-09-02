@@ -112,6 +112,23 @@ let
         '';
       };
 
+      auth = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Require the network's identity mechanism in front of
+          this endpoint. On `tailscale` networks that is the node
+          identity behind the connection — caddy `forward_auth` to
+          tailscale's nginx-auth daemon, see ROADMAP "Tailnet
+          identity auth". `false` is the explicit opt-out: the
+          identity headers are stripped instead, so a backend can
+          never see a forged one. `internet` networks have no
+          identity mechanism yet, so endpoints there must set
+          `false` explicitly (assertion) and own their auth at the
+          app level.
+        '';
+      };
+
       extraConfig = mkOption {
         type = types.lines;
         default = "";

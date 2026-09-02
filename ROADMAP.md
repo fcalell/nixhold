@@ -432,6 +432,7 @@ Endpoint fields:
 | `pathPrefix` | endpoints sharing a vhost carve paths; caddy emits one vhost with handle blocks |
 | `description` | free text for status; recommended on localhost endpoints |
 | `extraConfig` | raw Caddyfile lines inside the endpoint's handle block — escape hatch; the model still owns vhost/FQDN/TLS |
+| `auth` | bool, default `true`: require the network's identity mechanism (tailscale → node identity, see Tailnet identity auth). `false` is the explicit opt-out. Required-explicit on `internet` endpoints, which have no mechanism yet |
 
 **Every bound port is declared** — a bound port with no `expose`
 entry (even `localhost`) is a lint failure; lint also verifies
@@ -449,6 +450,39 @@ Tailnet vhosts use `tls <cert> <key>` + `auto_https
 disable_redirects`; internet vhosts use caddy ACME per the
 network's `tls` declaration. Apps that can't live under a subpath
 set their own base-path option or expose on an internet network.
+
+**Tailnet identity auth (locked).** A tailnet connection arrives
+already authenticated: tailscaled knows the node key and the login
+behind every source address, exactly as sshd knows the key behind a
+session. The caddy infra module turns that into HTTP auth without a
+credential of its own. Every endpoint on a `tailscale`-typed network
+gets a `forward_auth` to tailscale's `nginx-auth` daemon
+(`services.tailscaleAuth`, unix socket; caddy joins its group),
+sending `Remote-Addr`/`Remote-Port`/`Original-URI` and
+`Expected-Tailnet: <magicDnsSuffix>`. Non-tailnet sources get 401;
+tagged nodes, sharee nodes and nodes of another tailnet get 403; on
+success the `Tailscale-User`/`-Login`/`-Name`/`-Tailnet`/
+`-Profile-Picture` headers are copied to the backend, where they are
+trustworthy because caddy overwrites any client-supplied copy. On
+opted-out endpoints the same headers are stripped, so a backend can
+never see a forged one. The daemon activates from data, like caddy:
+any authenticated endpoint on the host enables it, and an assertion
+requires `nixhold.services.tailscale.enable` (the nixpkgs module
+would otherwise force-enable tailscaled behind the framework's
+back). Nothing is declared — the mechanism is a property of the
+network type, so there is no mode, no allow-list, no network knob;
+the endpoint carries one field, `auth`, whose only use is the
+explicit opt-out. `internet` networks have no identity mechanism, so
+an endpoint there must set `auth = false` explicitly (assertion):
+app-level auth is that endpoint's own business until an internet
+mechanism lands (deferred). Trust boundary = tailnet membership: on
+a single-user tailnet that is exactly "a device the operator
+enrolled"; multi-user tailnets restrict with Tailscale ACLs, which
+are operator-managed like DNS. Backends keep binding 127.0.0.1, so
+the only ways in are caddy or the box itself. whois needs a live
+tailscaled, so the fixture check covers the emitted config only;
+the runtime proof is one request from a tailnet device and one from
+outside.
 
 **Infra consumers** (server bundle): caddy (HTTP endpoints →
 vhosts, TLS strategy from network type), firewall (opens public
@@ -700,6 +734,9 @@ Dev mode warns; `--strict` is the CI gate (exit 3). Rules:
 - no orphan `.age` files; no undeclared `age.secrets` reads;
   every `required` secret has ciphertext
 - `homePath` only with `owner = "user"`; kebab-case service names
+- (assertion, not lint) `auth = true` on an internet endpoint;
+  authenticated tailnet endpoints without
+  `nixhold.services.tailscale.enable`
 - `publicHosts` length ≤ 1; no public endpoints on non-gateway
   hosts; tailscale network without `magicDnsSuffix` = dev warning
 - every layout path (defaulted or overridden) exists in-tree;
@@ -752,7 +789,8 @@ journald is uniform; no namespace reserved before a consumer.
 | `host rename` verb | manual flow (L8) becomes a real pain |
 | DNS provider modules pushing `derived.records`; zones option; AAAA; wildcards; TTL; other record types | first real consumer / dual-stack host |
 | Cross-host routing (service on A, gateway B) | real consumer; lint rule holds the door open |
-| `lan` network type; internal CA; L4 protocols (`tcp`/`udp`/`grpc`); caddy-mediated auth submodule | first LAN-only / L4 / auth consumer |
+| `lan` network type + identity for LAN clients (internal CA / mTLS — a LAN address carries no identity signal); L4 protocols (`tcp`/`udp`/`grpc`) | first LAN-only / L4 consumer |
+| Identity on `internet` endpoints (forward_auth against an IdP / OIDC) | first internet endpoint that wants framework auth rather than app auth |
 | Additional shared option types (`data`, `health`, `metrics`, `logs`, `schedule`) | designed alongside their consumer module |
 | Backup as a framework concern; state migration (`service move`) | not foreseeable |
 | Operator key recovery beyond passphrase (Shamir, hardware) | use case surfaces |
@@ -813,8 +851,10 @@ Network:
   service; cross-host wiring uses `derived.address`.
 - **`expose.<x>.routes` per-path backend map** — multiple
   endpoints share a vhost via `pathPrefix`.
-- **`auth` string field on expose** — a real auth submodule lands
-  with a real consumer.
+- **`auth` mode / allow-list on expose** — auth is derived from
+  the network type (Tailnet identity auth); the endpoint field is
+  a bool opt-out only. An allow-list would restate Tailscale ACLs;
+  a mode would restate the network type.
 - **DNS provider abstraction layer** — pattern-match on a type
   enum; add branches per provider.
 - **Automated DNS provisioning in v1** — declare-only

@@ -11,9 +11,18 @@
 #     a systemd oneshot + weekly timer, reloaded via a path unit.
 #   - internet  → FQDN is `<subdomain>.<domain>`; TLS via caddy ACME.
 #
+# Auth follows the network type (see ROADMAP "Tailnet identity
+# auth"): a tailscale endpoint with `auth = true` (the default) gets a
+# `forward_auth` to tailscale's nginx-auth daemon, which resolves the
+# source address to a tailnet login and copies the identity headers to
+# the backend. Every other endpoint — opted out, or on an internet
+# network, which has no identity mechanism yet — strips those same
+# headers on the way in, so a backend can never see a forged one.
+#
 # Auto-activates from data — no enable knob, per ROADMAP
 # "infra activation: auto from declared data". A host with zero
-# HTTP endpoints does not start caddy.
+# HTTP endpoints does not start caddy; the auth daemon likewise
+# activates only when an authenticated endpoint exists.
 {
   config,
   lib,
@@ -34,12 +43,13 @@ let
   # and are filtered out below.
   endpoints = lib.flatten (
     lib.mapAttrsToList (
-      _svcName: svc:
+      svcName: svc:
       lib.mapAttrsToList (
         epName: ep:
         ep
         // {
           _epName = epName;
+          _label = "${svcName}.${epName}";
           backendPort = svc.network.ports.${ep.backend} or null;
         }
       ) (svc.expose or { })
@@ -48,9 +58,7 @@ let
 
   httpEndpoints = lib.filter (
     e:
-    (e.protocol == "https" || e.protocol == "http")
-    && e.network != "localhost"
-    && e.backendPort != null
+    (e.protocol == "https" || e.protocol == "http") && e.network != "localhost" && e.backendPort != null
   ) endpoints;
 
   netTypeOf = e: (fleetNetworks.${e.network} or { }).type or null;
@@ -103,6 +111,79 @@ let
   mixedNetFqdns = lib.attrNames (
     lib.filterAttrs (_: eps: lib.length (lib.unique (map (e: e.netType) eps)) > 1) grouped
   );
+  # Internet networks have no identity mechanism, so `auth` there is
+  # not a default worth inheriting — it has to be turned off by hand.
+  authOnInternet = map (e: e._label) (lib.filter (e: e.auth && netTypeOf e == "internet") endpoints);
+
+  # Identity headers tailscale's nginx-auth daemon produces. One list,
+  # two uses: copied in on authenticated endpoints, stripped on every
+  # other one so a client can never forge them.
+  identityHeaders = [
+    "Tailscale-User"
+    "Tailscale-Login"
+    "Tailscale-Name"
+    "Tailscale-Tailnet"
+    "Tailscale-Profile-Picture"
+  ];
+
+  authSocket = config.services.tailscaleAuth.socketPath;
+
+  # A tailnet connection is already authenticated at the transport
+  # layer; the daemon turns that into an HTTP identity. Nothing else
+  # can be authenticated in v1 (internet networks have no mechanism).
+  isAuthed = e: e.auth && e.netType == "tailscale";
+  authedEndpoints = lib.filter isAuthed endpointsWithFqdn;
+
+  indentBy =
+    n: s:
+    let
+      pad = lib.concatStrings (lib.genList (_: " ") n);
+    in
+    lib.concatStringsSep "\n" (
+      map (line: if line == "" then "" else pad + line) (lib.splitString "\n" s)
+    );
+
+  # forward_auth to the nginx-auth unix socket. `Expected-Tailnet`
+  # makes the daemon reject nodes of a foreign tailnet (403) rather
+  # than trusting whatever whois returns.
+  forwardAuth =
+    e:
+    let
+      net = fleetNetworks.${e.network};
+    in
+    ''
+      forward_auth unix/${authSocket} {
+        uri /auth
+        header_up Remote-Addr {remote_host}
+        header_up Remote-Port {remote_port}
+        header_up Original-URI {uri}
+        header_up Expected-Tailnet ${net.magicDnsSuffix}
+        copy_headers ${lib.concatStringsSep " " identityHeaders}
+      }'';
+
+  reverseProxy =
+    e:
+    let
+      upstream = "http://127.0.0.1:${toString e.backendPort}";
+    in
+    if isAuthed e then
+      "reverse_proxy ${upstream}"
+    else
+      ''
+        reverse_proxy ${upstream} {
+        ${indentBy 2 (lib.concatMapStringsSep "\n" (h: "header_up -${h}") identityHeaders)}
+        }'';
+
+  # Body of one endpoint's handle block: the auth gate first, then the
+  # endpoint's own extraConfig (`encode`, a websocket split, …), then
+  # the framework's reverse_proxy.
+  handleBody =
+    e:
+    lib.concatStringsSep "\n" (
+      lib.optional (isAuthed e) (forwardAuth e)
+      ++ lib.optional (lib.removeSuffix "\n" e.extraConfig != "") (lib.removeSuffix "\n" e.extraConfig)
+      ++ [ (reverseProxy e) ]
+    );
 
   mkVhostExtraConfig =
     eps:
@@ -110,16 +191,12 @@ let
       isTailscale = (lib.head eps).netType == "tailscale";
       withPrefix = lib.filter (e: e.pathPrefix != null) eps;
       withoutPrefix = lib.filter (e: e.pathPrefix == null) eps;
-      # Per-endpoint extraConfig is injected inside the handle block,
-      # before the default reverse_proxy — apps add `encode`, a
-      # websocket split, etc. without leaving the data-driven model.
       # `handle_path` strips the prefix before proxying; endpoints
       # that mount themselves under the prefix (stripPrefix = false)
       # get a non-stripping `handle` instead.
       handlePrefixed = lib.concatMapStrings (e: ''
         ${if e.stripPrefix then "handle_path" else "handle"} ${e.pathPrefix}* {
-          ${e.extraConfig}
-          reverse_proxy http://127.0.0.1:${toString e.backendPort}
+        ${indentBy 2 (handleBody e)}
         }
       '') withPrefix;
       handleDefault = lib.optionalString (withoutPrefix != [ ]) (
@@ -128,8 +205,7 @@ let
         in
         ''
           handle {
-            ${e.extraConfig}
-            reverse_proxy http://127.0.0.1:${toString e.backendPort}
+          ${indentBy 2 (handleBody e)}
           }
         ''
       );
@@ -164,8 +240,46 @@ in
             strategy is per-vhost, so this cannot be routed.
           '';
         }
+        {
+          assertion = authOnInternet == [ ];
+          message = ''
+            nixhold caddy: endpoints on an internet network request the
+            network's identity mechanism (${lib.concatStringsSep ", " authOnInternet}),
+            but internet networks have no identity mechanism yet. Set
+            `auth = false` explicitly — app-level auth is the endpoint's own
+            business until an internet mechanism lands.
+          '';
+        }
+        {
+          assertion = authedEndpoints == [ ] || (config.nixhold.services.tailscale.enable or false);
+          message = ''
+            nixhold caddy: authenticated tailnet endpoints
+            (${lib.concatStringsSep ", " (map (e: e._label) authedEndpoints)}) need
+            tailscale's nginx-auth daemon, and the nixpkgs `services.tailscaleAuth`
+            module would force-enable tailscaled behind the framework's back.
+            Enable `nixhold.services.tailscale` on this host (or opt the
+            endpoints out with `auth = false`).
+          '';
+        }
       ];
     }
+
+    # Tailnet identity auth: the nginx-auth daemon resolves a tailnet
+    # source address to a login. Activates from data like caddy itself
+    # — only when the host serves an authenticated endpoint.
+    (lib.mkIf (authedEndpoints != [ ]) {
+      services.tailscaleAuth.enable = true;
+
+      # caddy dials the daemon's unix socket, whose mode is 0660.
+      users.users.caddy.extraGroups = [ config.services.tailscaleAuth.group ];
+
+      # Every authenticated vhost forwards to that socket, so it has to
+      # exist before caddy takes requests.
+      systemd.services.caddy = {
+        after = [ "tailscale-nginx-auth.socket" ];
+        wants = [ "tailscale-nginx-auth.socket" ];
+      };
+    })
 
     (lib.mkIf (endpointsWithFqdn != [ ]) {
       services.caddy = {
