@@ -49,6 +49,17 @@ EOF
     return 1
   fi
 
+  # ISOs are Linux images built with Linux builders; a mac has neither.
+  # No cross-build fallback: the operator has a Linux fleet machine (the
+  # ISO only exists for fleets with Linux hosts). Checked before the
+  # deploy key: a refusal that first generates a key and asks the
+  # operator to register it on GitHub wastes the one irreversible step
+  # in this verb.
+  if [ "$(uname -s)" = "Darwin" ]; then
+    nh_err "installer ISOs build on Linux only — run 'nixhold iso' from a Linux fleet machine"
+    return 1
+  fi
+
   # Fresh-key detection: nh_ensure_repo_deploy_key is idempotent and
   # silent on the already-escrowed path, so ask the filesystem which
   # path it took. A brand-new key is useless until it is registered on
@@ -64,14 +75,6 @@ EOF
       nh_info "aborted — re-run 'nixhold iso' once the key is registered"
       return 0
     fi
-  fi
-
-  # ISOs are Linux images built with Linux builders; a mac has neither.
-  # No cross-build fallback: the operator has a Linux fleet machine (the
-  # ISO only exists for fleets with Linux hosts).
-  if [ "$(uname -s)" = "Darwin" ]; then
-    nh_err "installer ISOs build on Linux only — run 'nixhold iso' from a Linux fleet machine"
-    return 1
   fi
 
   local arch

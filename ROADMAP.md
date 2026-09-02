@@ -341,16 +341,43 @@ Recipient/editing model:
   not a dependency; no `secrets.nix` rules file is ever committed.
 - Eval paths are store paths; the CLI writes ciphertexts at
   `$fleet_root` + repo-relative subpath (working-tree resolution).
+  Only the fleet's own source store path is re-rooted: a layout
+  path into another flake input is a hard CLI error and a lint
+  violation (a separate private-secrets input would need its own
+  write root — a ROADMAP decision, not a re-root).
+- `edit`/`bootstrap`/`rekey` refuse a recipient set that omits the
+  operator, or the host when its `host.pub` is readable or it
+  already owns ciphertexts (an untracked `host.pub` is invisible to
+  eval; the fix is `git add --intent-to-add`). `$VISUAL`/`$EDITOR`
+  are honored as command lines (`code --wait`).
 
 **Host-key escrow (principle 16).**
 `keys/hosts/<host>/host.key.age` — the host SSH private key,
 encrypted to the operator recipient only — is committed alongside
-`host.pub`. Written by `host add` and `host rotate-key`;
-backfilled by `host install` when a cached key has no escrow; lint
-warns (dev) / errors (strict) when missing. Install resolves the
-key: local cache first, else escrow (passphrase prompt). Trust
-delta ≈ none: the operator recipient already decrypts every
-secret, so repo + passphrase was already total compromise.
+`host.pub`. Single-writer invariant: `host.pub` and `host.key.age`
+are always written together from one private key — by `host add`,
+`host rotate-key`, `host escrow` (re-escrows a machine's live key,
+no rekey) and `host install`'s backfill — so the pair can never
+come from different keypairs. Lint checks the tracked pair in both
+directions (missing escrow, orphan escrow; warn dev / error
+strict); equality is not provable without the passphrase (age
+stanzas carry no fingerprint), the invariant holds it. Install
+resolves the key: local cache only while it derives the committed
+`host.pub` (a stale cache is set aside), else escrow (passphrase
+prompt, verified against `host.pub`). The repo is authoritative:
+on darwin, a machine key that disagrees with the committed
+recipient is replaced by the fleet's; the machine key is adopted
+(escrowed, then rekeyed to) only when the fleet has no committed
+recipient. `host install-key` pushes the committed key onto a
+machine with no repo writes — the completion step for a
+`rotate-key --no-install`, and the non-destructive fix for a
+drifted machine. A rotation is complete when the verb exits (repo
+and machine); the superseded escrow stays in the key cache as
+`host.key.age.prev` until the new key is confirmed installed. On
+the ISO, everything that can fail or prompt (key resolution,
+secret bootstrap) runs before the disk is wiped. Trust delta ≈
+none: the operator recipient already decrypts every secret, so
+repo + passphrase was already total compromise.
 
 **Repo deploy key.** `keys/repo.key.age` — an SSH deploy key for
 the fleet repo, encrypted to the operator recipient only; its
@@ -359,7 +386,12 @@ write access. It exists so the installer ISO can clone and push
 the (typically private) fleet repo with nothing but the
 passphrase. Generated and escrowed by `nixhold iso` when missing
 (the pubkey is printed for registration); lint warns when
-`layout.repoUrl` is set but the escrow is absent.
+`layout.repoUrl` is set but the escrow is absent. Every
+network-facing git call (clone, pull, push) goes through one
+helper: with `$NIXHOLD_REPO_KEY_FILE` set (the ISO exports it) it
+unwraps the identity, decrypts the deploy key into the process
+scratch root and runs git with it; otherwise the operator's own
+credentials. The decrypted key is never persisted into the clone.
 
 **Identity resolution.** Verbs needing the operator identity use
 `$NIXHOLD_IDENTITY_FILE` if present, else fall back to the
@@ -456,8 +488,8 @@ exists, the installer ISO is itself a sufficient operator seat.
 | L3 NixOS host | On-prem: boot the fleet ISO on the target, `nixhold host install` → passphrase → "new host…" in the picker. VPS / from another machine: `nixhold host add <name> --install root@<ip>` (fleet ISO makes the target reachable with zero typing; any installer works) |
 | L4 add service | edit host/profile module → `nixhold deploy <name>` (auto-walks missing secret bootstrap) |
 | L5 new service module | `nixhold service new <name>` → edit |
-| L6 update inputs | `nixhold update` (from any directory): pull → flake update → per-host delta review → deploy the confirmed hosts |
-| L7 reinstall/reformat | Boot the ISO, `nixhold host install` → passphrase → pick the host (or `--remote root@<ip>` from a fleet machine). Host key from cache or escrow → identity unchanged → secrets still decrypt → nothing generated, nothing pushed. Legacy host without escrow: `rotate-key` then install |
+| L6 update inputs | `nixhold update` (from any directory): pull → flake update → secret bootstrap walk (on the terminal, before any piped step) → per-host delta review (hosts still missing required secrets show "unknown") → deploy the confirmed hosts |
+| L7 reinstall/reformat | Boot the ISO, `nixhold host install` → passphrase → pick the host (or `--remote root@<ip>` from a fleet machine). Host key from cache or escrow → identity unchanged → secrets still decrypt → nothing generated, nothing pushed. Legacy host whose live key was never escrowed: `host escrow` (no rekey), then install |
 | L8 rename | manual (`git mv` + edit hostsFile + `secret rekey` + reinstall); a verb only if real need surfaces |
 | L9 remove | `nixhold host remove <name>` — deletes fleet entry, hosts/, secrets/, keys/; decommissioning the machine is the operator's job |
 | L10 recover | host died → L7. All operator machines lost → clone + passphrase anywhere (or the ISO) is a complete seat. Passphrase lost → catastrophic, regenerate everything (documented, no CLI) |
@@ -527,7 +559,7 @@ deploy-key remote. Darwin is untouched (ISO is NixOS-only).
 
 ## CLI
 
-One bash CLI, 16 verbs. Access: bare `nixhold` post-install
+One bash CLI, 18 verbs. Access: bare `nixhold` post-install
 (`programs.nixhold.enable`, default on) or `nix run .#nixhold --
 <verb>` pre-install. No separate installer apps, no
 per-subcommand flake apps.
@@ -539,15 +571,21 @@ context resolves as: `$NIXHOLD_FLEET` → upward walk from `$PWD`
 from `layout.repoUrl`; the module bakes the value into the
 wrapped CLI). When the resolved directory doesn't exist — a
 fresh machine after an ISO install — the CLI offers to clone
-`repoUrl` there over the operator's normal SSH credentials (the
-deploy key is ISO-only; fleet machines have the operator's key
-decrypted already).
+`repoUrl` there, through the repo deploy key on the installer and
+the operator's normal SSH credentials everywhere else (see "Repo
+deploy key").
 
 ```
 nixhold init                                        provision/restore operator age identity
 nixhold host add <name> [--install <user>@<ip>]
 nixhold host install [<name>] [--remote <user>@<ip>] [--disk <by-id>] [--disko-from <path>] [--yes]
-nixhold host rotate-key <name>                      new host key, escrow it, rekey that host's secrets
+nixhold host rotate-key <name> [--remote <user>@<ip>] [--no-install] [--yes]
+                                                    new host key, escrow it, rekey that host's
+                                                    secrets, install it on the machine
+nixhold host escrow <name> [--remote <user>@<ip>] [--yes]
+                                                    re-escrow a host's live /etc/ssh key (no rekey)
+nixhold host install-key <name> [--remote <user>@<ip>] [--yes]
+                                                    install the committed host key on the machine
 nixhold host remove <name>
 nixhold deploy <name> [--mode switch|boot|test] [--dry-run] [--target <addr>] [--yes]
 nixhold update [--yes]                              git pull → nix flake update → per-host dry-run
@@ -657,8 +695,8 @@ Dev mode warns; `--strict` is the CI gate (exit 3). Rules:
 - every `expose.backend` references a declared port; every
   `expose.network` is declared and includes the host
 - every host pubkey is a recipient of its secrets
-- every `host.pub` has a sibling `host.key.age` escrow
-  (warn dev / error strict)
+- every tracked `host.pub` has a tracked sibling `host.key.age`
+  escrow and vice versa (warn dev / error strict)
 - no orphan `.age` files; no undeclared `age.secrets` reads;
   every `required` secret has ciphertext
 - `homePath` only with `owner = "user"`; kebab-case service names

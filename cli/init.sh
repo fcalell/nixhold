@@ -57,12 +57,12 @@ EOF
     nh_warn "generating a NEW operator identity — existing secrets stay decryptable only by the OLD key"
   fi
 
-  local tmp
-  tmp="$(mktemp -t nixhold-identity.XXXXXX)"
-  # Expand now: the trap fires at shell exit, after this function's
-  # locals are gone.
-  # shellcheck disable=SC2064
-  trap "rm -f '$tmp'" EXIT
+  # The unwrapped identity exists only between age-keygen and `age -p`.
+  # It lives in the process scratch root the dispatcher wipes on exit —
+  # a trap of our own here would silently replace that one handler.
+  local tmpdir tmp
+  tmpdir="$(nh_tmpdir identity)" || return 1
+  tmp="$tmpdir/identity"
 
   age-keygen -o "$tmp" >/dev/null
   nh_info "wrapping identity with passphrase (you'll be prompted twice)"

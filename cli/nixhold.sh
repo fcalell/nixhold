@@ -31,6 +31,14 @@ export NIX_CONFIG
 # shellcheck source=lib/escrow.sh
 . "$NIXHOLD_LIB_ROOT/lib/escrow.sh"
 
+# One process-wide exit path: wipes the scratch root (host keys, the
+# repo deploy key, unwrapped identities) and runs whatever rollback a
+# verb registered with nh_at_exit. Signals run it too, so a Ctrl-C
+# mid-rotation is rolled back rather than left half-applied.
+trap nh_run_at_exit EXIT
+trap 'nh_run_at_exit; exit 130' INT
+trap 'nh_run_at_exit; exit 143' TERM
+
 usage() {
   cat <<'EOF'
 nixhold — manage a nixhold-declared fleet.
@@ -42,7 +50,9 @@ Bootstrap:
 Hosts:
   host add <name> [--install <u@h>] Register a host (and optionally install).
   host install [<name>] [--remote …] Install or re-image a host (picker on the ISO).
-  host rotate-key <name>            Rotate host SSH+age key, rekey secrets.
+  host rotate-key <name> [--remote …] Rotate host SSH+age key, rekey, install it.
+  host escrow <name> [--remote …]   Re-escrow a host's LIVE /etc/ssh key.
+  host install-key <name> [--remote …] Install the committed host key on the machine.
   host remove <name>                Delete host from the fleet.
 
 Daily:
@@ -122,9 +132,9 @@ main() {
       sub="$1"
       shift
       case "$sub" in
-        add | install | remove | rotate-key)
+        add | install | install-key | remove | rotate-key | escrow)
           . "$NIXHOLD_LIB_ROOT/host-$sub.sh"
-          cmd_host_${sub//-/_} "$@"
+          cmd_host_"${sub//-/_}" "$@"
           ;;
         *)
           nh_err "unknown 'host' subcommand: $sub"
@@ -143,7 +153,7 @@ main() {
       case "$sub" in
         edit | rekey | bootstrap)
           . "$NIXHOLD_LIB_ROOT/secret-$sub.sh"
-          cmd_secret_${sub} "$@"
+          cmd_secret_"${sub}" "$@"
           ;;
         new)
           nh_err "'secret new' was folded into 'secret bootstrap <host> [name]'"

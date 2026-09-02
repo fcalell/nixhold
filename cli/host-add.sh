@@ -43,9 +43,18 @@ EOF
     return 1
   fi
 
+  # Every prompt is checked and every abort happens HERE, before the
+  # first write: this verb may run inside `host install`'s picker,
+  # where errexit is off, and a cancelled (Esc) gum prompt returns an
+  # empty string. Unchecked, that wrote `arch = ""; profile = ;` into
+  # hosts.nix and minted a keypair + escrow for a half-added host.
   local arch
   arch="$(nh_prompt_choose "Arch for $name:" \
-    "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin")"
+    "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin")" || arch=""
+  if [ -z "$arch" ]; then
+    nh_err "aborted — no arch chosen; nothing was written"
+    return 1
+  fi
 
   # Profile list: framework-shipped + a free-text escape for
   # forker-authored profiles.
@@ -54,65 +63,90 @@ EOF
     "nixhold.profiles.server" \
     "nixhold.profiles.workstationDarwin" \
     "nixhold.profiles.desktopLinux" \
-    "(forker-authored — type custom name)")"
+    "(forker-authored — type custom name)")" || profile=""
+  if [ -z "$profile" ]; then
+    nh_err "aborted — no profile chosen; nothing was written"
+    return 1
+  fi
 
   if [ "$profile" = "(forker-authored — type custom name)" ]; then
     local custom
-    custom="$(nh_prompt_input "Custom profile expression (Nix value)")"
+    custom="$(nh_prompt_input "Custom profile expression (Nix value)")" || custom=""
+    if [ -z "$custom" ]; then
+      nh_err "aborted — no profile expression given; nothing was written"
+      return 1
+    fi
     profile="$custom"
   fi
 
   local networks
-  networks="$(nh_prompt_input "Networks (comma-separated)" "tailnet")"
+  networks="$(nh_prompt_input "Networks (comma-separated)" "tailnet")" || networks=""
+  if [ -z "$networks" ]; then
+    nh_err "aborted — no networks given; nothing was written"
+    return 1
+  fi
 
   local public_ip="" public_fqdn=""
   if nh_prompt_confirm "Does $name have a stable public IP?"; then
-    public_ip="$(nh_prompt_input "publicIp (e.g. 203.0.113.42)")"
-    public_fqdn="$(nh_prompt_input "publicFqdn (optional, blank to skip)")"
+    public_ip="$(nh_prompt_input "publicIp (e.g. 203.0.113.42)")" || public_ip=""
+    if [ -z "$public_ip" ]; then
+      nh_err "aborted — no publicIp given; nothing was written"
+      return 1
+    fi
+    public_fqdn="$(nh_prompt_input "publicFqdn (optional, blank to skip)")" || public_fqdn=""
   fi
+
+  # stateVersion belongs with the other prompts: asking it after the
+  # keypair exists would put a cancel on the far side of a write.
+  local statever=""
+  case "$arch" in
+    *-linux)
+      statever="$(nh_prompt_input "system.stateVersion (nixpkgs release)" "26.05")" || statever=""
+      if [ -z "$statever" ]; then
+        nh_err "aborted — no stateVersion given; nothing was written"
+        return 1
+      fi
+      ;;
+  esac
 
   # Generate host SSH keypair into the per-host cache. The
   # pubkey goes into the fleet (committed); the privkey stays in
   # the cache (re-used for redeploys / install).
   local cache="$NIXHOLD_CACHE_DIR/host-keys/$name"
-  mkdir -p "$cache"
-  chmod 0700 "$cache"
+  if ! mkdir -p "$cache" || ! chmod 0700 "$cache"; then
+    nh_err "could not create the host-key cache at $cache"
+    return 1
+  fi
   if [ ! -f "$cache/ssh_host_ed25519_key" ]; then
-    ssh-keygen -t ed25519 -N "" -C "nixhold-host-$name" -f "$cache/ssh_host_ed25519_key" >/dev/null
+    ssh-keygen -t ed25519 -N "" -C "nixhold-host-$name" -f "$cache/ssh_host_ed25519_key" >/dev/null || {
+      nh_err "could not generate a host SSH keypair at $cache"
+      return 1
+    }
     nh_ok "generated host SSH keypair at $cache"
   else
     nh_info "host SSH key already cached at $cache (reusing)"
   fi
 
-  # Commit pubkey to the working-tree keys dir. (nh_layout evaluates
-  # to a read-only store path; nh_worktree_keys_dir re-roots it under
-  # the fleet, and falls back to <root>/keys when no host yet exists
-  # to evaluate layout from — which is the case while adding the
-  # first host.)
+  # Commit the pubkey (the host's age recipient) AND escrow the private
+  # half beside it, in one call from one private key — so the host is
+  # re-imageable from repo + passphrase alone from birth and the pair
+  # can never disagree. (nh_layout evaluates to a read-only store path;
+  # nh_worktree_keys_dir re-roots it under the fleet, and falls back to
+  # <root>/keys when no host yet exists to evaluate layout from — which
+  # is the case while adding the first host.) A fleet with no operator
+  # pubkey yet gets a warning rather than a half-added host; lint flags
+  # the missing escrow.
   local keys_dir
-  keys_dir="$(nh_worktree_keys_dir)"
-  mkdir -p "$keys_dir/hosts/$name"
-  cp "$cache/ssh_host_ed25519_key.pub" "$keys_dir/hosts/$name/host.pub"
-  nh_ok "committed host pubkey to $keys_dir/hosts/$name/host.pub"
-
-  # Escrow the private half beside it (operator recipient only), so the
-  # host is re-imageable from repo + passphrase alone from birth.
-  # Non-interactive (recipient, not identity); a fleet with no operator
-  # pubkey yet gets a warning rather than a half-added host — lint
-  # flags the missing escrow.
+  keys_dir="$(nh_worktree_keys_dir)" || return 2
   nh_escrow_host_key "$name" "$cache/ssh_host_ed25519_key" ||
     nh_warn "host key for $name is NOT escrowed — run 'nixhold init' then 'nixhold host rotate-key $name'"
 
   # Scaffold the host's module files so it evaluates now and builds
   # after `host install` fills in disko.nix + facter.json.
-  local statever=""
-  case "$arch" in
-    *-linux) statever="$(nh_prompt_input "system.stateVersion (nixpkgs release)" "26.05")" ;;
-  esac
-  nh_scaffold_host_files "$root" "$name" "$arch" "$statever"
+  nh_scaffold_host_files "$root" "$name" "$arch" "$statever" || return 1
 
   # Append entry to hosts.nix.
-  nh_append_host_entry "$hosts_file" "$name" "$arch" "$profile" "$networks" "$public_ip" "$public_fqdn"
+  nh_append_host_entry "$hosts_file" "$name" "$arch" "$profile" "$networks" "$public_ip" "$public_fqdn" || return 1
   nh_ok "wrote host entry for $name into $hosts_file"
 
   # Make the generated files visible to git-flake eval: a dirty git
@@ -186,12 +220,18 @@ EOF
   # not `awk -v` — `-v` processes backslash escapes, which would
   # mangle a custom profile expression containing `\`.
   local tmp
-  tmp="$(mktemp -t nixhold-hosts.XXXXXX)"
-  entry="$entry" awk '
+  tmp="$(mktemp -t nixhold-hosts.XXXXXX)" || {
+    nh_err "could not create a temp file to rewrite $file"
+    return 1
+  }
+  if ! entry="$entry" awk '
     /^}$/ && !done { print ENVIRON["entry"]; done=1 }
     { print }
-  ' "$file" >"$tmp"
-  mv "$tmp" "$file"
+  ' "$file" >"$tmp" || ! mv "$tmp" "$file"; then
+    rm -f "$tmp"
+    nh_err "could not write the host entry into $file"
+    return 1
+  fi
 }
 
 # Scaffold a freshly-added host's module files so it evaluates now
