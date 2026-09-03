@@ -10,7 +10,7 @@
 # sees the new roster.
 
 # nh_fleet_view — the view as JSON on stdout:
-#   { hosts:   { <name>: { arch, platform, networks, publicIp, publicFqdn } },
+#   { hosts:   { <name>: { arch, platform, networks, disk, publicIp, publicFqdn } },
 #     network: { <name>: { type, magicDnsSuffix, domain } },
 #     address: { <host>: { <network>: <addr|null> } } }
 # Non-zero when the fleet has no host to read it from, or the eval
@@ -34,7 +34,7 @@ nh_fleet_view() {
       let f = (builtins.head (builtins.attrValues cs)).config.nixhold.fleet;
       in if cs == { } then null else {
         hosts = builtins.mapAttrs (n: h: {
-          inherit (h) arch networks publicIp publicFqdn;
+          inherit (h) arch networks disk publicIp publicFqdn;
           platform = if builtins.match ".*-darwin" h.arch != null then "darwin" else "nixos";
         }) f.hosts;
         inherit (f) network;

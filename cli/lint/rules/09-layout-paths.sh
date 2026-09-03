@@ -20,11 +20,11 @@ if [ -z "$hosts" ]; then
 fi
 
 # File- and dir-valued keys only; `repoUrl` is a string, not a path.
-# `modulesDir` and `profilesDir` are exempt: they are scaffold targets
-# only — nothing reads them, and `service new` mkdir -p
-# them on demand (even under a stale override, so nothing fails late) —
-# and a fleet that authors no fleet modules/profiles legitimately has
-# no such dir.
+# `hostsDir`, `modulesDir` and `profilesDir` are exempt: they are
+# scaffold targets — `host add` and `service new` mkdir -p them on
+# demand (even under a stale override, so nothing fails late) — and a
+# fleet that authors no fleet modules/profiles legitimately has no
+# such dir.
 for key in secrets hostsFile keysDir ageRecipient ageIdentityWrapped; do
   # stderr is NOT suppressed: exit 3 means the value resolves into
   # another flake input, and the helper's message names it.

@@ -3,13 +3,13 @@
 # shape stable (the CLI parses it as a Nix attrset).
 { nixhold, ... }:
 {
-  # Example host (uncomment and adapt once you run
-  # `nixhold host add`):
+  # What `nixhold host add` writes (and `host install` completes
+  # with the install disk):
   #
   # myhost = {
   #   arch = "x86_64-linux";
   #   profile = nixhold.profiles.server;
-  #   modules = [ ./hosts/myhost.nix ];
-  #   networks = [ "tailnet" ];
+  #   modules = [ ./hosts/myhost/default.nix ];
+  #   disk = "/dev/disk/by-id/…";
   # };
 }

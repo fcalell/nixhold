@@ -7,7 +7,8 @@
 #   2. Generate a host SSH keypair into the per-host cache; commit its
 #      pubkey + escrow under `nixhold.layout.keysDir` (a fleet with no
 #      operator identity yet gets one here).
-#   3. Scaffold hosts/<name>/ and append the entry to `hostsFile`.
+#   3. Scaffold <hostsDir>/<name>/default.nix and append the entry to
+#      `hostsFile`.
 #   4. Provision every declared-but-missing secret.
 #   5. Ask "install now?": this machine (on the ISO, or a Mac), over
 #      ssh to an address, or later. --install <addr> answers it.
@@ -51,7 +52,11 @@ EOF
 
   # Refuse up front, before generating keys or scaffolding files —
   # failing at the hosts.nix append would leave half the work done.
-  local hosts_file="$root/hosts.nix"
+  # (The layout probes fall back to the defaults while the fleet has
+  # no host to read them from — the first `host add`.)
+  local hosts_file hosts_dir
+  hosts_file="$(nh_worktree_layout_file hostsFile 2>/dev/null)" || hosts_file="$root/hosts.nix"
+  hosts_dir="$(nh_worktree_layout_dir hostsDir hosts)" || return 2
   if [ -f "$hosts_file" ] && grep -qE "^[[:space:]]+${name}[[:space:]]*=[[:space:]]*\{" "$hosts_file"; then
     nh_err "host '$name' already present in $hosts_file (run 'host remove' first; 'host rotate-key' regenerates its key)"
     return 1
@@ -116,12 +121,15 @@ EOF
   case "$arch" in
     *-linux)
       statever="$(nh_prompt_input "system.stateVersion (nixpkgs release)" "26.05")" || statever=""
-      if [ -z "$statever" ]; then
-        nh_err "aborted — no stateVersion given; nothing was written"
-        return 1
-      fi
+      ;;
+    *-darwin)
+      statever="$(nh_prompt_input "system.stateVersion (nix-darwin integer)" "6")" || statever=""
       ;;
   esac
+  if [ -z "$statever" ]; then
+    nh_err "aborted — no stateVersion given; nothing was written"
+    return 1
+  fi
 
   # Generate host SSH keypair into the per-host cache. The
   # pubkey goes into the fleet (committed); the privkey stays in
@@ -157,12 +165,19 @@ EOF
     return 1
   }
 
-  # Scaffold the host's module files so it evaluates now and builds
-  # after `host install` fills in disko.nix + facter.json.
-  nh_scaffold_host_files "$root" "$name" "$arch" "$statever" || return 1
+  # Scaffold the host's module so it evaluates now; `host install`
+  # completes it with the disk (roster) and the facter report.
+  nh_scaffold_host_files "$hosts_dir" "$name" "$arch" "$statever" || return 1
 
-  # Append entry to hosts.nix.
-  nh_append_host_entry "$hosts_file" "$name" "$arch" "$profile" "$networks" "$public_ip" "$public_fqdn" || return 1
+  # Append entry to hosts.nix. The module path is relative to the
+  # roster file, wherever the layout puts either.
+  local modpath
+  modpath="$(realpath -m --relative-to="$(dirname "$hosts_file")" "$hosts_dir/$name/default.nix")"
+  case "$modpath" in
+    /* | ../*) ;;
+    *) modpath="./$modpath" ;;
+  esac
+  nh_append_host_entry "$hosts_file" "$name" "$arch" "$profile" "$networks" "$public_ip" "$public_fqdn" "$modpath" || return 1
   nh_ok "wrote host entry for $name into $hosts_file"
   nh_fleet_view_reset
 
@@ -172,19 +187,13 @@ EOF
   # --install) sees a hosts.nix entry whose ./hosts/<name> files
   # "don't exist" — and, worse, the recipients computation silently
   # omits the invisible host.pub.
-  if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    git -C "$root" add --intent-to-add \
-      "$keys_dir/hosts/$name" "$root/hosts/$name" "$hosts_file" 2>/dev/null ||
-      nh_warn "git add of generated files failed — run 'git add keys/ hosts/ hosts.nix' before evaluating"
-  else
-    nh_warn "fleet is not a git worktree — if it becomes one, 'git add' the generated files before evaluating"
-  fi
+  nh_stage_for_eval "$root" "$keys_dir/hosts/$name" "$hosts_dir/$name" "$hosts_file"
 
   # The roster entry, the scaffold, the host key pair and (on a first
   # host) the operator identity: committed now, before the secrets
   # walk that may open editors or fail.
   nh_commit_paths "$root" "host $name: add" \
-    "$hosts_file" "$root/hosts/$name" "$keys_dir/hosts/$name" \
+    "$hosts_file" "$hosts_dir/$name" "$keys_dir/hosts/$name" \
     "$keys_dir/operator.pub" "$keys_dir/operator.age"
 
   # Provision any declared-but-missing secrets (each ciphertext is
@@ -257,7 +266,7 @@ nh_add_install_question() {
 # attrset. Idempotent — if `<name> = {` already exists, refuses
 # (the operator should run `host remove` first).
 nh_append_host_entry() {
-  local file="$1" name="$2" arch="$3" profile="$4" networks_csv="$5" pip="$6" pfqdn="$7"
+  local file="$1" name="$2" arch="$3" profile="$4" networks_csv="$5" pip="$6" pfqdn="$7" modpath="$8"
 
   if [ ! -f "$file" ]; then
     cat >"$file" <<'EOF'
@@ -280,7 +289,7 @@ EOF
   entry="  ${name} = {
     arch = \"${arch}\";
     profile = ${profile};
-    modules = [ ./hosts/${name}/default.nix ];
+    modules = [ ${modpath} ];
     networks = [ ${networks_nix}];"
   if [ -n "$pip" ]; then
     entry="${entry}
@@ -312,18 +321,16 @@ EOF
   fi
 }
 
-# Scaffold a freshly-added host's module files so it evaluates now
-# (greppable/lintable) and builds after `host install` writes the real
-# disko.nix + facter.json. NixOS hosts import disko + the facter
-# pointer and get a placeholder disko.nix install overwrites; darwin
-# hosts get a minimal default.nix.
+# Scaffold a freshly-added host's module: the stateVersion line alone.
+# Hostname, platform, disko and the facter pointer are all
+# framework-set, so nothing else is the operator's to write yet.
 nh_scaffold_host_files() {
-  local root="$1" name="$2" arch="$3" statever="$4"
-  local dir="$root/hosts/$name"
+  local hosts_dir="$1" name="$2" arch="$3" statever="$4"
+  local dir="$hosts_dir/$name"
   mkdir -p "$dir"
 
   if [ -e "$dir/default.nix" ]; then
-    nh_info "hosts/$name/default.nix exists — leaving it untouched"
+    nh_info "$dir/default.nix exists — leaving it untouched"
     return 0
   fi
 
@@ -332,77 +339,18 @@ nh_scaffold_host_files() {
       cat >"$dir/default.nix" <<EOF
 { ... }:
 {
-  networking.hostName = "$name";
-
-  # nix-darwin's stateVersion is an integer; check the nix-darwin
-  # changelog before bumping.
-  system.stateVersion = 6;
-
-  # nixhold.home.extraModules = [ ../../home/$name ];
+  system.stateVersion = $statever;
 }
 EOF
-      nh_ok "scaffolded hosts/$name/default.nix"
       ;;
     *)
       cat >"$dir/default.nix" <<EOF
-{ inputs, ... }:
+{ ... }:
 {
-  imports = [
-    inputs.nixhold.inputs.disko.nixosModules.disko
-    ./disko.nix
-  ];
-
-  networking.hostName = "$name";
-
-  # Hardware report written by \`nixhold host install\`. Until it
-  # exists the host evaluates but a build is blocked by the facter
-  # guard.
-  nixhold.hardware.facterReport = ./facter.json;
-
   system.stateVersion = "$statever";
-
-  # nixhold.home.extraModules = [ ../../home/$name ];
 }
 EOF
-      if [ ! -e "$dir/disko.nix" ]; then
-        cat >"$dir/disko.nix" <<'EOF'
-# PLACEHOLDER — `nixhold host install` overwrites this with a layout
-# generated from the target's real disk. It evaluates so the host is
-# greppable/lintable pre-install; a build stays blocked by the facter
-# guard until install runs.
-{
-  disko.devices.disk.main = {
-    type = "disk";
-    device = "/dev/disk/by-id/REPLACE-ME";
-    content = {
-      type = "gpt";
-      partitions = {
-        ESP = {
-          size = "512M";
-          type = "EF00";
-          content = {
-            type = "filesystem";
-            format = "vfat";
-            mountpoint = "/boot";
-          };
-        };
-        root = {
-          size = "100%";
-          content = {
-            type = "filesystem";
-            format = "ext4";
-            mountpoint = "/";
-          };
-        };
-      };
-    };
-  };
-}
-EOF
-        nh_ok "scaffolded hosts/$name/{default.nix,disko.nix} (placeholder disk)"
-      else
-        nh_ok "scaffolded hosts/$name/default.nix"
-      fi
       ;;
   esac
+  nh_ok "scaffolded $dir/default.nix"
 }

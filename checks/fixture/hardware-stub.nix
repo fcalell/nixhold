@@ -1,9 +1,14 @@
-# Dummy hardware shared by the fixture's Linux hosts. Declares what
-# the framework's baseline + chosen profile cannot fill in on its own
-# (the hardware-shaped bits a real host owns), so eval doesn't trip on
-# a missing root filesystem or kernel modules.
+# Dummy hardware for fixture-gateway, the fixture host with no `disk`
+# in the roster: the custom-layout path, where the operator's own
+# module declares what the shipped shape would otherwise render. A
+# `disko.devices` declaration is what a real host writes here; the
+# fixture declares the resulting filesystems directly, plus the
+# loader choice, so eval doesn't trip on a missing root filesystem or
+# kernel modules.
 { lib, ... }:
 {
+  nixhold.hardware.facterReport = null;
+
   boot.loader.grub.enable = lib.mkDefault false;
   boot.loader.systemd-boot.enable = lib.mkDefault false;
 

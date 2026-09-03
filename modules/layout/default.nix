@@ -51,6 +51,17 @@ in
       example = lib.literalExpression "./hosts.nix";
     };
 
+    hostsDir = mkOption {
+      type = types.path;
+      description = ''
+        Directory of per-host module directories. `nixhold host add`
+        scaffolds `<hostsDir>/<host>/default.nix` there and `nixhold
+        host install` writes `<hostsDir>/<host>/facter.json`, the
+        default for `nixhold.hardware.facterReport`.
+      '';
+      example = lib.literalExpression "./hosts";
+    };
+
     modulesDir = mkOption {
       type = types.path;
       description = ''

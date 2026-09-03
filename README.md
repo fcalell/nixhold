@@ -79,8 +79,10 @@ nixhold logs [<host>] [<unit>] # journalctl over the tailnet
    module files, and ends by asking whether to install now: over ssh
    to the booted installer (`--install root@<ip>` scripts it), or
    later with `nixhold host install web --remote root@<ip>`.
-2. Install runs disko + `nixos-facter` and commits `disko.nix` +
-   `facter.json`; the scaffolded `default.nix` already imports them.
+2. Install picks the disk (written into the roster as
+   `hosts.web.disk`, from which the framework renders the one disko
+   layout), runs disko + `nixos-facter`, and commits the disk and
+   `facter.json`.
 3. Join the tailnet: either set
    `nixhold.services.tailscale.authKeySecret` (bootstrap a pre-auth
    key → auto-join on activation) or run `tailscale up` once on the box.

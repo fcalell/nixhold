@@ -1,7 +1,7 @@
-# fixture-server — the fixture's tailnet-only host. Declares what the
-# framework's baseline + chosen profile cannot fill in on its own
-# (hardware-shaped bits, via ./hardware-stub.nix) and exercises the
-# caddy tailnet path: a node-FQDN vhost with the tailscale-issued
+# fixture-server — the fixture's tailnet-only host. Its hardware is
+# roster data (`disk` in ./default.nix renders the shipped layout), so
+# nothing hardware-shaped is declared here; it exercises the caddy
+# tailnet path: a node-FQDN vhost with the tailscale-issued
 # cert, both auth branches (the default forward_auth and an explicit
 # opt-out), prefix routing with and without stripping, and the
 # tailscale-cert oneshot/timer/path units.
@@ -12,10 +12,13 @@
 { ... }:
 {
   imports = [
-    ./hardware-stub.nix
     ./modules/fixtureweb.nix
     ./known-hosts-assertions.nix
   ];
+
+  # No machine ever ran `host install` for a fixture host, so there is
+  # no report to point at: opt out of the facter guard.
+  nixhold.hardware.facterReport = null;
 
   nixhold.services.fixtureweb = {
     enable = true;

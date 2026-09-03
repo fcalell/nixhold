@@ -3,6 +3,8 @@ let
   inherit (lib) mkOption types;
 
   keysDir = config.nixhold.layout.keysDir;
+  networks = config.nixhold.fleet.network;
+  tailscaleNetworks = lib.attrNames (lib.filterAttrs (_: n: n.type == "tailscale") networks);
 
   # First line of a committed pubkey file, trailing newline trimmed —
   # `authorized_keys` entries must be single-line. Shared with
@@ -59,7 +61,21 @@ let
   };
 
   hostSubmodule = types.submodule (
-    { name, ... }:
+    { name, config, ... }:
+    let
+      # The internet-typed networks this host is on that declare a
+      # domain — `publicFqdn` defaults to `<host>.<domain>` only when
+      # that is exactly one, so the name is never a guess.
+      domains = lib.filter (d: d != null) (
+        map (
+          n:
+          if (networks.${n} or null) != null && networks.${n}.type == "internet" then
+            networks.${n}.domain
+          else
+            null
+        ) config.networks
+      );
+    in
     {
       options = {
         arch = mkOption {
@@ -82,22 +98,37 @@ let
           type = types.listOf types.deferredModule;
           default = [ ];
           description = ''
-            Operator's per-host modules: the host config file,
-            disko import, facter pointer, anything host-specific.
-            The framework places no naming or directory
-            constraint on these — principle 14 prohibits
-            filesystem-based discovery.
+            Operator's per-host modules: the host config file and
+            anything host-specific. The framework places no naming
+            or directory constraint on these — principle 14
+            prohibits filesystem-based discovery.
           '';
         };
 
         networks = mkOption {
           type = types.listOf types.str;
-          default = [ "tailnet" ];
+          defaultText = lib.literalMD "every tailscale-typed network the fleet declares";
           description = ''
             Networks this host is a member of. Each entry must be
-            a key in `mkFleet`'s `networks` arg. Default
-            `[ "tailnet" ]`; add `"public"` on gateway hosts.
+            a key in `mkFleet`'s `networks` arg. Defaults to every
+            tailscale-typed network; add the internet-typed one on
+            the gateway host.
           '';
+        };
+
+        disk = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          description = ''
+            The install disk as a `/dev/disk/by-id` path, written by
+            `nixhold host install`'s disk picker. The framework
+            renders its one shipped layout from it (whole disk, GPT,
+            512M ESP + ext4 root — see `nixhold.hardware`). `null`
+            with a `disko.devices` declaration in the host's own
+            module is the custom-layout path; `null` with neither is
+            an install-time error. NixOS hosts only.
+          '';
+          example = "/dev/disk/by-id/nvme-Samsung_SSD_980_1TB_S649NX0R123456A";
         };
 
         publicIp = mkOption {
@@ -113,11 +144,10 @@ let
 
         publicFqdn = mkOption {
           type = types.nullOr types.str;
-          default = null;
+          defaultText = lib.literalMD "`<host>.<domain>` when the host is on exactly one internet-typed network that declares a `domain`, else `null`";
           description = ''
             DNS name for this host's `publicIp` when an A record
-            exists. Operator-declared (DNS is operator-managed in
-            v1). Consumed by
+            exists (DNS is operator-managed in v1). Consumed by
             `derived.address.<host>.<internet-typed-net>`.
           '';
           example = "homelab.example.com";
@@ -140,6 +170,10 @@ let
       };
 
       config = {
+        networks = lib.mkDefault tailscaleNetworks;
+        publicFqdn = lib.mkDefault (
+          if lib.length domains == 1 then "${name}.${lib.head domains}" else null
+        );
         loginPubkey =
           let
             p = keysDir + "/hosts/${name}/identity.pub";

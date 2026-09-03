@@ -30,6 +30,7 @@ let
   layoutDefaults = {
     secrets = inputs.self + "/secrets";
     hostsFile = inputs.self + "/hosts.nix";
+    hostsDir = inputs.self + "/hosts";
     modulesDir = inputs.self + "/modules";
     profilesDir = inputs.self + "/profiles";
     keysDir = inputs.self + "/keys";

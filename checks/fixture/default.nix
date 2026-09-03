@@ -47,6 +47,11 @@ self.lib.mkFleet {
   };
 
   hosts = {
+    # `disk` set: the framework renders the shipped disko layout and
+    # the loader/zram defaults that go with it. `publicFqdn` is left
+    # to its default (`<host>.<domain>`, since `public` is the one
+    # internet network); `networks` is spelled out because the host is
+    # on more than the tailscale default.
     fixture-server = {
       arch = "x86_64-linux";
       profile = self.profiles.server;
@@ -55,8 +60,8 @@ self.lib.mkFleet {
         "tailnet"
         "public"
       ];
+      disk = "/dev/disk/by-id/fixture-root";
       publicIp = "203.0.113.10";
-      publicFqdn = "fixture-server.fixture.example.invalid";
     };
 
     # The internet-facing half of the caddy coverage. It is a host of
@@ -65,6 +70,8 @@ self.lib.mkFleet {
     # unauthenticated tailnet ones (assertion in modules/infra/caddy.nix),
     # so fixture-server keeps the tailnet branches and this one carries
     # the ACME vhost.
+    # No `disk`: the custom-layout path, with ./hardware-stub.nix
+    # standing in for an operator's own `disko.devices`.
     fixture-gateway = {
       arch = "x86_64-linux";
       profile = self.profiles.server;
@@ -75,13 +82,13 @@ self.lib.mkFleet {
       ];
     };
 
+    # `networks` left to its default: every tailscale-typed network.
     fixture-mac = {
       arch = "aarch64-darwin";
       profile = self.profiles.workstationDarwin;
       # The darwin side of the host-key pinning check: from here
       # fixture-server is a peer *with* a committed host key.
       modules = [ ./known-hosts-assertions.nix ];
-      networks = [ "tailnet" ];
     };
   };
 }
