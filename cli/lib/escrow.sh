@@ -22,10 +22,64 @@ nh_operator_recipient_file() {
   f="$(nh_worktree_layout_file ageRecipient 2>/dev/null)" ||
     f="$(nh_worktree_keys_dir)/operator.pub" || return 2
   if [ ! -f "$f" ]; then
-    nh_err "no operator recipient at $f — run 'nixhold init' and commit the pubkey it prints"
-    return 1
+    nh_ensure_operator_identity || return 1
   fi
   printf '%s' "$f"
+}
+
+# nh_ensure_operator_identity — the fleet's first need for the
+# operator recipient (escrowing the first host key) is where the
+# identity gets made: generate an age keypair, wrap the private half
+# with a passphrase, write both under keysDir and stage them. Half an
+# identity (one file without the other) is refused rather than
+# completed — the missing half is somewhere, and a new one would
+# orphan whatever the present half already guards.
+nh_ensure_operator_identity() {
+  local pub wrapped root tmpdir
+  pub="$(nh_worktree_layout_file ageRecipient 2>/dev/null)" ||
+    pub="$(nh_worktree_keys_dir)/operator.pub" || return 2
+  wrapped="$(nh_worktree_layout_file ageIdentityWrapped 2>/dev/null)" ||
+    wrapped="$(nh_worktree_keys_dir)/operator.age" || return 2
+  if [ -f "$pub" ] && [ -f "$wrapped" ]; then
+    return 0
+  fi
+  if [ -f "$pub" ] || [ -f "$wrapped" ]; then
+    nh_err "half an operator identity: $pub and $wrapped must both exist — restore the missing one from another checkout"
+    return 1
+  fi
+  if ! nh_tty; then
+    nh_err "this fleet has no operator identity ($pub) — run 'nixhold host add' on a terminal to generate one"
+    return 1
+  fi
+  nh_require_cmd age age-keygen || return 1
+  nh_info "this fleet has no operator identity yet — it is the one key that decrypts every secret and escrow"
+  if ! nh_prompt_confirm "Generate it now? (you will choose its passphrase; losing that passphrase is unrecoverable)"; then
+    nh_err "no operator identity — nothing was written"
+    return 1
+  fi
+  # The unwrapped identity exists only between age-keygen and `age -p`,
+  # under the scratch root the dispatcher wipes on every exit path.
+  tmpdir="$(nh_tmpdir identity)" || return 1
+  age-keygen -o "$tmpdir/identity" >/dev/null 2>&1 || {
+    nh_err "age-keygen failed"
+    return 1
+  }
+  mkdir -p "$(dirname "$wrapped")" "$(dirname "$pub")" || return 1
+  nh_info "wrapping the identity with your passphrase (you'll be prompted twice)"
+  if ! age -p -o "$wrapped" "$tmpdir/identity"; then
+    rm -f "$wrapped"
+    nh_err "could not wrap the operator identity — nothing was written"
+    return 1
+  fi
+  if ! age-keygen -y "$tmpdir/identity" >"$pub"; then
+    rm -f "$wrapped" "$pub"
+    nh_err "could not derive the operator recipient — nothing was written"
+    return 1
+  fi
+  chmod 0644 "$wrapped" "$pub"
+  nh_ok "operator identity written: $pub (recipient) + $wrapped (wrapped private key) — commit both"
+  root="$(nh_fleet_root)" || return 0
+  nh_stage_for_eval "$root" "$pub" "$wrapped"
 }
 
 # nh_escrow_host_key <host> <privkey-path> — commit BOTH halves of the
@@ -175,7 +229,7 @@ nh_resolve_host_key() {
   chmod 0600 "$dest/ssh_host_ed25519_key" || return 1
   nh_derive_host_pub "$dest/ssh_host_ed25519_key" || return 1
   if [ -f "$committed" ] && ! nh_key_matches_pub "$dest/ssh_host_ed25519_key" "$committed"; then
-    nh_err "the escrow $esc holds a key that is NOT $committed — the fleet's recipient and its escrow disagree; 'nixhold host escrow $host' re-escrows the live key, 'nixhold host rotate-key $host' replaces both"
+    nh_err "the escrow $esc holds a key that is NOT $committed — the fleet's recipient and its escrow disagree; 'nixhold host key $host' on the machine re-escrows its live key, 'nixhold host rotate-key $host' replaces both"
     rm -f "$dest/ssh_host_ed25519_key" "$dest/ssh_host_ed25519_key.pub"
     return 1
   fi
@@ -279,8 +333,8 @@ nh_cache_supersede() {
 }
 
 # nh_key_target <name> [remote] — where the verbs that touch a host's
-# LIVE key (`host escrow`, `host install-key`, and `host rotate-key`'s
-# install step) should act: prints an ssh target, or nothing at all for
+# LIVE key (`host key`, and `host rotate-key`'s install step) should
+# act: prints an ssh target, or nothing at all for
 # "this machine". Non-zero when neither applies; the caller says what
 # that means for it — a hard error for a direct verb, a "not installed
 # yet" notice mid-rotation.
@@ -524,4 +578,117 @@ nh_ensure_repo_deploy_key() {
     git -C "$root" add --intent-to-add "$out" 2>/dev/null ||
       nh_warn "git add of $out failed — 'git add' it before committing"
   fi
+}
+
+# nh_install_committed_key <name> [target] — resolve the committed key
+# (cache when it still derives host.pub, else the escrow) and make it
+# the machine's /etc/ssh/ssh_host_ed25519_key. Writes nothing into
+# the fleet. Shared by `host key` and `host rotate-key`.
+nh_install_committed_key() {
+  local name="$1" target="${2:-}" keydir
+  keydir="$(nh_tmpdir hostkey)" || return 1
+  nh_resolve_host_key "$name" "$keydir" || return 1
+  # <name> travels with the target so the connection carrying the
+  # private key is pinned to the key the machine is running: the
+  # committed one, or — while a rotation is pending — the superseded
+  # one `host rotate-key` recorded (see lib/ssh.sh).
+  nh_install_host_key "$keydir/ssh_host_ed25519_key" "$target" "$name"
+}
+
+# nh_reconcile_host_key <name> [target] [yes] — make the machine and
+# the repo agree about <name>'s host key. Reads the live key (in
+# place, or over ssh at <target>), prints what it found, then does the
+# one thing the state calls for. The repo is authoritative:
+#
+#   machine has no key (fresh macOS)   fleet knows one: install it;
+#                                      a host never keyed: mint + adopt
+#   live key == committed recipient    refresh the escrow from it
+#   fleet can produce the committed    install it on the machine —
+#   key (cache or escrow)              the machine is corrected, never
+#                                      the repo (that would undo a
+#                                      rotation and strand its escrow)
+#   fleet cannot; no ciphertexts       adopt the live key: escrow +
+#                                      commit; the caller rekeys
+#   fleet cannot; ciphertexts exist    refuse — adopting would leave
+#                                      them undecryptable; rotate-key
+#
+# Sets _NH_KEY_ADOPTED=1 when the live key became the committed
+# recipient, so the caller rekeys the secrets to it. <yes> skips the
+# confirmations (an install already confirmed).
+_NH_KEY_ADOPTED=0
+nh_reconcile_host_key() {
+  local name="$1" target="${2:-}" yes="${3:-0}"
+  local keys_dir committed live owns=1
+  _NH_KEY_ADOPTED=0
+  keys_dir="$(nh_worktree_keys_dir)" || return 2
+  committed="$keys_dir/hosts/$name/host.pub"
+  live="$(nh_tmpdir livekey)" || return 1
+
+  # A machine with no host key at all: fresh macOS has none until sshd
+  # has run once. Only reachable in place — a remote read fails
+  # honestly below.
+  if [ -z "$target" ] && [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then
+    if nh_host_key_known "$name"; then
+      nh_info "$name: this machine has no host key; the fleet holds one — installing it"
+      nh_install_committed_key "$name" || {
+        nh_err "could not put $name's key on this machine — not minting a replacement; fix the passphrase or run 'nixhold host rotate-key $name'"
+        return 1
+      }
+    else
+      nh_info "$name: no host key on this machine and none anywhere in the fleet — minting one at /etc/ssh/ssh_host_ed25519_key"
+      nh_sudo install -d -m 0755 /etc/ssh || return 1
+      nh_sudo ssh-keygen -t ed25519 -N "" -C "nixhold-host-$name" -f /etc/ssh/ssh_host_ed25519_key >/dev/null || {
+        nh_err "could not generate a host key at /etc/ssh/ssh_host_ed25519_key"
+        return 1
+      }
+    fi
+  fi
+
+  nh_read_live_host_key "$live/ssh_host_ed25519_key" "$target" "$name" || return 1
+
+  if nh_key_matches_pub "$live/ssh_host_ed25519_key" "$committed"; then
+    nh_info "$name: the machine runs the committed recipient — refreshing its escrow from the live key"
+    nh_escrow_host_key "$name" "$live/ssh_host_ed25519_key" || return 1
+  elif nh_have_committed_host_key "$name"; then
+    nh_warn "$name: the machine runs a key that is NOT the committed recipient, and the fleet holds the committed one — the machine is corrected, not the repo"
+    if [ "$yes" -ne 1 ] &&
+      ! nh_prompt_confirm "Install the fleet's key for $name on ${target:-this machine}? (it stops answering with the key it has now)"; then
+      nh_info "aborted — nothing changed"
+      return 1
+    fi
+    nh_install_committed_key "$name" "$target" || return 1
+    return 0
+  else
+    nh_host_has_ciphertexts "$name" || owns=$?
+    if [ -f "$committed" ] && [ "$owns" -ne 1 ]; then
+      nh_err "$name: the machine runs a key that is NOT $committed, the fleet cannot produce the committed one (no cache, no escrow), and $name already owns ciphertexts encrypted to it — adopting the live key would leave them undecryptable"
+      nh_info "rotate instead: 'nixhold host rotate-key $name' mints a new key, rekeys the secrets and installs it"
+      return 1
+    fi
+    if [ -f "$committed" ]; then
+      nh_warn "$name: the machine runs a key that is NOT $committed, and the fleet cannot produce the committed one — $name owns no ciphertexts, so the live key becomes the recipient"
+    else
+      nh_info "$name: no committed recipient yet — the machine's key becomes the recipient"
+    fi
+    if [ "$yes" -ne 1 ] && ! nh_prompt_confirm "Adopt the live key of ${target:-this machine} as $name's committed recipient?"; then
+      nh_info "aborted — nothing changed"
+      return 1
+    fi
+    nh_escrow_host_key "$name" "$live/ssh_host_ed25519_key" || {
+      nh_err "could not commit $name's key + escrow — refusing to rekey to a recipient the fleet cannot recover"
+      return 1
+    }
+    _NH_KEY_ADOPTED=1
+  fi
+
+  # The cache follows the live key: a cached key that is not the live
+  # one is kept aside (still the only copy of whatever it was), so the
+  # next install/rotate resolves without a passphrase and without
+  # reviving a superseded key.
+  local cached="$NIXHOLD_CACHE_DIR/host-keys/$name/ssh_host_ed25519_key"
+  if [ -f "$cached" ] && ! nh_key_matches_pub "$cached" "$live/ssh_host_ed25519_key.pub"; then
+    nh_cache_supersede "$name" || return 1
+  fi
+  nh_cache_host_key "$name" "$live/ssh_host_ed25519_key" ||
+    nh_warn "could not refresh the local key cache for $name"
 }

@@ -1,5 +1,5 @@
-# SSH helpers shared by host-install / host-escrow / host-install-key /
-# host-rotate-key / deploy / logs.
+# SSH helpers shared by host-install / host-key / host-rotate-key /
+# deploy / logs.
 #
 # Host-key policy. These connections carry a host's PRIVATE key in both
 # directions (`nh_read_live_host_key` reads it off the machine,
@@ -12,7 +12,7 @@
 #
 # Trust-on-first-use survives only where the fleet has nothing to pin
 # to: a host whose key it has never seen (first `host add` / first
-# `host escrow`), and the installer ISO, whose host key is random per
+# `host key`), and the installer ISO, whose host key is random per
 # boot — `host install --remote` therefore passes no --host at all.
 
 # nh_ssh_pin_keys <host> — the pubkey lines the fleet is willing to
@@ -134,22 +134,11 @@ nh_ssh() {
       # Every remote verb pins the same way, so a drifted machine is
       # unreachable from here on purpose: reconcile ON the machine
       # (the local paths read /etc/ssh directly, no ssh involved).
-      nh_info "$hostpart was pinned to $host's committed key — if ssh reported a host key mismatch, the machine runs a key the fleet does not know; log in on it (console, or your own ssh after checking its fingerprint out of band) and run 'nixhold host escrow $host' there to adopt that key, or 'nixhold host install-key $host' to put the fleet's back"
+      nh_info "$hostpart was pinned to $host's committed key — if ssh reported a host key mismatch, the machine runs a key the fleet does not know; log in on it (console, or your own ssh after checking its fingerprint out of band) and run 'nixhold host key $host' there — it puts the fleet's key back when the fleet can produce it, and adopts the machine's otherwise"
     fi
     return "$rc"
   fi
 
   nh_info "no committed host key for ${host:-$hostpart} — accepting $hostpart's key on first use"
   ssh -o StrictHostKeyChecking=accept-new "$target" "$@"
-}
-
-# Resolve a host's deploy address — prefers tailnet, falls back to
-# any internet-typed network with a non-null address.
-nh_deploy_addr() {
-  local host="$1" platform="$2"
-  local addrs
-  addrs="$(nh_host_eval "$host" "$platform" \
-    "nixhold.fleet.derived.address.$host")"
-  printf '%s' "$addrs" \
-    | jq -r '.tailnet // (to_entries | map(select(.value != null)) | first | .value // empty)'
 }

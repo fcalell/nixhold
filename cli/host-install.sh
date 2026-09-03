@@ -13,11 +13,13 @@
 #             whole guard. ($NIXHOLD_INSTALLER_MARKER overrides the
 #             path — test hook only, never set in production.)
 #
-# No <name> opens the host picker, installer environment only: every
-# NixOS host as a reformat candidate plus "new host…", which runs the
-# `host add` TUI and installs what it created. Darwin hosts dispatch
-# from arch and always run locally (see nh_darwin_install); the ISO is
-# NixOS-only.
+# No <name> opens the host picker: every host this machine can
+# install (NixOS hosts; a darwin host only on that Mac) as a reformat
+# candidate, plus "new host…", which hands off to `host add` — whose
+# own last step is the install question. Off the ISO a picked NixOS
+# host is then asked for the address of its booted installer. Darwin
+# hosts dispatch from arch and always run locally (see
+# nh_darwin_install); the ISO is NixOS-only.
 #
 # Host key: cache first, else the committed escrow (see lib/escrow.sh)
 # — so a reformat driven from a machine that never ran `host add` for
@@ -30,10 +32,10 @@
 # disko shape — single disk, GPT, no encryption; power users pass
 # --disko-from for anything else.
 
-# The dispatcher sources lib/ only; the bootstrap auto-walk lives in a
-# sibling verb.
-# shellcheck source=secret-bootstrap.sh
-. "$NIXHOLD_LIB_ROOT/secret-bootstrap.sh"
+# The dispatcher sources lib/ only; the required-secret walk lives in
+# a sibling verb.
+# shellcheck source=secret-edit.sh
+. "$NIXHOLD_LIB_ROOT/secret-edit.sh"
 
 # nh_installer_env and nh_sudo live in lib/run.sh: the clone and
 # deploy-key paths need them before any verb is sourced.
@@ -229,35 +231,30 @@ nh_pick_disk() {
   nh_disk_byid "$remote" "$name"
 }
 
-# nh_pick_host — installer-environment host picker. Prints
-# "existing<TAB><name>" or "new<TAB><name>"; the "new host…" entry
-# runs the `host add` TUI in place (without its --install path, which
-# would recurse back into this verb).
-nh_pick_host() {
-  local hosts rows chosen name
-  hosts="$(nix eval --json --no-warn-dirty "$(nh_fleet_root)#nixosConfigurations" \
-    --apply 'builtins.attrNames' 2>/dev/null | jq -r '.[]?' || true)"
-  rows=""
-  while IFS= read -r name; do
-    [ -n "$name" ] || continue
-    rows="${rows}${name}	(reformat — erases its disk)
-"
-  done <<<"$hosts"
+# nh_pick_install_host — the install picker: every host this machine
+# can install as a reformat candidate, plus "new host…". Prints the
+# chosen name, or "new" for the add hand-off.
+nh_pick_install_host() {
+  local rows="" line name platform chosen
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    name="${line%% *}"
+    platform="${line##* }"
+    case "$platform" in
+      nixos) rows="${rows}${name}	(reformat — erases its disk)
+" ;;
+      darwin)
+        [ "$(uname -s)" = "Darwin" ] || continue
+        rows="${rows}${name}	(darwin — activates this Mac)
+" ;;
+    esac
+  done < <(nh_hosts)
   rows="${rows}new host…"
-
   chosen="$(printf '%s\n' "$rows" | gum choose --header "Install which host?")" || return 1
   if [ "$chosen" = "new host…" ]; then
-    local newname
-    newname="$(nh_prompt_input "Name for the new host")" || newname=""
-    if [ -z "$newname" ]; then
-      nh_err "no host name given"
-      return 1
-    fi
-    . "$NIXHOLD_LIB_ROOT/host-add.sh"
-    cmd_host_add "$newname" || return 1
-    printf 'new\t%s' "$newname"
+    printf 'new'
   else
-    printf 'existing\t%s' "$(printf '%s' "$chosen" | awk '{ print $1 }')"
+    printf '%s' "$chosen" | awk '{ print $1 }'
   fi
 }
 
@@ -273,41 +270,6 @@ nh_stage_host_key() {
   if [ ! -f "$keys_dir/hosts/$name/host.key.age" ]; then
     nh_escrow_host_key "$name" "$dir/ssh_host_ed25519_key" ||
       nh_warn "host-key escrow for $name not written — 'nixhold lint' will flag it"
-  fi
-}
-
-# nh_commit_paths <root> <msg> <path…> — auto-commit is restricted to
-# what install generated; never a blanket `git commit -a`. Missing
-# paths are skipped, and a fleet without a git identity (the ISO)
-# commits under a framework one.
-nh_commit_paths() {
-  local root="$1" msg="$2"
-  shift 2
-  git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
-    nh_warn "fleet is not a git worktree — commit the generated files yourself"
-    return 0
-  }
-  local present=() p
-  for p in "$@"; do
-    if [ -e "$p" ]; then present+=("$p"); fi
-  done
-  [ "${#present[@]}" -gt 0 ] || return 0
-  git -C "$root" add -- "${present[@]}" || {
-    nh_warn "git add failed — commit the generated files yourself"
-    return 0
-  }
-  if git -C "$root" diff --cached --quiet -- "${present[@]}"; then
-    nh_info "no changes to commit"
-    return 0
-  fi
-  local ident=()
-  if [ -z "$(git -C "$root" config user.email || true)" ]; then
-    ident=(-c user.name=nixhold -c user.email=nixhold@localhost)
-  fi
-  if git -C "$root" "${ident[@]}" commit -q -m "$msg" -- "${present[@]}"; then
-    nh_ok "committed: ${present[*]#"$root"/}"
-  else
-    nh_warn "commit failed — commit the generated files yourself"
   fi
 }
 
@@ -340,8 +302,8 @@ nh_local_install() {
   # Before the disk is touched AND before the build, so a host
   # first-boots with every required secret decryptable. Fatal, as in
   # `deploy`: activation would only fail later with a worse error.
-  nh_bootstrap_if_missing "$name" nixos || {
-    nh_err "secret bootstrap failed — fix the secrets above, then re-run install (nothing has been erased)"
+  nh_provision_required_secrets "$name" nixos || {
+    nh_err "secret provisioning failed — fix the secrets above, then re-run install (nothing has been erased)"
     return 1
   }
 
@@ -389,34 +351,17 @@ nh_local_install() {
   nh_ok "installed $name"
 }
 
-# nh_stage_for_eval <root> <path…> — a dirty git flake includes
-# modified tracked files but NOT untracked ones, so a freshly written
-# facter.json is invisible to the build that must read it.
-nh_stage_for_eval() {
-  local root="$1"
-  shift
-  git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
-  git -C "$root" add --intent-to-add -- "$@" 2>/dev/null ||
-    nh_warn "git add of the generated hardware files failed — 'git add' them before evaluating"
-}
-
 # nh_darwin_install <name> <root> — local darwin install, fresh-macOS
-# capable. Does the three jobs the NixOS path gets from nixos-anywhere:
-#   1. host age identity — make /etc/ssh/ssh_host_ed25519_key
-#      (agenix's darwin identityPath) BE the fleet's key for <name>:
-#      install the resolved key (cache or escrow), or, for a host that
-#      has never had one, mint and escrow one;
-#   2. recipients — adopt the machine's key as the committed recipient
-#      ONLY when the fleet has none, and rekey secrets to it;
-#   3. activate — sudo darwin-rebuild; on a machine that has never
+# capable. Does the two jobs the NixOS path gets from nixos-anywhere:
+#   1. host identity — make /etc/ssh/ssh_host_ed25519_key (agenix's
+#      darwin identityPath) BE the fleet's key for <name>: the shared
+#      reconciliation (nh_reconcile_host_key), which installs the
+#      committed key, adopts the machine's when the fleet has none,
+#      or mints one for a host that has never had one; an adoption
+#      rekeys the secrets to it;
+#   2. activate — sudo darwin-rebuild; on a machine that has never
 #      switched (no darwin-rebuild on PATH), bootstrap via the fleet's
 #      pinned nix-darwin.
-#
-# Direction of authority (1 vs 2): the repo wins. When the machine's
-# key and the committed host.pub disagree and the fleet can produce the
-# committed key, the machine is corrected — overwriting host.pub from
-# the machine instead would silently undo a rotation and strand the
-# escrow on a key nothing uses.
 nh_darwin_install() {
   local name="$1" root="$2"
 
@@ -425,95 +370,9 @@ nh_darwin_install() {
     return 1
   fi
 
-  local hostkey="/etc/ssh/ssh_host_ed25519_key"
-  local keys_dir committed
-  keys_dir="$(nh_worktree_keys_dir)" || return 2
-  committed="$keys_dir/hosts/$name/host.pub"
-
-  # 1. Host identity. Fresh macOS has no /etc/ssh host keys until
-  #    sshd has run at least once.
-  local adopt=0
-  if [ ! -f "$hostkey" ]; then
-    if nh_host_key_known "$name"; then
-      # A key exists for this host in the fleet: staging MUST succeed.
-      # Minting one on a failed decrypt would commit a recipient no
-      # existing ciphertext is encrypted to.
-      local keydir
-      keydir="$(nh_tmpdir hostkey)" || return 1
-      nh_stage_host_key "$name" "$keydir" || {
-        nh_err "could not resolve $name's host key (cache/escrow) — not minting a replacement; fix the passphrase or run 'nixhold host rotate-key $name'"
-        return 1
-      }
-      nh_install_host_key "$keydir/ssh_host_ed25519_key" || return 1
-    else
-      # Genuinely first contact: no cache, no escrow, no recipient.
-      nh_info "no key for $name anywhere in the fleet — minting one at $hostkey (sudo)"
-      sudo install -d -m 0755 /etc/ssh || {
-        nh_err "could not create /etc/ssh"
-        return 1
-      }
-      sudo ssh-keygen -t ed25519 -N "" -C "nixhold-host-$name" -f "$hostkey" >/dev/null || {
-        nh_err "could not generate a host key at $hostkey"
-        return 1
-      }
-      adopt=1
-    fi
-  fi
-  if [ ! -f "$hostkey.pub" ]; then
-    nh_info "deriving $hostkey.pub (sudo)"
-    sudo sh -c "ssh-keygen -y -f '$hostkey' > '$hostkey.pub' && chmod 0644 '$hostkey.pub'" || {
-      nh_err "$hostkey is not a valid SSH private key — cannot derive its pubkey"
-      return 1
-    }
-  fi
-
-  # 2. Reconcile the machine's key with the committed recipient.
-  local machine_pub
-  machine_pub="$(nh_pub_norm <"$hostkey.pub")" || {
-    nh_err "could not read $hostkey.pub — refusing to touch the committed recipient"
-    return 1
-  }
-  if [ -f "$committed" ] && [ "$(nh_pub_norm <"$committed" || true)" = "$machine_pub" ]; then
-    # Machine and fleet agree. Backfill a missing escrow from the live
-    # key — same invariant the NixOS path gets from nh_stage_host_key
-    # (every host.pub has a sibling host.key.age). A PRESENT escrow is
-    # left alone: nothing here can tell whether it holds this key
-    # without the operator passphrase — 'nixhold host escrow' is the
-    # verb that re-derives the pair when it is in doubt.
-    if [ ! -f "$keys_dir/hosts/$name/host.key.age" ]; then
-      local backfill
-      backfill="$(nh_tmpdir livekey)" || return 1
-      nh_read_live_host_key "$backfill/ssh_host_ed25519_key" || return 1
-      nh_escrow_host_key "$name" "$backfill/ssh_host_ed25519_key" ||
-        nh_warn "host-key escrow for $name not written — 'nixhold lint' will flag it"
-    fi
-  elif nh_have_committed_host_key "$name"; then
-    # The fleet holds the private half of the committed recipient:
-    # correct the machine, never the repo.
-    nh_warn "$hostkey is not the key committed as $committed — installing the fleet's key (the machine is corrected, not the repo)"
-    local keydir2
-    keydir2="$(nh_tmpdir hostkey)" || return 1
-    nh_stage_host_key "$name" "$keydir2" || return 1
-    nh_install_host_key "$keydir2/ssh_host_ed25519_key" || return 1
-    adopt=0
-  else
-    # No committed recipient (or nothing that can produce it): the
-    # machine's key becomes the fleet's. Escrow it in the same step so
-    # host.pub is never committed without its private half.
-    adopt=1
-  fi
-
-  if [ "$adopt" -eq 1 ]; then
-    local live
-    live="$(nh_tmpdir livekey)" || return 1
-    nh_read_live_host_key "$live/ssh_host_ed25519_key" || return 1
-    nh_escrow_host_key "$name" "$live/ssh_host_ed25519_key" || {
-      nh_err "could not commit $name's key + escrow — refusing to rekey to a recipient the fleet cannot recover"
-      return 1
-    }
-    nh_cache_host_key "$name" "$live/ssh_host_ed25519_key" ||
-      nh_warn "could not cache $name's key — later verbs will ask for the passphrase instead"
-    nh_ok "adopted the machine's host key as $committed"
+  # 1. Host identity. The install is the confirmation.
+  nh_reconcile_host_key "$name" "" 1 || return 1
+  if [ "$_NH_KEY_ADOPTED" -eq 1 ]; then
     nh_info "re-encrypting secrets to include the host recipient"
     . "$NIXHOLD_LIB_ROOT/secret-rekey.sh"
     cmd_secret_rekey || {
@@ -523,7 +382,7 @@ nh_darwin_install() {
     nh_info "commit + push keys/ and secrets/ once the install finishes"
   fi
 
-  # 3. Activate (nix-darwin requires root for switch).
+  # 2. Activate (nix-darwin requires root for switch).
   if command -v darwin-rebuild >/dev/null 2>&1; then
     (cd "$root" && sudo darwin-rebuild switch --flake ".#$name") || return $?
   else
@@ -545,7 +404,7 @@ nh_darwin_install() {
 }
 
 cmd_host_install() {
-  local name="" remote="" disk="" disko_from="" yes=0 new_host=0 picked=0
+  local name="" remote="" disk="" disko_from="" yes=0 picked=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --remote) remote="$2"; shift 2 ;;
@@ -558,11 +417,11 @@ Usage: nixhold host install [<name>] [--remote <user>@<ip>]
                                      [--disk <by-id>] [--disko-from <path>]
                                      [--yes]
 
-  <name> omitted   pick a host (installer environment only): any fleet
-                   host to reformat, or "new host…" to add one first.
+  <name> omitted   pick a host: any fleet host this machine can
+                   install (reformat), or "new host…" to walk one in.
   --remote         drive the install over SSH from a fleet machine.
-                   Without it the install targets THIS machine, which
-                   is refused outside the installer ISO.
+                   Without it the install targets THIS machine (the
+                   installer ISO); elsewhere the address is asked for.
 EOF
         return 0
         ;;
@@ -575,31 +434,28 @@ EOF
   local root
   root="$(nh_fleet_root)" || return 2
 
-  # Host selection. The picker exists because the ISO operator has no
-  # fleet knowledge in front of them — outside it, a name is required.
+  # Host selection.
   if [ -z "$name" ]; then
-    if ! nh_installer_env; then
-      nh_err "expected: nixhold host install <name> (the host picker is installer-environment only)"
+    if ! nh_tty; then
+      nh_err "expected: nixhold host install <name>"
       return 1
     fi
     nh_require_cmd gum
-    local pick
-    pick="$(nh_pick_host)" || return 1
-    # The "new host…" branch runs the whole `host add` TUI inside this
-    # command substitution; anything it prints on stdout would land in
-    # front of the answer, which is always the last line.
-    pick="$(printf '%s\n' "$pick" | tail -n1)"
-    name="$(printf '%s' "$pick" | cut -f2)"
-    if [ "$(printf '%s' "$pick" | cut -f1)" = "new" ]; then new_host=1; fi
-    [ -n "$name" ] || return 1
+    name="$(nh_pick_install_host)" || return 1
+    if [ "$name" = "new" ]; then
+      # The add walk ends with its own install question.
+      . "$NIXHOLD_LIB_ROOT/host-add.sh"
+      cmd_host_add
+      return $?
+    fi
   fi
 
   local platform arch
   platform="$(nh_host_platform "$name")" || {
-    nh_err "host '$name' not found in fleet"
+    nh_err "host '$name' is not in this fleet — 'nixhold status --fleet' lists the roster"
     return 1
   }
-  arch="$(nh_host_eval "$name" "$platform" "nixhold.fleet.derived.self.arch" | jq -r '.')"
+  arch="$(nh_host_arch "$name")"
 
   case "$arch" in
     *-darwin)
@@ -616,9 +472,19 @@ EOF
       ;;
   esac
 
+  # Local means THIS machine, which only the installer ISO may be.
+  # Elsewhere the walk asks where the booted installer is.
   if [ -z "$remote" ] && ! nh_installer_env; then
-    nh_err "local install refused — pass --remote <user>@<ip> or boot the installer ISO"
-    return 1
+    if ! nh_tty; then
+      nh_err "local install refused — pass --remote <user>@<ip> or boot the installer ISO"
+      return 1
+    fi
+    nh_info "this machine is not the installer — $name installs over ssh to a target booted from the fleet ISO (or any installer)"
+    remote="$(nh_prompt_input "Installer address (root@<ip>)")" || remote=""
+    if [ -z "$remote" ]; then
+      nh_err "no address — boot the target from the fleet ISO, then: nixhold host install $name --remote root@<ip>"
+      return 1
+    fi
   fi
   if [ -n "$remote" ]; then nh_require_cmd ssh; fi
 
@@ -683,8 +549,8 @@ EOF
 
     # Before the build, so the host first-boots with every required
     # secret decryptable. Fatal, as in `deploy`.
-    nh_bootstrap_if_missing "$name" nixos || {
-      nh_err "secret bootstrap failed — fix the secrets above, then re-run install"
+    nh_provision_required_secrets "$name" nixos || {
+      nh_err "secret provisioning failed — fix the secrets above, then re-run install"
       return 1
     }
 
@@ -713,30 +579,12 @@ EOF
 
   # 5. The machine is bootable by now; the repo side is best-effort.
   #    disko + facter are install-time outputs, committed on success —
-  #    auto-commit never reaches beyond them, except for a host this
-  #    run created, whose `host add` outputs would otherwise live only
-  #    on an ephemeral ISO checkout.
+  #    auto-commit never reaches beyond them. On the installer the
+  #    checkout is ephemeral, so the commit is pushed too.
   if [ "$rc" -eq 0 ]; then
-    local keys_dir sdir msg="host $name: install (disko + facter)"
-    local paths=("$disko_target" "$facter_target")
-    if [ "$new_host" -eq 1 ]; then
-      keys_dir="$(nh_worktree_keys_dir)"
-      sdir="$(nh_worktree_secrets_dir)"
-      paths+=("$root/hosts.nix" "$hostcfg_dir" "$keys_dir/hosts/$name" "$sdir/hosts/$name")
-      msg="host $name: add + install"
-    fi
-    nh_commit_paths "$root" "$msg" "${paths[@]}"
-    if [ "$new_host" -eq 1 ]; then
-      # A reformat pushes nothing; a new host must reach the fleet
-      # repo or the next operator never sees it.
-      # nh_repo_git, not git: on the installer the operator has no
-      # credentials of their own — the push rides the baked deploy key.
-      if nh_repo_git -C "$root" push; then
-        nh_ok "pushed $name to the fleet repo"
-      else
-        nh_warn "push failed — $name is installed but the fleet repo does not know it yet; push $root (hosts.nix, hosts/$name, keys/hosts/$name, secrets/hosts/$name) from a machine with repo access"
-      fi
-    fi
+    nh_commit_paths "$root" "host $name: install (disko + facter)" "$disko_target" "$facter_target"
+    nh_push_if_installer "$root"
+    nh_info "next: once $name is on the tailnet, 'nixhold deploy $name' for every change after this"
   fi
   return "$rc"
 }

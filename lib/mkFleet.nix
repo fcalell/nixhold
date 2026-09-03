@@ -115,7 +115,7 @@ let
       keys = fleetNamespace.config.nixhold.fleet.derived.operatorAuthorizedKeys;
     in
     if keys == [ ] then
-      throw "nixhold installer ISO: no operator login pubkeys — the image would boot with root unreachable. Run `nixhold secret bootstrap <host> <name>` for a secret declared `sshIdentity = true` (it commits `keys/hosts/<host>/identity.pub`), or set `hosts.<host>.loginPubkey`"
+      throw "nixhold installer ISO: no operator login pubkeys — the image would boot with root unreachable. Run `nixhold secret edit <host> <name>` for a secret declared `sshIdentity = true` (it commits `keys/hosts/<host>/identity.pub`), or set `hosts.<host>.loginPubkey`"
     else
       keys;
 

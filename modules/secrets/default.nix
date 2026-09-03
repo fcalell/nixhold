@@ -94,8 +94,8 @@ let
           type = types.nullOr types.str;
           default = null;
           description = ''
-            Free-text description surfaced by
-            `nixhold secret list` / `nixhold secret bootstrap`.
+            Free-text description surfaced by `nixhold status`
+            and `nixhold secret edit`.
             Recommended for every declared secret.
           '';
         };
@@ -104,10 +104,9 @@ let
           type = types.nullOr types.str;
           default = null;
           description = ''
-            Starter content the CLI seeds into the editor on
-            `nixhold secret bootstrap` when the encrypted file
-            does not yet exist (`secret edit` requires an existing
-            ciphertext). Typically a key=value scaffold.
+            Starter content `nixhold secret edit` seeds into the
+            editor when the encrypted file does not yet exist.
+            Typically a key=value scaffold.
           '';
           example = ''
             ADMIN_TOKEN=
@@ -118,11 +117,10 @@ let
           type = types.nullOr types.str;
           default = null;
           description = ''
-            Shell command the CLI runs to auto-generate the
-            initial secret content on
-            `nixhold secret bootstrap`. Output captured to
-            stdout, encrypted, written. `null` means
-            operator-typed.
+            Shell command `nixhold secret edit` runs to generate
+            the initial secret content when the encrypted file
+            does not yet exist. Output captured from stdout,
+            encrypted, written. `null` means operator-typed.
           '';
           example = "openssl rand -base64 32";
         };
@@ -303,8 +301,8 @@ in
           assertion = !s.required || builtins.pathExists s.sourceFile;
           message = ''
             nixhold.secrets.${name}: missing ciphertext ${toString s.sourceFile}.
-            Run `nixhold secret bootstrap <host>` (or declare it with
-            `required = false` until it is bootstrapped).
+            Run `nixhold secret edit <host>` (or declare it with
+            `required = false` until it is provisioned).
           '';
         }
         {

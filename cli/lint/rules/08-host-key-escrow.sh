@@ -49,7 +49,7 @@ for entry in "$keys_dir"/hosts/*/; do
   esc="$hostdir/host.key.age"
 
   if [ -e "$pub" ] && [ ! -e "$esc" ]; then
-    report "$h — host.pub with no host.key.age escrow (run 'nixhold host escrow $h' to capture the live key, or 'nixhold host rotate-key $h')"
+    report "$h — host.pub with no host.key.age escrow (run 'nixhold host key $h' on the machine to capture its live key, or 'nixhold host rotate-key $h')"
     continue
   fi
   if [ -e "$esc" ] && [ ! -e "$pub" ]; then

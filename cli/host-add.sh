@@ -1,15 +1,18 @@
-# nixhold host add <name> [--install <user>@<ip>]
+# nixhold host add [<name>] [--install <user>@<ip>]
 #
-# Interactive gum-driven flow:
-#   1. Prompt arch (enum picker).
-#   2. Prompt profile (from `inputs.nixhold.profiles.*` + the
-#      operator's own profilesDir).
-#   3. Prompt network membership.
-#   4. Optionally prompt publicIp/publicFqdn.
-#   5. Generate a host SSH keypair into the per-host cache.
-#   6. Commit the host pubkey under `nixhold.layout.keysDir`.
-#   7. Append the host entry into `nixhold.layout.hostsFile`.
-#   8. If --install was passed, chain to `nixhold host install`.
+# The walk that brings a host into the fleet:
+#   1. Prompt name (when not given), arch, profile, networks,
+#      publicIp/publicFqdn, stateVersion — every abort happens here,
+#      before the first write.
+#   2. Generate a host SSH keypair into the per-host cache; commit its
+#      pubkey + escrow under `nixhold.layout.keysDir` (a fleet with no
+#      operator identity yet gets one here).
+#   3. Scaffold hosts/<name>/ and append the entry to `hostsFile`.
+#   4. Provision every declared-but-missing secret.
+#   5. Ask "install now?": this machine (on the ISO, or a Mac), over
+#      ssh to an address, or later. --install <addr> answers it.
+# On the installer ISO the checkout is ephemeral, so what this verb
+# wrote is committed and pushed before the install starts.
 
 cmd_host_add() {
   local name="" install_target=""
@@ -18,7 +21,10 @@ cmd_host_add() {
       --install) install_target="$2"; shift 2 ;;
       -h | --help)
         cat <<'EOF'
-Usage: nixhold host add <name> [--install <user>@<ip>]
+Usage: nixhold host add [<name>] [--install <user>@<ip>]
+
+  Walks the host into the fleet, then asks whether to install it now.
+  --install <user>@<ip> answers that with "over ssh to <ip>".
 EOF
         return 0
         ;;
@@ -26,7 +32,7 @@ EOF
       *) if [ -z "$name" ]; then name="$1"; shift; else nh_err "extra arg: $1"; return 1; fi ;;
     esac
   done
-  if [ -z "$name" ]; then
+  if [ -z "$name" ] && ! nh_tty; then
     nh_err "expected: nixhold host add <name>"
     return 1
   fi
@@ -34,6 +40,14 @@ EOF
   nh_require_cmd gum jq nix ssh-keygen
   local root
   root="$(nh_fleet_root)" || return 1
+
+  if [ -z "$name" ]; then
+    name="$(nh_prompt_input "Name for the new host")" || name=""
+    case "$name" in
+      "" ) nh_err "aborted — no name given; nothing was written"; return 1 ;;
+      *[!A-Za-z0-9_-]*) nh_err "host names are [A-Za-z0-9_-]: '$name'"; return 1 ;;
+    esac
+  fi
 
   # Refuse up front, before generating keys or scaffolding files —
   # failing at the hosts.nix append would leave half the work done.
@@ -138,8 +152,10 @@ EOF
   # the missing escrow.
   local keys_dir
   keys_dir="$(nh_worktree_keys_dir)" || return 2
-  nh_escrow_host_key "$name" "$cache/ssh_host_ed25519_key" ||
-    nh_warn "host key for $name is NOT escrowed — run 'nixhold init' then 'nixhold host rotate-key $name'"
+  nh_escrow_host_key "$name" "$cache/ssh_host_ed25519_key" || {
+    nh_err "host key for $name is NOT escrowed — nothing else was written"
+    return 1
+  }
 
   # Scaffold the host's module files so it evaluates now and builds
   # after `host install` fills in disko.nix + facter.json.
@@ -148,6 +164,7 @@ EOF
   # Append entry to hosts.nix.
   nh_append_host_entry "$hosts_file" "$name" "$arch" "$profile" "$networks" "$public_ip" "$public_fqdn" || return 1
   nh_ok "wrote host entry for $name into $hosts_file"
+  nh_fleet_view_reset
 
   # Make the generated files visible to git-flake eval: a dirty git
   # flake includes modified tracked files but NOT untracked ones, so
@@ -163,16 +180,75 @@ EOF
     nh_warn "fleet is not a git worktree — if it becomes one, 'git add' the generated files before evaluating"
   fi
 
-  # Final scaffolding step: provision any declared-but-missing secrets.
-  # Best-effort — the host's own module may not be evaluable yet (the
-  # operator hasn't written it), so a failure here is a warning.
-  . "$NIXHOLD_LIB_ROOT/secret-bootstrap.sh"
-  cmd_secret_bootstrap "$name" || nh_warn "secret bootstrap skipped (host not evaluable yet)"
+  # Provision any declared-but-missing secrets. Best-effort — the
+  # host's own module may not be evaluable yet (the operator hasn't
+  # written it), so a failure here is a warning.
+  . "$NIXHOLD_LIB_ROOT/secret-edit.sh"
+  nh_provision_missing_secrets "$name" || nh_warn "secret provisioning skipped (host not evaluable yet)"
 
-  if [ -n "$install_target" ]; then
-    . "$NIXHOLD_LIB_ROOT/host-install.sh"
-    cmd_host_install "$name" --remote "$install_target"
+  # The installer's checkout is ephemeral: commit + push what this verb
+  # wrote before an install that may take a while or fail. Elsewhere
+  # committing is the operator's, and the verb says so at the end.
+  local sdir
+  sdir="$(nh_worktree_secrets_dir)" || sdir="$root/secrets"
+  if nh_installer_env; then
+    nh_commit_paths "$root" "host $name: add"       "$hosts_file" "$root/hosts/$name" "$keys_dir/hosts/$name" "$sdir/hosts/$name"       "$keys_dir/operator.pub" "$keys_dir/operator.age"
+    nh_push_if_installer "$root"
   fi
+  nh_ok "$name is in the fleet"
+
+  nh_add_install_question "$name" "$arch" "$install_target"
+}
+
+# nh_add_install_question <name> <arch> [addr] — the walk's last step:
+# install now, or say how to later. The choices are the install entry
+# points that exist from HERE: in place on the ISO (NixOS) or on this
+# Mac (darwin), over ssh to a booted installer, or not yet.
+nh_add_install_question() {
+  local name="$1" arch="$2" addr="${3:-}" root choice
+  root="$(nh_fleet_root)" || return 1
+  . "$NIXHOLD_LIB_ROOT/host-install.sh"
+  if [ -n "$addr" ]; then
+    cmd_host_install "$name" --remote "$addr"
+    return $?
+  fi
+  local later
+  case "$arch" in
+    *-darwin) later="nixhold host install $name  (on the Mac itself)" ;;
+    *) later="nixhold host install $name --remote root@<ip>  (a target booted from the fleet ISO or any installer)" ;;
+  esac
+  if ! nh_tty; then
+    nh_info "next: commit hosts.nix, hosts/$name, keys/, secrets/ — then install with: $later"
+    return 0
+  fi
+  local options=()
+  case "$arch" in
+    *-darwin)
+      [ "$(uname -s)" = "Darwin" ] && options+=("this Mac, now")
+      ;;
+    *)
+      nh_installer_env && options+=("this machine, now (erases its disk)")
+      options+=("over ssh to a booted installer")
+      ;;
+  esac
+  options+=("later")
+  choice="$(gum choose --header "Install $name?" "${options[@]}")" || choice="later"
+  case "$choice" in
+    "this Mac, now" | "this machine, now"*)
+      cmd_host_install "$name"
+      ;;
+    "over ssh"*)
+      addr="$(nh_prompt_input "Installer address (root@<ip>)")" || addr=""
+      if [ -z "$addr" ]; then
+        nh_info "no address — install later with: $later"
+        return 0
+      fi
+      cmd_host_install "$name" --remote "$addr"
+      ;;
+    *)
+      nh_info "next: commit hosts.nix, hosts/$name, keys/, secrets/ — then install with: $later"
+      ;;
+  esac
 }
 
 # Append a host entry just before the closing brace of the hosts.nix

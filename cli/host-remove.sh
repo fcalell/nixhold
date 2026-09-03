@@ -1,4 +1,4 @@
-# nixhold host remove <name>
+# nixhold host remove [<name>] [--yes]
 # Deletes the host entry from `hostsFile`, plus `secrets/hosts/<name>/`
 # and `keys/hosts/<name>/`. Does NOT touch
 # `~/.cache/nixhold/host-keys/<name>/` — the operator removes that
@@ -9,21 +9,20 @@ cmd_host_remove() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --yes) yes=1; shift ;;
-      -h | --help) echo "Usage: nixhold host remove <name> [--yes]"; return 0 ;;
+      -h | --help) echo "Usage: nixhold host remove [<name>] [--yes]"; return 0 ;;
       -*) nh_err "unknown flag: $1"; return 1 ;;
       *) if [ -z "$name" ]; then name="$1"; shift; else nh_err "extra arg: $1"; return 1; fi ;;
     esac
   done
-  if [ -z "$name" ]; then
-    nh_err "expected: nixhold host remove <name>"
-    return 1
-  fi
 
   local root; root="$(nh_fleet_root)" || return 1
 
-  if [ "$yes" -ne 1 ] && ! nh_prompt_confirm "Remove $name from the fleet?"; then
-    nh_info "aborted"
-    return 0
+  if [ -z "$name" ]; then
+    if ! nh_tty; then
+      nh_err "expected: nixhold host remove <name>"
+      return 1
+    fi
+    name="$(nh_pick_host "Remove which host from the fleet?")" || return 1
   fi
 
   # Resolve worktree paths BEFORE rewriting hosts.nix — the layout
@@ -33,6 +32,12 @@ cmd_host_remove() {
   local secrets_dir keys_dir
   secrets_dir="$(nh_worktree_secrets_dir)" || return 1
   keys_dir="$(nh_worktree_keys_dir)" || return 1
+
+  nh_info "remove $name: its entry in hosts.nix, $secrets_dir/hosts/$name, $keys_dir/hosts/$name"
+  if [ "$yes" -ne 1 ] && ! nh_prompt_confirm "Remove $name from the fleet?"; then
+    nh_info "aborted"
+    return 0
+  fi
 
   # Strip the host's attrset entry from hosts.nix. Conservative
   # range-delete from `^[[:space:]]+<name>[[:space:]]*=[[:space:]]*{`
@@ -60,6 +65,7 @@ cmd_host_remove() {
     ' "$hosts_file" >"$tmp"
     mv "$tmp" "$hosts_file"
     nh_ok "removed entry from $hosts_file"
+    nh_fleet_view_reset
   fi
 
   if [ -d "$secrets_dir/hosts/$name" ]; then
@@ -70,4 +76,5 @@ cmd_host_remove() {
     rm -rf "$keys_dir/hosts/$name"
     nh_ok "removed $keys_dir/hosts/$name"
   fi
+  nh_info "next: remove hosts/$name if you keep no module for it, then commit"
 }

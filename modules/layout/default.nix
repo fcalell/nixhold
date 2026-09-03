@@ -65,9 +65,8 @@ in
     profilesDir = mkOption {
       type = types.path;
       description = ''
-        Directory where the CLI writes operator-authored profiles
-        (`nixhold profile new`). Like `modulesDir`, the framework
-        does not auto-import from here.
+        Directory holding operator-authored profiles. Like
+        `modulesDir`, the framework does not auto-import from here.
       '';
       example = lib.literalExpression "./profiles";
     };

@@ -114,7 +114,7 @@ EOF
   nh_require_cmd ssh-keygen age jq nix || return 1
 
   nh_host_platform "$name" >/dev/null || {
-    nh_err "host '$name' not found in fleet"
+    nh_err "host '$name' is not in this fleet — 'nixhold status --fleet' lists the roster"
     return 1
   }
 
@@ -271,9 +271,8 @@ nh_rotate_install() {
     return 0
   fi
 
-  # One implementation, shared with `nixhold host install-key`: resolve
-  # the committed key (now the rotated one) and put it on the machine.
-  . "$NIXHOLD_LIB_ROOT/host-install-key.sh"
+  # One implementation, shared with `nixhold host key`: resolve the
+  # committed key (now the rotated one) and put it on the machine.
   if ! nh_install_committed_key "$name" "$target"; then
     nh_rotate_pending "$name" "the install failed"
     return 1
@@ -294,9 +293,10 @@ nh_rotate_pending() {
   local name="$1" reason="$2"
   local cache="$NIXHOLD_CACHE_DIR/host-keys/$name"
   nh_warn "$name's new key is committed but NOT installed — $reason"
-  # `host install-key` finishes exactly this rotation — no new key, no
+  # `host key` finishes exactly this rotation — the fleet holds the
+  # committed key, so it goes onto the machine; no new key, no
   # reformat (which is why `host install` is NOT the advice here).
-  nh_info "finish it with: nixhold host install-key $name --remote <user>@<ip> (or run it on $name itself)"
+  nh_info "finish it with: nixhold host key $name --remote <user>@<ip> (or run it on $name itself)"
   if [ -f "$cache/host.key.age.prev" ]; then
     nh_info "the previous escrow is kept at $cache/host.key.age.prev until the new key is installed — it is the key $name is still running"
   fi

@@ -27,7 +27,7 @@ cmd_secret_rekey() {
 
   # errexit is IGNORED throughout this subshell whenever the caller
   # tests our exit code — `host rotate-key` runs `if ! cmd_secret_rekey`
-  # and `host install` runs `cmd_secret_rekey || …`, which disables -e
+  # and `host key` runs `cmd_secret_rekey || …`, which disables -e
   # for the whole callee (re-setting it here changes nothing). Every
   # failure that must stop or mark the run is therefore checked
   # explicitly below; `set -e` remains only for direct invocation.

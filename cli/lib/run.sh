@@ -12,9 +12,7 @@ nh_ok() { printf '\033[32m✓\033[0m %s\n' "$*" >&2; }
 # → nearest ancestor of $PWD holding a flake.nix (so a second worktree
 # wins over the baked default while you stand in it) →
 # $NIXHOLD_FLEET_DEFAULT, which programs.nixhold bakes into the
-# wrapped CLI. Subcommands that scaffold files refuse to run outside a
-# fleet, but `init` works without one (it provisions the
-# operator-scoped identity, not fleet state).
+# wrapped CLI. Every verb runs inside a fleet.
 #
 # Contract: only the path reaches stdout — every caller consumes this
 # through command substitution — so prompts and diagnostics go to
@@ -157,42 +155,12 @@ nh_host_eval() {
   nix eval --json --no-warn-dirty "$root#$set.$host.config.$path"
 }
 
-# Read a layout path from the fleet without specifying a host —
-# uses the first host's view, since `nixhold.layout` is set
-# uniformly by mkFleet. Falls back to evaluating
-# `<fleet>#self.outputs.lib.mkFleet` indirectly via any host.
-nh_layout() {
-  local key="$1"
-  local root
-  root="$(nh_fleet_root)" || return 1
-  # Heuristic: pick the first nixos host, then the first darwin
-  # host, then bail. The CLI usually runs from a fleet with at
-  # least one host; before that, the operator hasn't reached the
-  # subcommands that need layout (host add does its own probing).
-  local first_host
-  first_host="$(nix eval --json --no-warn-dirty \
-    "$root#nixosConfigurations" --apply 'builtins.attrNames' 2>/dev/null \
-    | jq -r 'first // empty')"
-  if [ -z "$first_host" ]; then
-    first_host="$(nix eval --json --no-warn-dirty \
-      "$root#darwinConfigurations" --apply 'builtins.attrNames' 2>/dev/null \
-      | jq -r 'first // empty')"
-    if [ -z "$first_host" ]; then
-      nh_err "fleet has no hosts yet — layout cannot be probed"
-      return 1
-    fi
-    nh_host_eval "$first_host" darwin "nixhold.layout.$key"
-  else
-    nh_host_eval "$first_host" nixos "nixhold.layout.$key"
-  fi
-}
-
-# Identity store: passphrase-wrapped operator age private key.
-# `nixhold init` writes here; `secret edit` and the rest unwrap
-# at edit-time only.
-NIXHOLD_IDENTITY_DIR="${NIXHOLD_IDENTITY_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/nixhold}"
-NIXHOLD_IDENTITY_FILE="${NIXHOLD_IDENTITY_FILE:-$NIXHOLD_IDENTITY_DIR/identity.age.txt}"
-export NIXHOLD_IDENTITY_DIR NIXHOLD_IDENTITY_FILE
+# The operator identity lives in the fleet (layout.ageIdentityWrapped).
+# $NIXHOLD_IDENTITY_FILE names an out-of-tree copy of the wrapped
+# identity when one exists — the installer ISO bakes one — and is
+# otherwise empty.
+NIXHOLD_IDENTITY_FILE="${NIXHOLD_IDENTITY_FILE:-}"
+export NIXHOLD_IDENTITY_FILE
 
 # Per-host private-key cache (host SSH key + host age identity).
 # Survives `host remove` so the operator can recover. Honors a
@@ -382,4 +350,65 @@ nh_repo_git() {
     1) git "$@" ;;
     *) return 1 ;;
   esac
+}
+
+# nh_commit_paths <root> <msg> <path…> — auto-commit is restricted to
+# what a verb generated; never a blanket `git commit -a`. Missing
+# paths are skipped, and a fleet without a git identity (the ISO)
+# commits under a framework one. Prints nothing on stdout.
+nh_commit_paths() {
+  local root="$1" msg="$2"
+  shift 2
+  git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+    nh_warn "fleet is not a git worktree — commit the generated files yourself"
+    return 0
+  }
+  local present=() p
+  for p in "$@"; do
+    if [ -e "$p" ]; then present+=("$p"); fi
+  done
+  [ "${#present[@]}" -gt 0 ] || return 0
+  git -C "$root" add -- "${present[@]}" || {
+    nh_warn "git add failed — commit the generated files yourself"
+    return 0
+  }
+  if git -C "$root" diff --cached --quiet -- "${present[@]}"; then
+    nh_info "no changes to commit"
+    return 0
+  fi
+  local ident=()
+  if [ -z "$(git -C "$root" config user.email || true)" ]; then
+    ident=(-c user.name=nixhold -c user.email=nixhold@localhost)
+  fi
+  if git -C "$root" "${ident[@]}" commit -q -m "$msg" -- "${present[@]}"; then
+    nh_ok "committed: ${present[*]#"$root"/}"
+  else
+    nh_warn "commit failed — commit the generated files yourself"
+  fi
+}
+
+# nh_push_if_installer <root> — the installer's checkout is ephemeral:
+# whatever a verb committed there must reach the fleet repo or the
+# next operator never sees it. Elsewhere pushing is the operator's.
+# nh_repo_git, not git: on the installer the push rides the baked
+# deploy key.
+nh_push_if_installer() {
+  local root="$1"
+  nh_installer_env || return 0
+  if nh_repo_git -C "$root" push >&2; then
+    nh_ok "pushed to the fleet repo"
+  else
+    nh_warn "push failed — push $root from a machine with repo access"
+  fi
+}
+
+# nh_stage_for_eval <root> <path…> — a dirty git flake includes
+# modified tracked files but NOT untracked ones, so a freshly written
+# file is invisible to the eval that must read it.
+nh_stage_for_eval() {
+  local root="$1"
+  shift
+  git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  git -C "$root" add --intent-to-add -- "$@" 2>/dev/null ||
+    nh_warn "git add of the generated files failed — 'git add' them before evaluating"
 }

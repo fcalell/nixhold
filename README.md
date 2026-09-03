@@ -55,26 +55,30 @@ Reach it pre-install as `nix run github:fcalell/nixhold#nixhold -- <verb>`,
 and post-install as `nixhold <verb>` (on PATH via `programs.nixhold`,
 default on).
 
+Every argument in brackets opens a picker when left out.
+
 ```sh
-nixhold host add <name>        # roster entry + host key + secret bootstrap;
-                               # scaffolds hosts/<name>/{default.nix,disko.nix}
-nixhold host install <name> --remote root@<ip>
-                               # NixOS: disko + nixos-facter + nixos-anywhere.
-                               # darwin: darwin-rebuild locally.
-nixhold deploy <name>          # build + switch (local; or over ssh as the
+nixhold host add [<name>]      # the walk: roster entry, host key, secrets,
+                               # then "install now?"
+nixhold host install [<name>]  # reformat a host (NixOS: disko + nixos-facter +
+                               # nixos-anywhere; darwin: darwin-rebuild locally)
+nixhold deploy [<name>…]       # build + switch (local; or over ssh as the
                                # operator user with --use-remote-sudo)
-nixhold secret edit <name>     # create/edit an agenix secret for a host
+nixhold update                 # pull, update inputs, deploy what you pick
+nixhold secret edit [<host>] [<name>]
+                               # provision a missing secret, or edit one
 nixhold secret rekey           # re-encrypt to current recipients
 nixhold status [<name>]        # services + endpoints + secret status
 nixhold lint [--strict]        # convention / invariant checks
-nixhold logs <name> <unit>     # journalctl over the tailnet
+nixhold logs [<host>] [<unit>] # journalctl over the tailnet
 ```
 
 ## Typical lifecycle for a new NixOS host
 
-1. `nixhold host add web --install root@<installer-ip>` — generates the
-   host key, scaffolds its module files, and chains into install.
-   (Or run `host add` then `host install` separately.)
+1. `nixhold host add web` — generates the host key, scaffolds its
+   module files, and ends by asking whether to install now: over ssh
+   to the booted installer (`--install root@<ip>` scripts it), or
+   later with `nixhold host install web --remote root@<ip>`.
 2. Install runs disko + `nixos-facter` and commits `disko.nix` +
    `facter.json`; the scaffolded `default.nix` already imports them.
 3. Join the tailnet: either set

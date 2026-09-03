@@ -21,7 +21,7 @@ fi
 
 # File- and dir-valued keys only; `repoUrl` is a string, not a path.
 # `modulesDir` and `profilesDir` are exempt: they are scaffold targets
-# only — nothing reads them, and `service new` / `profile new` mkdir -p
+# only — nothing reads them, and `service new` mkdir -p
 # them on demand (even under a stale override, so nothing fails late) —
 # and a fleet that authors no fleet modules/profiles legitimately has
 # no such dir.

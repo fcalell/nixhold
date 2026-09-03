@@ -324,7 +324,7 @@ behavior; behavior is always an explicit option.
 | Field | Meaning | Default |
 |---|---|---|
 | `owner`, `mode` | runtime ownership | `"user"` → operator + `0600` |
-| `description`, `template`, `generator`, `required` | CLI-facing metadata driving bootstrap and lint | — |
+| `description`, `template`, `generator`, `required` | CLI-facing metadata driving `secret edit` and lint | — |
 | `homePath` | HM symlink `~/<homePath>` → decrypted path (only with `owner = "user"`) | `.ssh/<name>` when `sshKey`, else null |
 | `sshKey` | marks an SSH private key; `.pub` derived at HM activation via `ssh-keygen -y` (failure is loud) | false |
 | `sshIdentity` | implies sshKey; ≤1 per host (assertion). THE outbound key: wired as IdentityFile in fleet-peer ssh config; CLI commits its pubkey as `keys/hosts/<host>/identity.pub`, which defaults `fleet.hosts.<host>.loginPubkey` | false |
@@ -374,7 +374,7 @@ Recipient/editing model:
   Only the fleet's own source store path is re-rooted: a layout
   path into another flake input is a hard CLI error and a lint
   violation.
-- `edit`/`bootstrap`/`rekey` refuse a recipient set that omits the
+- `secret edit`/`rekey` refuse a recipient set that omits the
   operator, or the host when its `host.pub` is readable or it
   already owns ciphertexts (an untracked `host.pub` is invisible to
   eval; the fix is `git add --intent-to-add`). `$VISUAL`/`$EDITOR`
@@ -385,26 +385,32 @@ Recipient/editing model:
 encrypted to the operator recipient only — is committed alongside
 `host.pub`. Single-writer invariant: `host.pub` and `host.key.age`
 are always written together from one private key — by `host add`,
-`host rotate-key`, `host escrow` (re-escrows a machine's live key,
-no rekey) and `host install`'s backfill — so the pair can never
-come from different keypairs. Lint checks the tracked pair in both
+`host rotate-key`, `host key` and `host install`'s backfill — so the
+pair can never come from different keypairs. Lint checks the tracked pair in both
 directions (missing escrow, orphan escrow; warn dev / error
 strict); equality is not provable without the passphrase (age
 stanzas carry no fingerprint), the invariant holds it. Install
 resolves the key: local cache only while it derives the committed
 `host.pub` (a stale cache is set aside), else escrow (passphrase
-prompt, verified against `host.pub`). The repo is authoritative:
-on darwin, a machine key that disagrees with the committed
-recipient is replaced by the fleet's; the machine key is adopted
-(escrowed, then rekeyed to) only when the fleet has no committed
-recipient. `host install-key` pushes the committed key onto a
-machine with no repo writes — the completion step for a
-`rotate-key --no-install`, and the non-destructive fix for a
-drifted machine. A rotation is complete when the verb exits (repo
-and machine); the superseded escrow stays in the key cache as
-`host.key.age.prev` until the new key is confirmed installed. On
+prompt, verified against `host.pub`). The repo is authoritative,
+and one verb applies that: `host key <name>` reads the machine's
+live key (in place, or `--remote`), prints what it found, and does
+the one thing the state calls for — live key equals the committed
+recipient: refresh the escrow from it; the fleet can produce the
+committed key (cache or escrow): install it on the machine, the
+machine is corrected, never the repo; the fleet cannot and the host
+owns no ciphertexts: adopt the live key (escrow + commit, then
+rekey); the fleet cannot and the host owns ciphertexts: refuse, that
+is a `rotate-key`. `host install` on darwin runs the same
+reconciliation before activating (minting a key only for a machine
+that has none and a host the fleet has never keyed). `host key` is
+also the completion step for a `rotate-key --no-install` and the
+non-destructive fix for a drifted machine. A rotation is complete
+when the verb exits (repo and machine); the superseded escrow stays
+in the key cache as `host.key.age.prev` until the new key is
+confirmed installed. On
 the ISO, everything that can fail or prompt (key resolution,
-secret bootstrap) runs before the disk is wiped. Trust delta ≈
+secret provisioning) runs before the disk is wiped. Trust delta ≈
 none: the operator recipient already decrypts every secret, so
 repo + passphrase was already total compromise.
 
@@ -422,12 +428,17 @@ unwraps the identity, decrypts the deploy key into the process
 scratch root and runs git with it; otherwise the operator's own
 credentials. The decrypted key is never persisted into the clone.
 
-**Identity resolution.** Verbs needing the operator identity use
-`$NIXHOLD_IDENTITY_FILE` if present, else fall back to the
-committed `layout.ageIdentityWrapped` (passphrase prompt per
-invocation). A fresh clone can edit secrets without `nixhold
-init`; init's restore flow persists the identity locally. Losing
-the passphrase is catastrophic by design.
+**Identity resolution.** The operator identity lives in the fleet:
+`layout.ageRecipient` (public) and `layout.ageIdentityWrapped`
+(passphrase-wrapped private), both committed. Verbs that need the
+private half unwrap `$NIXHOLD_IDENTITY_FILE` when it is set (the
+ISO bakes it), else the committed copy — a passphrase prompt per
+invocation, nothing persisted outside the fleet. A fleet with no
+identity yet gets one from the first verb that needs the recipient
+(the first `host add`, escrowing the first host key): it generates
+the keypair, wraps it with a passphrase, writes both files under
+`keysDir` and stages them. There is no init verb. Losing the
+passphrase is catastrophic by design.
 
 ---
 
@@ -554,21 +565,24 @@ exists, the installer ISO is itself a sufficient operator seat.
 
 | Event | Flow |
 |---|---|
-| L1 fork | `nix flake init -t github:fcalell/nixhold` → fill identity (+ `layout.repoUrl`) → `nix run .#nixhold -- init` (or skip: identity falls back to the committed wrapped copy) |
-| L2 first host | `nixhold host add <name> --install` — TUI (arch, profile, networks), keys generated + escrowed, entry written to `layout.hostsFile`, secret bootstrap walked, install runs in place (darwin) |
-| L3 NixOS host | On-prem: boot the fleet ISO on the target, `nixhold host install` → passphrase → "new host…" in the picker. VPS / from another machine: `nixhold host add <name> --install root@<ip>` (fleet ISO makes the target reachable with zero typing; any installer works) |
-| L4 add service | edit host/profile module → `nixhold deploy <name>` (auto-walks missing secret bootstrap) |
+| L1 fork | `nix flake init -t github:fcalell/nixhold` → fill identity (+ `layout.repoUrl`) → `nixhold host add`. The operator identity is generated on first need (see "Identity resolution"); there is no init step |
+| L2 first host | `nixhold host add [<name>]` — the walk: name, arch, profile, networks, key generated + escrowed, entry written to `layout.hostsFile`, missing secrets provisioned, then "install now?" — this machine (on the ISO, or a Mac), over ssh to an address, or later |
+| L3 NixOS host | On-prem: boot the fleet ISO on the target, `nixhold host install` → passphrase → "new host…" runs the add walk and installs in place. VPS / from another machine: `nixhold host add <name>` and answer "over ssh" with the address (scripted: `--install root@<ip>`); the fleet ISO makes the target reachable with zero typing, any installer works |
+| L4 add service | edit host/profile module → `nixhold deploy <name>` (provisions missing required secrets first) |
 | L5 new service module | `nixhold service new <name>` → edit |
-| L6 update inputs | `nixhold update` (from any directory): pull → flake update → secret bootstrap walk (on the terminal, before any piped step) → per-host delta review (hosts still missing required secrets show "unknown") → deploy the confirmed hosts |
-| L7 reinstall/reformat | Boot the ISO, `nixhold host install` → passphrase → pick the host (or `--remote root@<ip>` from a fleet machine). Host key from cache or escrow → identity unchanged → secrets still decrypt → nothing generated, nothing pushed. Legacy host whose live key was never escrowed: `host escrow` (no rekey), then install |
+| L6 update inputs | `nixhold update` (from any directory): pull → flake update → the inputs that moved, from the lock diff → `deploy`'s host picker → deploy each picked host |
+| L7 reinstall/reformat | Boot the ISO, `nixhold host install` → passphrase → pick the host (or `host install <name> --remote root@<ip>` from a fleet machine; the picker there asks for the address). Host key from cache or escrow → identity unchanged → secrets still decrypt → nothing generated. Legacy host whose live key was never escrowed: `host key` on it first |
 | L8 rename | manual (`git mv` + edit hostsFile + `secret rekey` + reinstall) |
-| L9 remove | `nixhold host remove <name>` — deletes fleet entry, hosts/, secrets/, keys/; decommissioning the machine is the operator's job |
+| L9 remove | `nixhold host remove [<name>]` — deletes fleet entry, hosts/, secrets/, keys/; decommissioning the machine is the operator's job |
 | L10 recover | host died → L7. All operator machines lost → clone + passphrase anywhere (or the ISO) is a complete seat. Passphrase lost → catastrophic, regenerate everything (documented, no CLI) |
 
-Properties: one CLI; verb-first; darwin auto-dispatch from arch;
-idempotent; repo + passphrase is the whole source of truth; two
-install entry points (local on the ISO by default, `--remote`
-from a fleet machine), one phase sequence.
+Properties: one CLI; verb-first; an omitted argument opens a
+picker; darwin auto-dispatch from arch; idempotent; repo +
+passphrase is the whole source of truth; two install entry points
+(local on the ISO by default, `--remote` from a fleet machine), one
+phase sequence.
+
+---
 
 **Host-key trust.** The fleet commits every host's key as
 `keys/hosts/<host>/host.pub`, so nothing that talks to a fleet host
@@ -585,9 +599,9 @@ has never seen, and the installer ISO, whose key is random per boot
 (`host install --remote` rides nixos-anywhere's own no-check ssh —
 install over a LAN you control). A machine running a key the fleet
 does not know is unreachable from the CLI by design; reconcile on
-the machine (`host escrow` adopts the live key, `host install-key`
-puts the fleet's back), or over the operator's own ssh after
-checking the fingerprint out of band. Plaintext key material the CLI
+the machine (`host key` puts the fleet's key back when the fleet
+can produce it, adopts the live one when it cannot), or over the
+operator's own ssh after checking the fingerprint out of band. Plaintext key material the CLI
 stages lives only under the one 0700 scratch root wiped on
 EXIT/INT/TERM/HUP; per-subshell traps are not used for cleanup, since
 bash resets them inside `( … )`.
@@ -652,7 +666,7 @@ deploy-key remote. Darwin is untouched (ISO is NixOS-only).
 
 ## CLI
 
-One bash CLI, 18 verbs. Access: bare `nixhold` post-install
+One bash CLI, 14 verbs. Access: bare `nixhold` post-install
 (`programs.nixhold.enable`, default on) or `nix run .#nixhold --
 <verb>` pre-install. No separate installer apps, no
 per-subcommand flake apps.
@@ -669,51 +683,73 @@ the operator's normal SSH credentials everywhere else (see "Repo
 deploy key").
 
 ```
-nixhold init                                        provision/restore operator age identity
-nixhold host add <name> [--install <user>@<ip>]
+nixhold host add [<name>] [--install <user>@<ip>]
+                                                    the walk: name, arch, profile, networks,
+                                                    key + escrow, secrets, then "install now?"
 nixhold host install [<name>] [--remote <user>@<ip>] [--disk <by-id>] [--disko-from <path>] [--yes]
+                                                    reformat a host; the picker adds "new host…"
+nixhold host key <name> [--remote <user>@<ip>] [--yes]
+                                                    make machine and repo agree about the host
+                                                    key (repo wins; adopt when the fleet has none)
 nixhold host rotate-key <name> [--remote <user>@<ip>] [--no-install] [--yes]
                                                     new host key, escrow it, rekey that host's
                                                     secrets, install it on the machine
-nixhold host escrow <name> [--remote <user>@<ip>] [--yes]
-                                                    re-escrow a host's live /etc/ssh key (no rekey)
-nixhold host install-key <name> [--remote <user>@<ip>] [--yes]
-                                                    install the committed host key on the machine
-nixhold host remove <name>
-nixhold deploy <name> [--mode switch|boot|test] [--dry-run] [--target <addr>] [--yes]
-nixhold update [--yes]                              git pull → nix flake update → per-host dry-run
-                                                    delta → pick which hosts to deploy
-nixhold status [--host <name>] [--fleet]
+nixhold host remove [<name>] [--yes]
+nixhold deploy [<name>…] [--mode switch|boot|test] [--dry-run] [--target <addr>] [--yes]
+                                                    no name: pick the hosts; several: in order
+nixhold update [--yes]                              git pull → nix flake update → moved inputs
+                                                    → deploy's picker
+nixhold status [<name>] [--fleet]
 nixhold lint [--strict]
-nixhold logs <host> <service> [--lines N] [--since <when>] [--follow]
-nixhold secret bootstrap <host> [name]
-nixhold secret edit <host> <name>
+nixhold logs [<host>] [<service>] [--lines N] [--since <when>] [--follow]
+nixhold secret edit [<host>] [<name>]               missing: provision; present: edit;
+                                                    no name: every missing secret on the host
 nixhold secret rekey
 nixhold service new <name>
-nixhold profile new <name>
 nixhold iso [--flash <device>]
 ```
 
 Rule: each verb is a real operator action, not a flag-shaped
 alias. Host listing is `status --fleet`, diffing is `deploy
---dry-run`, secret listing is `status`, secret checking is `lint`.
+--dry-run`, secret listing is `status`, secret checking is `lint`,
+key reconciliation is `host key` whichever direction the state
+calls for.
+
+**Walkthrough shape.** The operator is walked, not quizzed:
+
+- An omitted argument opens a picker built from the fleet view when
+  a terminal is attached, and is a usage error when none is (scripts
+  pass the arguments). Picking is the confirmation; `--yes` stands
+  in for it in scripts.
+- Every verb prints its plan before the first write and ends with
+  the single next command.
+- One fleet-view eval per process: `nixhold.fleet` (hosts, arch,
+  networks, derived addresses) is read once from any host into the
+  scratch root; pickers, platform dispatch and address resolution
+  read it. No per-verb roster probes. A verb that rewrites
+  `hostsFile` drops the memo.
+- Identity on first need (see "Identity resolution"); required
+  secrets on first deploy or install (see `secret edit`).
 
 Notable shapes:
 
 - **Install is local-first.** No `--remote` means install *this*
   machine — guarded by the installer-environment marker the ISO
-  sets: outside it, local mode refuses with "pass --remote or
-  boot the installer ISO", so a fleet machine can't be formatted
-  by accident. `--remote` drives over SSH from any fleet machine
-  (VPSes, or a target booted from any installer). No hostname
-  auto-detection — the guard is the environment marker.
-- **No `<name>` opens the picker** (installer environment only):
-  every fleet host (reformat) + "new host…" (add TUI → install).
-  Darwin `host install <mac>` auto-dispatches from arch and runs
-  locally.
+  sets: outside it, local mode asks for the address of the booted
+  installer (or refuses without a terminal), so a fleet machine
+  can't be formatted by accident. No hostname auto-detection — the
+  guard is the environment marker.
+- **`host add` ends in the install question; `host install` is the
+  reformat.** The install picker lists every host the machine can
+  install (NixOS hosts; a darwin host only on that Mac) plus "new
+  host…", which hands off to `host add` — whose own last step is the
+  install question. Darwin `host install <mac>` auto-dispatches from
+  arch and runs locally.
 - disko + facter are install-time outputs (committed on success;
   auto-commit restricted to those two files), never scaffold-time
-  placeholders.
+  placeholders. On the ISO the checkout is ephemeral, so `host add`
+  also commits what it wrote there, and both verbs push what they
+  committed.
 - The CLI reads config via `nix eval --json
   .#<platform>Configurations.<host>.config.nixhold.<path>`; data
   is shaped in Nix, rendered by the CLI. Per-option docs =
@@ -733,7 +769,8 @@ a TTY exists.
 ### `nixhold status` — bounded
 
 Declaration-side only (works with hosts down): enabled services,
-expose endpoints, secret status; `--fleet` = one line per host.
+their expose endpoints, and each declared secret with its
+ciphertext present or missing; `--fleet` = one line per host.
 Anything richer is `nix eval` / `nixos-option`. Never a
 dashboard; never live systemctl.
 
@@ -748,27 +785,44 @@ closure**; the operator machine never builds foreign arches
 refused (deploy Macs locally). The address comes from
 `derived.address.<name>`: the tailnet entry when it resolves,
 otherwise the first non-null address of any other network;
-`--target <addr>` overrides. Modes: switch (default) / boot /
-test. Confirmation prompt unless `--yes`. `--dry-run` prints a
-framework-aware prelude (service/expose/secret delta) before
-`nixos-rebuild dry-build` output. Tradeoffs accepted: tiny VPSes
-may struggle building (substituters cover most); power users
-escape to raw `nixos-rebuild --build-host`.
+`--target <addr>` overrides (single host only). Modes: switch
+(default) / boot / test. Zero, one or several hosts: none opens a
+multi-select of the hosts this machine can activate (every NixOS
+host; a darwin host only on that Mac), and the selection is the
+confirmation; explicit names confirm once as a list unless `--yes`;
+several deploy in order, continuing past a failure and reporting at
+the end. Required secrets with no ciphertext are provisioned before
+the build. `--dry-run` runs `nixos-rebuild dry-build` (darwin:
+`check`). Tradeoffs accepted: tiny VPSes may struggle building
+(substituters cover most); power users escape to raw `nixos-rebuild
+--build-host`.
 
-### `nixhold secret bootstrap`
+### `nixhold update`
 
-Walks the host's `nixhold.secrets` manifest; for each missing
-ciphertext: run `generator` (non-interactive) / open `$EDITOR`
-prefilled with `template` / open empty editor; encrypt to the
-computed recipients. Idempotent; skips existing. `sshIdentity`
-secrets get their derived pubkey committed as
-`keys/hosts/<host>/identity.pub`. Auto-walked by `host add`, by
-`deploy`, and by `host install` when required ciphertexts are
-missing — at ISO install time the passphrase is already in hand,
-so a new host first-boots with every required secret decryptable,
-and a reformat picks up secrets declared since the last deploy
-(generators run non-interactively; templates open `$EDITOR` on
-the console).
+`git pull --ff-only` in the fleet root (skipped without an
+upstream), `nix flake update`, then the inputs that moved — read
+from the lock diff, `<input>: <old rev> → <new rev>` — and a hand-off
+to `deploy` with no names (`--yes` deploys every eligible host). A
+run where neither the checkout nor an input moved stops there. The
+lock is never auto-committed; the verb ends with the commit command.
+
+### `nixhold secret edit`
+
+Provision-or-edit, decided by whether the ciphertext exists. Missing:
+run `generator` (non-interactive) / open `$EDITOR` prefilled with
+`template` / open an empty editor, encrypt to the computed
+recipients. Present: decrypt with the operator identity, edit,
+re-encrypt to the current recipients. No name: every missing secret
+on the host is provisioned in one numbered walk (the plan is printed
+before the first editor opens), and when none is missing the
+existing ones are offered to edit. `sshIdentity` secrets get their
+derived pubkey committed as `keys/hosts/<host>/identity.pub`. The
+missing-required walk is what `deploy` and `host install` run
+before building, and `host add` runs the full missing walk — at ISO
+install time the passphrase is already in hand, so a new host
+first-boots with every required secret decryptable, and a reformat
+picks up secrets declared since the last deploy (generators run
+non-interactively; templates open `$EDITOR` on the console).
 
 ### `nixhold lint`
 
@@ -935,8 +989,10 @@ CLI:
   gum; readable bash; plain text.
 - **CLI as separate repo/flake** — ships with the framework.
 - **`nixhold.cli.enable`** — `programs.nixhold.enable`.
-- **Extra verbs (`identity init`, `bootstrap`)** — covered by
-  `init` and the install/bootstrap flows.
+- **Extra verbs (`init`, `identity init`, `secret bootstrap`,
+  `host escrow`, `host install-key`, `profile new`)** — identity on
+  first need; provision-or-edit in `secret edit`; one reconciling
+  `host key`; profiles are copied, not scaffolded.
 - **Eval caching / `--fast`** — nix's eval cache is the cache.
 - **Doc generator** — option descriptions + `nixos-option`.
 - **Stability tags in descriptions** — only with enforcement

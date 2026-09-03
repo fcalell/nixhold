@@ -1,5 +1,5 @@
-# Secrets helpers shared by `nixhold secret *` and the bootstrap
-# auto-walk.
+# Secrets helpers shared by `nixhold secret *` and the required-secret
+# walk `deploy` / `host install` run.
 #
 # Recipients come from the eval-side option
 # `nixhold.secrets.<name>.recipients` (operator age key + owning host
@@ -7,39 +7,6 @@
 # agenix-CLI dependency and no committed `secrets.nix` — the recipient
 # set is the contract, computed fresh each invocation. agenix-the-
 # module owns activation-time decryption separately.
-
-# nh_host_platform <host> -> prints "nixos" | "darwin"; non-zero if
-# the host is in neither configuration set.
-nh_host_platform() {
-  local host="$1" root names
-  root="$(nh_fleet_root)" || return 2
-  names="$(nix eval --json --no-warn-dirty "$root#nixosConfigurations" \
-    --apply 'builtins.attrNames' 2>/dev/null || echo '[]')"
-  if printf '%s' "$names" | jq -e --arg h "$host" 'index($h) != null' >/dev/null 2>&1; then
-    printf 'nixos'
-    return 0
-  fi
-  names="$(nix eval --json --no-warn-dirty "$root#darwinConfigurations" \
-    --apply 'builtins.attrNames' 2>/dev/null || echo '[]')"
-  if printf '%s' "$names" | jq -e --arg h "$host" 'index($h) != null' >/dev/null 2>&1; then
-    printf 'darwin'
-    return 0
-  fi
-  return 1
-}
-
-# nh_all_hosts -> prints every host name (nixos then darwin), one per
-# line.
-nh_all_hosts() {
-  local root
-  root="$(nh_fleet_root)" || return 2
-  {
-    nix eval --json --no-warn-dirty "$root#nixosConfigurations" \
-      --apply 'builtins.attrNames' 2>/dev/null || echo '[]'
-    nix eval --json --no-warn-dirty "$root#darwinConfigurations" \
-      --apply 'builtins.attrNames' 2>/dev/null || echo '[]'
-  } | jq -r '.[]?'
-}
 
 # nh_flake_source_path -> the /nix/store path THIS fleet's own source
 # copies to (what its layout.* paths evaluate under). Memoized in the
@@ -181,7 +148,7 @@ nh_host_has_ciphertexts() {
 # shell: each costs a nix eval, and bootstrap/rekey validate once per
 # secret. A shell inherits the memo but cannot export it back, so a
 # caller that validates inside a per-secret subshell warms it first
-# (see cmd_secret_bootstrap).
+# (see nh_secret_provision).
 _NH_RECIPIENT_PROBED=""
 _NH_OP_RECIPIENT_FILE=""
 _NH_OP_RECIPIENT_KEY=""
@@ -217,7 +184,7 @@ nh_check_recipients() {
 
   nh_probe_recipient_inputs
   if [ -z "$_NH_OP_RECIPIENT_KEY" ]; then
-    nh_err "$label: no operator recipient to encrypt to (${_NH_OP_RECIPIENT_FILE:-nixhold.layout.ageRecipient could not be probed}) — run 'nixhold init' and commit the operator pubkey"
+    nh_err "$label: no operator recipient to encrypt to (${_NH_OP_RECIPIENT_FILE:-nixhold.layout.ageRecipient could not be probed}) — 'nixhold host add' generates the operator identity on a fleet that has none"
     return 1
   fi
   if ! grep -qxF -- "$_NH_OP_RECIPIENT_KEY" "$rfile"; then
@@ -331,11 +298,10 @@ nh_commit_identity_pub() {
 
 # nh_unwrap_identity <out> — decrypt the passphrase-wrapped operator
 # age identity to <out> (age prompts for the passphrase on the TTY).
-# Caller chmods/removes <out>. Prefers the operator-local copy; falls
-# back to the fleet-committed `layout.ageIdentityWrapped`, so a fresh
-# clone edits secrets without ever running `nixhold init` (both copies
-# are passphrase-wrapped, so the fallback costs nothing in security —
-# it only costs a prompt per invocation instead of per machine).
+# Caller chmods/removes <out>. $NIXHOLD_IDENTITY_FILE when set (the
+# ISO bakes a copy), else the fleet-committed `layout.ageIdentityWrapped`.
+# Nothing here generates an identity: a ciphertext exists, so it was
+# encrypted to one the operator must already hold.
 #
 # A typo costs a whole verb (rekey walks every host), so an
 # interactive operator gets 3 attempts; age reads the passphrase from
@@ -346,15 +312,13 @@ nh_commit_identity_pub() {
 # passphrase-wrapped, EOF on the prompt) repeat identically and are
 # reported verbatim, once. <out> exists only on success.
 nh_unwrap_identity() {
-  local out="$1" src="$NIXHOLD_IDENTITY_FILE" committed attempts=1 n=1 errfile rc
-  if [ ! -f "$src" ]; then
-    committed="$(nh_worktree_layout_file ageIdentityWrapped)" || committed=""
-    if [ -z "$committed" ] || [ ! -f "$committed" ]; then
-      nh_err "no operator identity at $NIXHOLD_IDENTITY_FILE and no committed one in reach — run 'nixhold init', or run this from a fleet checkout that commits layout.ageIdentityWrapped"
+  local out="$1" src="$NIXHOLD_IDENTITY_FILE" attempts=1 n=1 errfile rc
+  if [ -z "$src" ] || [ ! -f "$src" ]; then
+    src="$(nh_worktree_layout_file ageIdentityWrapped 2>/dev/null)" || src=""
+    if [ -z "$src" ] || [ ! -f "$src" ]; then
+      nh_err "no operator identity: the fleet commits none at nixhold.layout.ageIdentityWrapped and \$NIXHOLD_IDENTITY_FILE is unset — whatever is encrypted here was encrypted to an identity this checkout does not hold"
       return 1
     fi
-    nh_info "no $NIXHOLD_IDENTITY_FILE — using the fleet-committed identity $committed ('nixhold init' persists it locally)"
-    src="$committed"
   fi
   if [ -t 0 ] || [ -t 2 ]; then
     attempts=3

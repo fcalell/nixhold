@@ -56,7 +56,7 @@ through):
 |---|---|---|
 | ISO prints its ssh host-key fingerprint on the console, and `host install --remote` shows the one it connects to | install over a LAN the operator does not control | the ISO key is random per boot, so this is the only way to verify it |
 | `status` compares each reachable host's live `/etc/ssh/ssh_host_ed25519_key.pub` with the committed `host.pub` | first drift incident | lint cannot do it (needs the network); `status` already talks to hosts nowhere else, so this is its first network read |
-| Proving escrow ↔ `host.pub` equality | **decision** | age stanzas carry no recipient fingerprint, so this needs the operator passphrase — possibly a `--verify` flag on `host escrow`, which lint must never call |
+| Proving escrow ↔ `host.pub` equality | **decision** | age stanzas carry no recipient fingerprint, so this needs the operator passphrase — possibly a `--verify` flag on `host key`, which lint must never call |
 | Operator key recovery beyond the passphrase | use case surfaces | Shamir split, or a hardware key as a second recipient |
 | Passphrase rotation verb | use case surfaces | manual rekey covers it today |
 | A separate private-secrets flake input | **decision** | it would need its own write root; today only the fleet's own source store path is re-rooted to the worktree, and a layout path into another input is a hard error |
@@ -68,7 +68,6 @@ through):
 | Item | Trigger | Intended shape |
 |---|---|---|
 | `nixhold.deploy.network` option | operator wants a fleet-wide deploy path other than the tailnet | today the address is the tailnet entry of `derived.address.<host>` when it resolves, else the first non-null one; `--target` overrides |
-| Mass deploy (`--fleet`, host patterns) | additive whenever wanted | today `deploy` takes one named host |
 | `host rename` verb | the manual flow (L8) becomes a real pain | `git mv` + hostsFile edit + `secret rekey` + reinstall, in one verb |
 | Framework-managed remote builders | a consumer informs the design | `fleet.builders.<system>` — reserved, unclaimed |
 | A repo-wide `nix fmt` | formatting drift | `formatter` is bare `nixfmt` on stdin today; a tree formatter would need a wrapper |
