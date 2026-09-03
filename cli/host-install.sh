@@ -222,6 +222,83 @@ nh_disk_byid() {
   fi
 }
 
+# nh_disk_esps <disk-name> — lsblk JSON on stdin, the names of the
+# EFI system partitions on that disk (by partition type GUID, or
+# vfat when the lsblk build lacks PARTTYPE), one per line.
+nh_disk_esps() {
+  jq -r --arg n "$1" '
+    def orq(d): if (. == null or . == "") then d else . end;
+    .blockdevices[]
+    | select(.type == "disk" and .name == $n)
+    | (.children // [])[]
+    | select(((.parttype | orq("")) | ascii_downcase) == "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+             or ((.parttype | orq("")) == "" and (.fstype | orq("")) == "vfat"))
+    | .name'
+}
+
+# nh_esp_loaders <remote> <partition-name> — the entries under /EFI
+# of that partition, read through a read-only mount on the target
+# (root on the ISO, root or sudo elsewhere). Empty when it cannot be
+# mounted or holds no /EFI.
+nh_esp_loaders() {
+  local remote="$1" part="$2"
+  # shellcheck disable=SC2016 # runs on the TARGET's shell
+  nh_target_sh "$remote" '
+    if [ "$(id -u)" -eq 0 ]; then S=""; else S="sudo -n"; fi
+    d="$(mktemp -d)" || exit 0
+    if $S mount -o ro "/dev/'"$part"'" "$d" 2>/dev/null; then
+      ls "$d/EFI" 2>/dev/null
+      $S umount "$d" 2>/dev/null
+    fi
+    rmdir "$d" 2>/dev/null
+    exit 0' 2>/dev/null || true
+}
+
+# nh_foreign_loaders — /EFI entries on stdin, those that are not
+# systemd-boot's own (BOOT, systemd, Linux, nixos) on stdout: another
+# OS's loader lives there.
+nh_foreign_loaders() {
+  awk 'BEGIN { IGNORECASE = 1 } NF && $0 !~ /^(BOOT|systemd|Linux|nixos)$/ { print }'
+}
+
+# nh_name_os <efi-entry> — what the operator calls the OS behind an
+# /EFI entry.
+nh_name_os() {
+  case "$1" in
+    Microsoft | microsoft) printf 'Windows' ;;
+    *) printf 'another OS (EFI/%s)' "$1" ;;
+  esac
+}
+
+# nh_esp_guard <remote> <lsblk-json> <disk-name> — the second OS walk.
+# The chosen disk's ESP holding another OS's loader means that OS
+# stops booting when the disk is erased: name it and require a second
+# explicit confirmation. A Windows ESP on a NON-target disk is left
+# alone and gets the one line that lists it in systemd-boot's menu
+# (the firmware menu boots it regardless).
+nh_esp_guard() {
+  local remote="$1" json="$2" target="$3" part entry other
+  while IFS= read -r part; do
+    [ -n "$part" ] || continue
+    while IFS= read -r entry; do
+      [ -n "$entry" ] || continue
+      nh_warn "the ESP /dev/$part on /dev/$target holds the boot files of $(nh_name_os "$entry") — that OS stops booting when this disk is erased; move it to an ESP on its own disk first (Windows: bcdboot from a recovery environment)"
+      gum confirm --default=false "Erase /dev/$target anyway and leave $(nh_name_os "$entry") unbootable?" || return 1
+    done < <(nh_esp_loaders "$remote" "$part" | nh_foreign_loaders)
+  done < <(printf '%s' "$json" | nh_disk_esps "$target")
+
+  while IFS= read -r other; do
+    [ -n "$other" ] || continue
+    while IFS= read -r part; do
+      [ -n "$part" ] || continue
+      if nh_esp_loaders "$remote" "$part" | grep -qix microsoft; then
+        nh_info "Windows boots from its own ESP /dev/$part on /dev/$other, which this install never touches. To list it in systemd-boot's menu, set in the host module:"
+        nh_info "  boot.loader.systemd-boot.windows.\"11\".efiDeviceHandle = \"HD0b\";  # key = the version shown in the menu; the handle is what \`map -c\` prints for that ESP in the UEFI shell"
+      fi
+    done < <(printf '%s' "$json" | nh_disk_esps "$other")
+  done < <(printf '%s' "$json" | jq -r --arg t "$target" '.blockdevices[] | select(.type == "disk" and .name != $t) | .name')
+}
+
 # nh_pick_disk <remote> — enriched picker plus the destructive
 # confirmation (default NO); prints the chosen disk as a by-id path.
 # The operator never types or copies a device path.
@@ -247,6 +324,7 @@ nh_pick_disk() {
   else
     printf '    (no partitions — the disk is empty)\n' >&2
   fi
+  nh_esp_guard "$remote" "$json" "$name" || return 1
   gum confirm --default=false "Erase /dev/$name and install?" || return 1
 
   nh_disk_byid "$remote" "$name"
