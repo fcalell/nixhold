@@ -1,5 +1,5 @@
 # nixhold host install [<name>] [--remote <user>@<ip>] [--disk <by-id>]
-#                               [--yes]
+#                               [--yes] [--repo <owner/repo> --keys <dir>]
 #
 # Two entry points, one phase sequence:
 #   --remote  drive the install over SSH from any fleet machine
@@ -450,17 +450,187 @@ nh_local_install() {
   nh_ok "installed $name"
 }
 
+# nh_bootstrap_fleet <owner/repo> <keys-dir> — the fresh-Mac path: no
+# fleet checkout exists yet, so clone one into ~/<repo> (where
+# `programs.nixhold.fleetDir` will look for it) over the repo deploy
+# key. <keys-dir> holds the two operator-encrypted ciphertexts the
+# ISO bakes for the same purpose — operator.age and repo.key.age —
+# read through the same $NIXHOLD_IDENTITY_FILE / $NIXHOLD_REPO_KEY_FILE
+# path, so the passphrase is all the operator brings.
+nh_bootstrap_fleet() {
+  local repo="$1" keys="$2" dir remote f
+  case "$repo" in
+    */*) ;;
+    *)
+      nh_err "--repo expects owner/repo (got '$repo')"
+      return 1
+      ;;
+  esac
+  for f in operator.age repo.key.age; do
+    if [ ! -f "$keys/$f" ]; then
+      nh_err "--keys $keys holds no $f — copy keys/operator.age and keys/repo.key.age there from any checkout (or the safekeeping copy)"
+      return 1
+    fi
+  done
+  NIXHOLD_IDENTITY_FILE="$keys/operator.age"
+  NIXHOLD_REPO_KEY_FILE="$keys/repo.key.age"
+  export NIXHOLD_IDENTITY_FILE NIXHOLD_REPO_KEY_FILE
+
+  dir="$HOME/${repo##*/}"
+  dir="${dir%.git}"
+  if [ -f "$dir/flake.nix" ]; then
+    nh_info "fleet checkout already at $dir"
+  else
+    nh_require_cmd git || return 1
+    remote="git@github.com:${repo%.git}.git"
+    nh_info "cloning $remote into $dir over the repo deploy key"
+    _NH_CLONING=1
+    if ! nh_repo_git clone "$remote" "$dir" >&2; then
+      _NH_CLONING=0
+      nh_err "clone of $remote failed — the deploy key in $keys/repo.key.age must be registered on the repo"
+      return 1
+    fi
+    _NH_CLONING=0
+    nh_ok "cloned fleet to $dir"
+  fi
+  _NH_FLEET_ROOT="$dir"
+}
+
+# nh_darwin_preflight <name> — what a fresh Mac must already be
+# before anything is written: logged in as the operator account
+# (home, home-manager and agenix ownership all key off it), Command
+# Line Tools present, and no Determinate Nix beside a host that
+# manages Nix itself (nix-darwin refuses that activation).
+nh_darwin_preflight() {
+  local name="$1" want user
+  want="$(nh_host_eval "$name" darwin nixhold.identity.username | jq -r '.')" || return 2
+  user="$(id -un)"
+  if [ "$user" != "$want" ]; then
+    nh_err "logged in as '$user', but $name's operator account is '$want' — create that account (System Settings › Users & Groups, administrator) and run the install from it"
+    return 1
+  fi
+  if ! xcode-select -p >/dev/null 2>&1; then
+    nh_err "Command Line Tools are missing — run 'xcode-select --install', then re-run"
+    return 1
+  fi
+  if [ -e /usr/local/bin/determinate-nixd ] &&
+    [ "$(nh_host_eval "$name" darwin nix.enable | jq -r '.')" = "true" ]; then
+    nh_err "Determinate Nix is installed and $name manages Nix itself — nix-darwin refuses to activate beside it; uninstall Determinate for the vanilla multi-user install, or set nix.enable = false in the host module"
+    return 1
+  fi
+  nh_ok "preflight: account $user, Command Line Tools present, Nix manageable"
+}
+
+# nh_darwin_rebuild_cmd <root> <name> — the darwin-rebuild to switch
+# with: the installed one, or, on a machine that has never switched,
+# the fleet's pinned nix-darwin built into the scratch root.
+nh_darwin_rebuild_cmd() {
+  local root="$1" name="$2" out
+  if command -v darwin-rebuild >/dev/null 2>&1; then
+    printf 'darwin-rebuild'
+    return 0
+  fi
+  nh_info "darwin-rebuild not on PATH — first switch, bootstrapping via the fleet's pinned nix-darwin"
+  out="$(nh_tmpdir darwin-bootstrap)" || return 1
+  nix build --out-link "$out/system" "$root#darwinConfigurations.$name.system" >&2 || {
+    nh_err "could not build $name's system closure"
+    return 1
+  }
+  printf '%s' "$out/system/sw/bin/darwin-rebuild"
+}
+
+# nh_darwin_switch <root> <name> <rebuild> — one `darwin-rebuild
+# switch` (root, as nix-darwin requires). The first switch on a fresh
+# Mac is refused when /etc holds files nix-darwin did not write
+# (/etc/nix/nix.conf from the Nix installer, /etc/zshenv, …): those
+# are moved to <file>.before-nix-darwin — the rename nix-darwin asks
+# for — and the switch retried once.
+nh_darwin_switch() {
+  local root="$1" name="$2" rebuild="$3" log attempt files f
+  log="$(nh_tmpdir switch)/log" || return 1
+  for attempt in 1 2; do
+    if (cd "$root" && sudo "$rebuild" switch --flake ".#$name" 2>&1 | tee "$log" >&2; exit "${PIPESTATUS[0]}"); then
+      return 0
+    fi
+    [ "$attempt" -eq 1 ] || break
+    grep -q "Unexpected files in /etc" "$log" || break
+    files="$(awk '/would be overwritten:/ { f = 1; next } f && /^  \// { print $1; next } f && NF { exit }' "$log")"
+    [ -n "$files" ] || break
+    nh_warn "nix-darwin refuses to overwrite files in /etc it did not write — moving them aside and retrying once"
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      sudo mv "$f" "$f.before-nix-darwin" || {
+        nh_err "could not move $f aside"
+        return 1
+      }
+      nh_info "  $f → $f.before-nix-darwin"
+    done <<<"$files"
+  done
+  nh_err "activation of $name failed — see above"
+  return 1
+}
+
+# nh_darwin_wait_secrets <name> — agenix on darwin decrypts under
+# launchd after activation, asynchronously: wait (bounded) for every
+# active secret's path to exist, kickstart the daemon once when it
+# does not, and say what is still missing. Non-zero when something
+# is.
+nh_darwin_wait_secrets() {
+  local name="$1" paths
+  paths="$(nh_host_eval "$name" darwin age.secrets | jq -r '.[] | .path')" || return 0
+  [ -n "$paths" ] || return 0
+  nh_info "waiting for agenix to decrypt $(printf '%s\n' "$paths" | grep -c .) secret(s) under /run/agenix"
+  if nh_wait_paths 30 "$paths"; then
+    nh_ok "every active secret is decrypted"
+    return 0
+  fi
+  nh_info "not decrypted yet — kickstarting system/activate-agenix"
+  sudo launchctl kickstart -k system/activate-agenix 2>/dev/null ||
+    nh_warn "could not kickstart system/activate-agenix"
+  if nh_wait_paths 30 "$paths"; then
+    nh_ok "every active secret is decrypted"
+    return 0
+  fi
+  nh_warn "still missing after the kickstart: $(nh_missing_paths "$paths" | paste -sd' ' -)"
+  nh_info "the usual cause is a host key that is not the committed recipient — 'nixhold host key $name' reconciles it; 'sudo launchctl print system/activate-agenix' shows the daemon"
+  return 1
+}
+
+# nh_wait_paths <seconds> <paths-newline-separated> — poll (as root:
+# the secrets dir is not traversable by the operator) until every
+# path exists or the bound is hit.
+nh_wait_paths() {
+  local bound="$1" paths="$2" i=0
+  while [ "$i" -lt "$bound" ]; do
+    [ -z "$(nh_missing_paths "$paths")" ] && return 0
+    sleep 1
+    i=$((i + 1))
+  done
+  [ -z "$(nh_missing_paths "$paths")" ]
+}
+
+nh_missing_paths() {
+  local p
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    sudo test -e "$p" || printf '%s\n' "$p"
+  done <<<"$1"
+}
+
 # nh_darwin_install <name> <root> — local darwin install, fresh-macOS
-# capable. Does the two jobs the NixOS path gets from nixos-anywhere:
+# complete:
+#   0. preflight — account, Command Line Tools, vanilla Nix;
 #   1. host identity — make /etc/ssh/ssh_host_ed25519_key (agenix's
 #      darwin identityPath) BE the fleet's key for <name>: the shared
 #      reconciliation (nh_reconcile_host_key), which installs the
 #      committed key, adopts the machine's when the fleet has none,
 #      or mints one for a host that has never had one; an adoption
 #      rekeys the secrets to it;
-#   2. activate — sudo darwin-rebuild; on a machine that has never
-#      switched (no darwin-rebuild on PATH), bootstrap via the fleet's
-#      pinned nix-darwin.
+#   2. activate — sudo darwin-rebuild (bootstrapped from the fleet's
+#      pinned nix-darwin on a machine that has never switched), with
+#      the first-switch /etc refusal handled in place;
+#   3. secrets verified under /run/agenix, then a second switch so
+#      home-manager derives the .pub files of sshKey secrets.
 nh_darwin_install() {
   local name="$1" root="$2"
 
@@ -468,6 +638,8 @@ nh_darwin_install() {
     nh_err "darwin install runs on the Mac itself — run this on $name"
     return 1
   fi
+
+  nh_darwin_preflight "$name" || return 1
 
   # 1. Host identity. The install is the confirmation.
   nh_reconcile_host_key "$name" "" 1 || return 1
@@ -483,38 +655,43 @@ nh_darwin_install() {
   keys_dir="$(nh_worktree_keys_dir)" || return 2
   nh_commit_paths "$root" "host $name: host key" "$keys_dir/hosts/$name"
 
-  # 2. Activate (nix-darwin requires root for switch).
-  if command -v darwin-rebuild >/dev/null 2>&1; then
-    (cd "$root" && sudo darwin-rebuild switch --flake ".#$name") || return $?
-  else
-    nh_info "darwin-rebuild not on PATH — first switch, bootstrapping via the fleet's pinned nix-darwin"
-    local out
-    out="$(nh_tmpdir darwin-bootstrap)" || return 1
-    nix build --out-link "$out/system" "$root#darwinConfigurations.$name.system" || {
-      nh_err "could not build $name's system closure"
-      return 1
-    }
-    if ! (cd "$root" && sudo "$out/system/sw/bin/darwin-rebuild" switch --flake ".#$name"); then
-      nh_err "first activation failed — if it complained about pre-existing files (/etc/nix/nix.conf, /etc/zshenv, …), move them aside (e.g. sudo mv /etc/nix/nix.conf{,.before-nix-darwin}) and re-run"
-      return 1
-    fi
+  # Required secrets before the build, as on NixOS: activation would
+  # only fail later with a worse error.
+  nh_provision_required_secrets "$name" darwin || {
+    nh_err "secret provisioning failed — fix the secrets above, then re-run install"
+    return 1
+  }
+
+  # 2. Activate.
+  local rebuild
+  rebuild="$(nh_darwin_rebuild_cmd "$root" "$name")" || return 1
+  nh_darwin_switch "$root" "$name" "$rebuild" || return 1
+
+  # 3. Secrets, then the .pub files.
+  nh_darwin_wait_secrets "$name" || true
+  if [ "$(nh_host_eval "$name" darwin nixhold.secrets | jq 'any(.[]; .sshKey and .active)')" = "true" ]; then
+    nh_info "switching again so home-manager derives the .pub files of the SSH keys"
+    nh_darwin_switch "$root" "$name" "$rebuild" || return 1
   fi
 
   nh_ok "installed $name"
-  nh_info "agenix decrypts via launchd shortly after activation — verify: ls /run/agenix (kick it: sudo launchctl kickstart -k system/activate-agenix)"
+  nh_info "next: nixhold deploy $name for every change after this"
 }
 
 cmd_host_install() {
-  local name="" remote="" disk="" yes=0 picked=0
+  local name="" remote="" disk="" yes=0 picked=0 repo="" keys=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --remote) remote="$2"; shift 2 ;;
       --disk) disk="$2"; shift 2 ;;
       --yes) yes=1; shift ;;
+      --repo) repo="${2:-}"; shift 2 ;;
+      --keys) keys="${2:-}"; shift 2 ;;
       -h | --help)
         cat <<'EOF'
 Usage: nixhold host install [<name>] [--remote <user>@<ip>]
                                      [--disk <by-id>] [--yes]
+                                     [--repo <owner/repo> --keys <dir>]
 
   <name> omitted   pick a host: any fleet host this machine can
                    install (reformat), or "new host…" to walk one in.
@@ -524,6 +701,9 @@ Usage: nixhold host install [<name>] [--remote <user>@<ip>]
   --disk           the install disk (/dev/disk/by-id/…), written into
                    the roster; without it the picker asks, or the
                    roster's disk is reused.
+  --repo, --keys   a Mac with no fleet checkout: clone owner/repo
+                   into ~/<repo> over the deploy key first. <dir>
+                   holds operator.age and repo.key.age.
 EOF
         return 0
         ;;
@@ -533,6 +713,13 @@ EOF
   done
 
   nh_require_cmd nix jq
+  if [ -n "$repo" ] || [ -n "$keys" ]; then
+    if [ -z "$repo" ] || [ -z "$keys" ]; then
+      nh_err "--repo and --keys go together"
+      return 1
+    fi
+    nh_bootstrap_fleet "$repo" "$keys" || return 1
+  fi
   local root
   root="$(nh_fleet_root)" || return 2
 
