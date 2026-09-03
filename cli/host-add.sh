@@ -2,8 +2,13 @@
 #
 # The walk that brings a host into the fleet:
 #   1. Prompt name (when not given), arch, profile, networks,
-#      publicIp/publicFqdn, stateVersion — every abort happens here,
-#      before the first write.
+#      publicIp, stateVersion — every abort happens here, before the
+#      first write. Prompts default from what is known: the machine's
+#      arch when it is the target (ISO, Mac), the profile from the
+#      arch, stateVersion from the pinned nixpkgs / nix-darwin.
+#      Networks are asked only when the fleet declares more than the
+#      tailscale default, a public address only for a host on an
+#      internet network; publicFqdn defaults in the roster.
 #   2. Generate a host SSH keypair into the per-host cache; commit its
 #      pubkey + escrow under `nixhold.layout.keysDir` (a fleet with no
 #      operator identity yet gets one here).
@@ -68,20 +73,24 @@ EOF
   # empty string. Unchecked, that wrote `arch = ""; profile = ;` into
   # hosts.nix and minted a keypair + escrow for a half-added host.
   local arch
+  # shellcheck disable=SC2046 # nh_first emits one space-free option per line
   arch="$(nh_prompt_choose "Arch for $name:" \
-    "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin")" || arch=""
+    $(nh_first "$(nh_here_arch)" "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin"))" || arch=""
   if [ -z "$arch" ]; then
     nh_err "aborted — no arch chosen; nothing was written"
     return 1
   fi
 
-  # Profile list: framework-shipped + a free-text escape for
-  # forker-authored profiles.
-  local profile
+  # Profile list: framework-shipped (the one matching the arch first)
+  # + a free-text escape for forker-authored profiles.
+  local profile prof_default="nixhold.profiles.server"
+  case "$arch" in *-darwin) prof_default="nixhold.profiles.workstationDarwin" ;; esac
+  # shellcheck disable=SC2046 # nh_first emits one space-free option per line
   profile="$(nh_prompt_choose "Profile for $name:" \
-    "nixhold.profiles.server" \
-    "nixhold.profiles.workstationDarwin" \
-    "nixhold.profiles.desktopLinux" \
+    $(nh_first "$prof_default" \
+      "nixhold.profiles.server" \
+      "nixhold.profiles.workstationDarwin" \
+      "nixhold.profiles.desktopLinux") \
     "(forker-authored — type custom name)")" || profile=""
   if [ -z "$profile" ]; then
     nh_err "aborted — no profile chosen; nothing was written"
@@ -98,32 +107,47 @@ EOF
     profile="$custom"
   fi
 
-  local networks
-  networks="$(nh_prompt_input "Networks (comma-separated)" "tailnet")" || networks=""
-  if [ -z "$networks" ]; then
-    nh_err "aborted — no networks given; nothing was written"
-    return 1
+  # Networks: the roster defaults to every tailscale-typed network, so
+  # the question only exists when the fleet declares something else.
+  # The fleet view is unreadable while the fleet has no host (the
+  # first add): the default stands, unasked.
+  local view="" networks="" all_nets ts_nets
+  view="$(nh_fleet_view 2>/dev/null)" || view=""
+  if [ -n "$view" ] &&
+    [ "$(printf '%s' "$view" | jq '.network | length > 1 or any(.[]; .type != "tailscale")')" = "true" ]; then
+    all_nets="$(printf '%s' "$view" | jq -r '.network | keys[]')"
+    ts_nets="$(printf '%s' "$view" | jq -r '[.network | to_entries[] | select(.value.type == "tailscale") | .key] | join(",")')"
+    # shellcheck disable=SC2086 # network names, split on purpose
+    networks="$(gum choose --no-limit --header "Networks for $name:" --selected "$ts_nets" $all_nets | paste -sd, -)" || networks=""
+    if [ -z "$networks" ]; then
+      nh_err "aborted — no network chosen; nothing was written"
+      return 1
+    fi
   fi
 
-  local public_ip="" public_fqdn=""
-  if nh_prompt_confirm "Does $name have a stable public IP?"; then
+  # A public address is only usable on an internet-typed network.
+  local public_ip=""
+  if [ -n "$networks" ] &&
+    [ "$(printf '%s' "$view" | jq --arg n "$networks" '[.network | to_entries[] | select(.value.type == "internet") | .key] | any(. as $k | $n | split(",") | index($k) != null)')" = "true" ] &&
+    nh_prompt_confirm "Does $name have a stable public IP?"; then
     public_ip="$(nh_prompt_input "publicIp (e.g. 203.0.113.42)")" || public_ip=""
     if [ -z "$public_ip" ]; then
       nh_err "aborted — no publicIp given; nothing was written"
       return 1
     fi
-    public_fqdn="$(nh_prompt_input "publicFqdn (optional, blank to skip)")" || public_fqdn=""
   fi
 
   # stateVersion belongs with the other prompts: asking it after the
-  # keypair exists would put a cancel on the far side of a write.
+  # keypair exists would put a cancel on the far side of a write. The
+  # default is the pinned release (nixpkgs' `lib.trivial.release`,
+  # nix-darwin's `system.maxStateVersion`).
   local statever=""
   case "$arch" in
     *-linux)
-      statever="$(nh_prompt_input "system.stateVersion (nixpkgs release)" "26.05")" || statever=""
+      statever="$(nh_prompt_input "system.stateVersion (nixpkgs release)" "$(nh_default_state_version "$root" nixos)")" || statever=""
       ;;
     *-darwin)
-      statever="$(nh_prompt_input "system.stateVersion (nix-darwin integer)" "6")" || statever=""
+      statever="$(nh_prompt_input "system.stateVersion (nix-darwin integer)" "$(nh_default_state_version "$root" darwin)")" || statever=""
       ;;
   esac
   if [ -z "$statever" ]; then
@@ -177,7 +201,7 @@ EOF
     /* | ../*) ;;
     *) modpath="./$modpath" ;;
   esac
-  nh_append_host_entry "$hosts_file" "$name" "$arch" "$profile" "$networks" "$public_ip" "$public_fqdn" "$modpath" || return 1
+  nh_append_host_entry "$hosts_file" "$name" "$arch" "$profile" "$networks" "$public_ip" "$modpath" || return 1
   nh_ok "wrote host entry for $name into $hosts_file"
   nh_fleet_view_reset
 
@@ -262,11 +286,58 @@ nh_add_install_question() {
   esac
 }
 
+# nh_first <default> <option…> — the options with <default> moved to
+# the front (gum's cursor starts on the first item), unchanged when
+# <default> is empty or not among them.
+nh_first() {
+  local default="$1" o
+  shift
+  if [ -n "$default" ]; then
+    for o in "$@"; do
+      [ "$o" = "$default" ] && printf '%s
+' "$o"
+    done
+  fi
+  for o in "$@"; do
+    [ "$o" = "$default" ] || printf '%s
+' "$o"
+  done
+}
+
+# nh_here_arch — this machine's system double when it is the machine
+# being added (the installer ISO, or a Mac); empty elsewhere, where
+# the target is some other box.
+nh_here_arch() {
+  case "$(uname -s)/$(uname -m)" in
+    Darwin/arm64) printf 'aarch64-darwin' ;;
+    Darwin/x86_64) printf 'x86_64-darwin' ;;
+    Linux/x86_64) if nh_installer_env; then printf 'x86_64-linux'; fi ;;
+    Linux/aarch64) if nh_installer_env; then printf 'aarch64-linux'; fi ;;
+  esac
+  return 0
+}
+
+# nh_default_state_version <root> <nixos|darwin> — the stateVersion a
+# host created today should pin: the release of the pinned nixpkgs,
+# or nix-darwin's maxStateVersion. Empty when the eval fails (the
+# prompt is then blank, not wrong).
+nh_default_state_version() {
+  local root="$1" platform="$2" expr
+  case "$platform" in
+    nixos) expr="inputs.nixhold.inputs.nixpkgs.lib.trivial.release" ;;
+    darwin) expr="toString (inputs.nixhold.inputs.nix-darwin.lib.darwinSystem { system = builtins.currentSystem; modules = [ ]; }).config.system.maxStateVersion" ;;
+    *) return 0 ;;
+  esac
+  nix eval --raw --no-warn-dirty --impure --expr "with builtins.getFlake \"$root\"; $expr" 2>/dev/null || true
+}
+
 # Append a host entry just before the closing brace of the hosts.nix
 # attrset. Idempotent — if `<name> = {` already exists, refuses
-# (the operator should run `host remove` first).
+# (the operator should run `host remove` first). An empty
+# <networks-csv> writes no `networks` line: the roster default (every
+# tailscale-typed network) applies.
 nh_append_host_entry() {
-  local file="$1" name="$2" arch="$3" profile="$4" networks_csv="$5" pip="$6" pfqdn="$7" modpath="$8"
+  local file="$1" name="$2" arch="$3" profile="$4" networks_csv="$5" pip="$6" modpath="$7"
 
   if [ ! -f "$file" ]; then
     cat >"$file" <<'EOF'
@@ -281,23 +352,21 @@ EOF
     return 1
   fi
 
-  local networks_nix
-  networks_nix="$(printf '%s\n' "$networks_csv" \
-    | awk -F, '{ for (i=1;i<=NF;i++) { gsub(/^ +| +$/, "", $i); printf "\"%s\" ", $i } }')"
-
   local entry
   entry="  ${name} = {
     arch = \"${arch}\";
     profile = ${profile};
-    modules = [ ${modpath} ];
+    modules = [ ${modpath} ];"
+  if [ -n "$networks_csv" ]; then
+    local networks_nix
+    networks_nix="$(printf '%s\n' "$networks_csv" \
+      | awk -F, '{ for (i=1;i<=NF;i++) { gsub(/^ +| +$/, "", $i); printf "\"%s\" ", $i } }')"
+    entry="${entry}
     networks = [ ${networks_nix}];"
+  fi
   if [ -n "$pip" ]; then
     entry="${entry}
     publicIp = \"${pip}\";"
-  fi
-  if [ -n "$pfqdn" ]; then
-    entry="${entry}
-    publicFqdn = \"${pfqdn}\";"
   fi
   entry="${entry}
   };
