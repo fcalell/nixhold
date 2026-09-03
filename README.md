@@ -43,9 +43,10 @@ transitively via `inputs.nixhold.inputs.*`.
 ```
 
 `hosts.nix` is the roster — per host: `arch`, `profile` (e.g.
-`nixhold.profiles.server`), `modules`, `networks`, and optional
-`publicIp` / `publicFqdn` / `loginPubkey`. `nixhold host add` manages
-it for you.
+`nixhold.profiles.server`), `modules`, and optional `networks`
+(default: every tailscale network), `disk` (the install target,
+written by `host install`), `publicIp` / `publicFqdn` /
+`loginPubkey`. `nixhold host add` manages it for you.
 
 Scaffold a fresh fleet with `nix flake init -t github:fcalell/nixhold`.
 
@@ -60,8 +61,8 @@ Every argument in brackets opens a picker when left out.
 ```sh
 nixhold host add [<name>]      # the walk: roster entry, host key, secrets,
                                # then "install now?"
-nixhold host install [<name>]  # reformat a host (NixOS: disko + nixos-facter +
-                               # nixos-anywhere; darwin: darwin-rebuild locally)
+nixhold host install [<name>]  # reformat a host (NixOS: disk picker + disko +
+                               # nixos-facter; darwin: darwin-rebuild locally)
 nixhold deploy [<name>…]       # build + switch (local; or over ssh as the
                                # operator user with --use-remote-sudo)
 nixhold update                 # pull, update inputs, deploy what you pick
@@ -76,9 +77,11 @@ nixhold logs [<host>] [<unit>] # journalctl over the tailnet
 ## Typical lifecycle for a new NixOS host
 
 1. `nixhold host add web` — generates the host key, scaffolds its
-   module files, and ends by asking whether to install now: over ssh
-   to the booted installer (`--install root@<ip>` scripts it), or
-   later with `nixhold host install web --remote root@<ip>`.
+   module, provisions its secrets, commits all of it, and ends by
+   asking whether to install now: over ssh to the booted installer
+   (`--install root@<ip>` scripts it), or later with
+   `nixhold host install web --remote root@<ip>`. Every prompt
+   defaults from what the fleet already knows.
 2. Install picks the disk (written into the roster as
    `hosts.web.disk`, from which the framework renders the one disko
    layout), runs disko + `nixos-facter`, and commits the disk and
@@ -89,21 +92,41 @@ nixhold logs [<host>] [<unit>] # journalctl over the tailnet
 4. `nixhold deploy web` for subsequent changes.
 
 Darwin hosts are already-running macOS — run `nixhold host install
-mac` **on the Mac itself**. It is fresh-machine capable: it ensures
-the host age identity at `/etc/ssh/ssh_host_ed25519_key` (installing
-the `host add`-cached key, or generating one in place), commits that
-key's pubkey as `keys/hosts/mac/host.pub` and rekeys secrets to it,
-then activates with `sudo darwin-rebuild` — bootstrapping via the
-fleet's pinned nix-darwin when `darwin-rebuild` isn't on PATH yet.
-Day-to-day changes afterwards: `nixhold deploy mac`.
+mac` **on the Mac itself**. It is fresh-machine complete: after a
+preflight (the login account is the operator, Command Line Tools,
+vanilla Nix) it makes `/etc/ssh/ssh_host_ed25519_key` the fleet's key
+for the host (installing the committed one, or adopting and
+escrowing the machine's), rekeys secrets when needed, activates with
+`sudo darwin-rebuild` — bootstrapping via the fleet's pinned
+nix-darwin when it isn't on PATH yet, and moving aside the `/etc`
+files nix-darwin refuses to overwrite — then waits for agenix and
+switches once more so the SSH `.pub` files exist. On a Mac with no
+checkout yet:
+
+```sh
+nix run --extra-experimental-features 'nix-command flakes' \
+  github:fcalell/nixhold#nixhold -- host install mac \
+  --repo alice/nix --keys <dir-with-operator.age-and-repo.key.age>
+```
+
+clones the fleet into `~/nix` over the deploy key first. Day-to-day
+changes afterwards: `nixhold deploy mac`.
+
+Every verb commits exactly the files it generated (roster entry,
+keys, ciphertexts, facter report); only the installer ISO pushes.
 
 ## What you get without wiring it yourself
 
-- **Identity auto-wiring** — user, home, git author, agenix owner, nix
-  trust from one `identity`.
+- **Identity auto-wiring** — user, groups, home, git author, agenix
+  owner, nix trust + flakes, weekly gc, and a console password secret
+  from one `identity`.
+- **Hardware as data** — `hosts.<n>.disk` renders the shipped disko
+  layout (systemd-boot, zram implied); the facter report has a
+  default path. Custom layouts are a `disko.devices` declaration.
 - **Secrets** — `nixhold.secrets.<name>` → agenix, recipients computed
   from the operator + each host's key; `homePath` symlinks into `$HOME`;
-  `sshKey = true` derives the `.pub` and defaults `homePath`.
+  `sshKey = true` derives the `.pub`, defaults `homePath`, and
+  generates the key (or takes a pasted one).
 - **Services + expose** — declare `nixhold.services.<name>` with
   `network.ports` + `expose`; Caddy and the firewall configure
   themselves from the declarations (tailnet TLS via `tailscale cert`).
