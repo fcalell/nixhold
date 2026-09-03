@@ -1,7 +1,9 @@
 # nixhold secret edit [<host>] [<name>]
 #
 # Provision-or-edit, decided by whether the ciphertext exists:
-#   missing  -> generator set: run it, encrypt its stdout (no prompt)
+#   missing  -> generator set: run it, encrypt its stdout (an sshKey
+#                              secret first asks generate-or-paste on
+#                              a terminal; paste is the editor path)
 #               template set:  prefill $EDITOR with it, encrypt what's saved
 #               neither:       open an empty $EDITOR, encrypt what's saved
 #   present  -> decrypt with the operator identity, open $EDITOR,
@@ -107,14 +109,30 @@ nh_secret_provision() {
   # Iterated over "$@", not a here-string-fed `read` loop: a redirect
   # on the loop would hand $EDITOR (and the gate prompt) a stdin that
   # is not the operator's terminal.
-  local added=0 failed=0 rc idx=0 target generator template desc written=()
+  local added=0 failed=0 rc idx=0 target generator template desc sshkey choice written=()
   for name in "$@"; do
     idx=$((idx + 1))
     target="$sdir/hosts/$host/$name.age"
     generator="$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].generator // ""')"
     template="$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].template // ""')"
     desc="$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].description // ""')"
+    sshkey="$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].sshKey // false')"
     nh_info "[$idx/$total] $name${desc:+ — $desc}"
+    # An SSH key may already exist and be registered elsewhere:
+    # offer to adopt it rather than mint a replacement. Pasting is
+    # the editor path; Esc skips the secret.
+    if [ -n "$generator" ] && [ "$sshkey" = "true" ] && nh_tty; then
+      choice="$(nh_prompt_choose "$host/$name is an SSH key:" \
+        "generate a new ed25519 key" "paste an existing private key")" || choice=""
+      case "$choice" in
+        generate*) ;;
+        paste*) generator="" ;;
+        *)
+          nh_warn "no choice for $name — skipping"
+          continue
+          ;;
+      esac
+    fi
     if [ -n "$generator" ]; then
       nh_info "  running its generator (no editor; it may prompt)"
     else

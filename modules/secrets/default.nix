@@ -32,6 +32,22 @@ let
   # Guarded by pathExists so a host declared before its keys land still
   # evaluates; lint flags the missing host recipient.
   hostPubPath = layout.keysDir + "/hosts/${hostName}/host.pub";
+
+  # The default generator of an `sshKey` secret: a fresh ed25519 key
+  # on stdout (what gets encrypted), its pubkey on stderr (what the
+  # operator registers wherever the key is used). ssh-keygen insists
+  # on writing to disk, so the pair is made in a private dir the trap
+  # removes on every exit path.
+  keygen = name: ''
+    (
+      umask 077
+      d="$(mktemp -d)" || exit 1
+      trap 'rm -rf "$d"' EXIT INT TERM
+      ssh-keygen -q -t ed25519 -N "" -C "${hostName}-${name}" -f "$d/key" || exit 1
+      cat "$d/key" || exit 1
+      { echo "pubkey of ${hostName}/${name} (register it where this key is used):"; cat "$d/key.pub"; } >&2
+    )
+  '';
   recipientsForHost =
     lib.optional (builtins.pathExists layout.ageRecipient) (pubkeyLine layout.ageRecipient)
     ++ lib.optional (builtins.pathExists hostPubPath) (pubkeyLine hostPubPath);
@@ -60,9 +76,11 @@ let
           description = ''
             Marks the secret as an SSH private key: the home module
             derives `~/<homePath>.pub` via `ssh-keygen -y` at HM
-            activation, and `homePath` defaults to `".ssh/<name>"`.
-            Only meaningful with `owner = "user"`. Behavior is
-            triggered by this option, never by the secret's name.
+            activation, `homePath` defaults to `".ssh/<name>"`, and
+            `generator` defaults to an ed25519 keygen (on a terminal
+            `nixhold secret edit` offers to paste an existing key
+            instead). Only meaningful with `owner = "user"`. Behavior
+            is triggered by this option, never by the secret's name.
           '';
         };
 
@@ -115,12 +133,13 @@ let
 
         generator = mkOption {
           type = types.nullOr types.str;
-          default = null;
+          defaultText = lib.literalMD "an ed25519 keygen when `sshKey`, else `null`";
           description = ''
             Shell command `nixhold secret edit` runs to generate
             the initial secret content when the encrypted file
             does not yet exist. Output captured from stdout,
-            encrypted, written. `null` means operator-typed.
+            encrypted, written; stderr reaches the operator. `null`
+            means operator-typed.
           '';
           example = "openssl rand -base64 32";
         };
@@ -247,6 +266,7 @@ let
         # enough (an explicit sshKey definition still wins).
         sshKey = lib.mkDefault config.sshIdentity;
         homePath = lib.mkDefault (if config.sshKey then ".ssh/${name}" else null);
+        generator = lib.mkDefault (if config.sshKey then keygen name else null);
         resolvedOwner = if config.owner == "user" then username else config.owner;
         resolvedMode =
           if config.mode != null then
