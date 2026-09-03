@@ -118,9 +118,9 @@ read from disk. A minimal fork passes only `inputs`, `identity`,
 |---|---|
 | `inputs` | the forker's flake-call attrset; heavy deps resolved from `inputs.nixhold.inputs.*`; `inputs.self` roots the layout defaults |
 | `identity` | `{ username, fullName, email }` |
-| `layout` (optional) | CLI filesystem contract; every field defaults from `inputs.self`: `secrets` → `/secrets`, `hostsFile` → `/hosts.nix`, `modulesDir` → `/modules`, `profilesDir` → `/profiles`, `keysDir` → `/keys`, `ageRecipient` → `/keys/operator.pub`, `ageIdentityWrapped` → `/keys/operator.age`. `repoUrl` is the one non-derivable field — a bare `owner/repo` slug (github.com assumed, cloned over SSH via the deploy key), typed to reject URL schemes and a `.git` suffix since both the remote and `programs.nixhold.fleetDir` are built out of it; required to build the installer ISO, unused otherwise. Defaulting is computed values off `self`, not filesystem discovery (principle 14 intact) |
+| `layout` (optional) | CLI filesystem contract; every field defaults from `inputs.self`: `secrets` → `/secrets`, `hostsFile` → `/hosts.nix`, `modulesDir` → `/modules`, `profilesDir` → `/profiles`, `hostsDir` → `/hosts`, `keysDir` → `/keys`, `ageRecipient` → `/keys/operator.pub`, `ageIdentityWrapped` → `/keys/operator.age`. `repoUrl` is the one non-derivable field — a bare `owner/repo` slug (github.com assumed, cloned over SSH via the deploy key), typed to reject URL schemes and a `.git` suffix since both the remote and `programs.nixhold.fleetDir` are built out of it; required to build the installer ISO, unused otherwise. Defaulting is computed values off `self`, not filesystem discovery (principle 14 intact) |
 | `networks` | `{ <name> = { type, magicDnsSuffix?, domain? }; }` |
-| `hosts` | `{ <name> = { arch, profile, modules, networks, publicIp?, publicFqdn?, loginPubkey? }; }` |
+| `hosts` | `{ <name> = { arch, profile, modules, networks?, disk?, publicIp?, publicFqdn?, loginPubkey? }; }` |
 
 Rules:
 
@@ -206,8 +206,10 @@ Concepts, not filesystem (principle 14):
   `{ imports = [ ... ]; }`. Everything profile-set is overridable
   in the host file.
 - **Per-host modules (layer 3)** are free-form NixOS/Darwin
-  modules (host config, disko import, facter pointer) — operator
-  filenames, no framework path conventions.
+  modules (service enables, home fragments, host extras) —
+  operator filenames, no framework path conventions. Hardware is
+  not in them: the disk is roster data and the facter report sits
+  at its default path (see Hardware).
 - **Fleet manifest** — the `mkFleet` args attach a profile to each
   host; the manifest reads as "I have a server, a desktop, a
   workstation."
@@ -230,6 +232,18 @@ deferred modules), wired into
 `home-manager.users.<operator>.imports`. An option, not a
 sibling-file convention.
 
+**Identity auto-wiring (principle 3).** What one `identity` sets,
+all `mkDefault` unless named:
+
+| Surface | Wiring |
+|---|---|
+| system user | name, home, gecos = `fullName`, uid 1000, shell zsh (named exception: normal priority) |
+| groups | `wheel` at normal priority (a fleet's own list merges rather than replaces), plus `networkmanager` whenever NetworkManager is enabled |
+| nix | `trusted-users`; `nix-command` + `flakes` enabled in the baseline, since every verb needs them on every host |
+| home-manager | the user's HM module; `home.stateVersion` tied to the system's on NixOS; git author `name = username`, `email = email`, gated on `programs.git.enable` |
+| console password | `nixhold.secrets.password` declared by the NixOS identity module (see Secrets) |
+| store hygiene | every shipped profile runs weekly `nix.gc` (`--delete-older-than 14d`) and `nix.optimise`; on darwin with the explicit launchd interval `nix.gc.automatic` needs |
+
 ---
 
 ## Fleet data — `nixhold.fleet.*`
@@ -241,11 +255,16 @@ Schema is **closed** (strict submodules, no freeform); forkers
 needing custom per-host data declare their own `options.myorg.*`.
 
 Host fields: `arch`, `profile` (deferredModule), `networks`
-(default `["tailnet"]`), `publicIp?`, `publicFqdn?` (operator's
-declaration that an A record exists — DNS is operator-managed),
-`loginPubkey?` (defaults from committed
-`keys/hosts/<host>/identity.pub`, written by the CLI from the
-`sshIdentity` secret).
+(default: every tailscale-typed network the fleet declares — the
+name `tailnet` is the forker's, never the framework's), `disk?`
+(the install target as a `/dev/disk/by-id` path, written by `host
+install`; see Hardware), `publicIp?`, `publicFqdn?` (the name an
+A record exists for — DNS is operator-managed; defaults to
+`<host>.<domain>` when the host is on exactly one internet-typed
+network that declares a `domain`, which is also the record the
+DNS declaration contract will emit), `loginPubkey?` (defaults from
+committed `keys/hosts/<host>/identity.pub`, written by the CLI
+from the `sshIdentity` secret).
 
 Network fields: `type` (enum `tailscale` | `internet`),
 `magicDnsSuffix?` (tailscale), `domain?` (internet).
@@ -282,14 +301,44 @@ declarations.
 
 ## Hardware
 
-`disko.nix` + `facter.json` are required per NixOS host, **both
-generated by `nixhold host install`** from the target's real
-hardware (disk picker over `lsblk`; `nixos-facter` report). The
-operator imports them via `hosts.<n>.modules`; never authors or
-edits them on the default path. One shipped disko shape:
-whole-disk, GPT, 512M ESP + ext4 root, no encryption. Custom
-layouts (LUKS, mirrors, sizes) go through `--disko-from <path>` —
-power-user flag, hand-authored, unassisted.
+Hardware is data, generated by `nixhold host install` from the
+target's real machine. Two artifacts per NixOS host, neither
+authored nor imported by the operator:
+
+- **The install disk** — `hosts.<n>.disk`, a `/dev/disk/by-id`
+  path in the roster, written by the disk picker. The framework
+  renders the one shipped layout from it into `disko.devices`:
+  whole disk, GPT, 512M ESP + ext4 root, no encryption. The disko
+  module is in the NixOS baseline; a host with `disk = null` and no
+  `disko.devices` of its own is an install-time error, never a
+  placeholder. What the shape implies is set alongside it
+  (`mkDefault`): systemd-boot with EFI variables, and zram swap,
+  since the layout has no swap partition.
+- **The facter report** — `nixhold.hardware.facterReport` defaults
+  to `<layout.hostsDir>/<host>/facter.json`, a computed subpath like
+  every layout default; install writes it there.
+
+Custom layouts (LUKS, mirrors, sizes, a second OS on the same
+disk) are a `disko.devices` declaration in the host's own module
+with `disk` left null; install then skips the picker and formats
+what the declaration names. There is no file to copy into place.
+
+**A second OS on its own disk is inside the shape.** The framework
+formats only the declared disk and never touches a sibling drive;
+a shared data disk is an ordinary `fileSystems` entry. Two things
+make it a walked path rather than a hazard: the picker mounts the
+chosen disk's ESP read-only and, when it holds another OS's boot
+files (`EFI/Microsoft`, or any loader that is not systemd-boot's),
+names that OS and requires a second explicit confirmation — that
+OS stops booting when its loader is erased, and should be moved
+to its own ESP first; and when such an ESP sits on a *non-target*
+disk the picker prints the one line that chainloads it,
+`boot.loader.systemd-boot.windows.<n>.efiDeviceHandle`. The
+handle is readable only from the UEFI shell (`map -c`), so it is
+operator-set in the host module and the framework wraps nothing;
+the firmware boot menu works with no configuration at all. A
+second OS on the *same* disk stays outside the framework: disko
+rewrites the whole partition table of the disk it is given.
 
 **Disk picker UX.** The operator never types or copies a device
 path. The picker lists whole disks with size, model, bus, and a
@@ -297,16 +346,16 @@ path. The picker lists whole disks with size, model, bus, and a
 detected previous install, or "empty") so the choice is about
 content, not device names; the destructive confirmation lists the
 exact partitions about to be erased. The CLI resolves the pick to
-a stable `/dev/disk/by-id` path itself. `--disk <by-id>` exists
-only to skip the prompt in scripted runs.
+a stable `/dev/disk/by-id` path itself and writes it into the
+roster. `--disk <by-id>` exists only to skip the prompt in
+scripted runs.
 
-**Facter guard**: hosts wire the report through
-`nixhold.hardware.facterReport` (NixOS-only; Darwin setting it is
-an eval error). File exists → framework sets
-`hardware.facter.reportPath`. File missing → eval still succeeds
-(lint/status work) but build is blocked by an assertion pointing
-at `nixhold host install`. This is what lets nixos-anywhere
-evaluate the disko script, kexec, generate the report, then build.
+**Facter guard**: NixOS-only (Darwin setting it is an eval error).
+File exists → framework sets `hardware.facter.reportPath`. File
+missing → eval still succeeds (lint/status work) but build is
+blocked by an assertion pointing at `nixhold host install`. This
+is what lets nixos-anywhere evaluate the disko script, kexec,
+generate the report, then build.
 
 ---
 
@@ -324,9 +373,10 @@ behavior; behavior is always an explicit option.
 | Field | Meaning | Default |
 |---|---|---|
 | `owner`, `mode` | runtime ownership | `"user"` → operator + `0600` |
-| `description`, `template`, `generator`, `required` | CLI-facing metadata driving `secret edit` and lint | — |
+| `description`, `template`, `required` | CLI-facing metadata driving `secret edit` and lint | — |
+| `generator` | shell command whose stdout is the initial content; runs instead of an editor when the ciphertext is missing | ed25519 keygen when `sshKey` (pubkey printed for registration), else null |
 | `homePath` | HM symlink `~/<homePath>` → decrypted path (only with `owner = "user"`) | `.ssh/<name>` when `sshKey`, else null |
-| `sshKey` | marks an SSH private key; `.pub` derived at HM activation via `ssh-keygen -y` (failure is loud) | false |
+| `sshKey` | marks an SSH private key: generated at provisioning unless the operator chooses to paste one, `.pub` derived at HM activation via `ssh-keygen -y` (failure is loud) | false |
 | `sshIdentity` | implies sshKey; ≤1 per host (assertion). THE outbound key: wired as IdentityFile in fleet-peer ssh config; CLI commits its pubkey as `keys/hosts/<host>/identity.pub`, which defaults `fleet.hosts.<host>.loginPubkey` | false |
 
 The framework derives per-entry: the ciphertext's checkout location
@@ -338,6 +388,17 @@ what agenix reads; `recipients` (readOnly: operator recipient from
 wiring, HM symlinks. The option attrset **is** the manifest — the
 CLI reads `config.nixhold.secrets` directly; there is no separate
 `declared` attribute.
+
+**Framework-declared secrets.** A few secrets every fleet needs
+are declared by the framework, so a forker never writes them:
+
+| Secret | Declared by | Shape |
+|---|---|---|
+| `password` | NixOS identity module | owner root, `required = false`, generator `mkpasswd -m yescrypt` (prompts on the TTY, emits the hash); wired to the operator's `hashedPasswordFile` once `active`. Without it a freshly installed box has a locked console — SSH only |
+| `<authKeySecret>` | tailscale service when the option is set | owner root, 0400; see Network exposure |
+
+Nothing here forces provisioning: `required = false` keeps the
+host evaluable, and the `host add` walk asks for it up front.
 
 **Ciphertexts enter the store by content.** A layout path is a
 subpath of the fleet's own source store path, and its string
@@ -376,9 +437,13 @@ Recipient/editing model:
   violation.
 - `secret edit`/`rekey` refuse a recipient set that omits the
   operator, or the host when its `host.pub` is readable or it
-  already owns ciphertexts (an untracked `host.pub` is invisible to
-  eval; the fix is `git add --intent-to-add`). `$VISUAL`/`$EDITOR`
-  are honored as command lines (`code --wait`).
+  already owns ciphertexts. `$VISUAL`/`$EDITOR` are honored as
+  command lines (`code --wait`).
+- Every file the CLI writes into the fleet — ciphertexts included
+  — is staged (`git add --intent-to-add`) the moment it is written:
+  an untracked file is invisible to a dirty-flake eval, so a secret
+  provisioned and not staged would still read as missing to the
+  build that follows. Committing is the verb's last step (see CLI).
 
 **Host-key escrow (principle 16).**
 `keys/hosts/<host>/host.key.age` — the host SSH private key,
@@ -566,8 +631,9 @@ exists, the installer ISO is itself a sufficient operator seat.
 | Event | Flow |
 |---|---|
 | L1 fork | `nix flake init -t github:fcalell/nixhold` → fill identity (+ `layout.repoUrl`) → `nixhold host add`. The operator identity is generated on first need (see "Identity resolution"); there is no init step |
-| L2 first host | `nixhold host add [<name>]` — the walk: name, arch, profile, networks, key generated + escrowed, entry written to `layout.hostsFile`, missing secrets provisioned, then "install now?" — this machine (on the ISO, or a Mac), over ssh to an address, or later |
+| L2 first host | `nixhold host add [<name>]` — the walk: name, profile, arch (defaulted from the machine when it is the target), networks only when the fleet declares more than one, public address only when an internet network exists, stateVersion defaulted from the pinned inputs; key generated + escrowed, entry written to `layout.hostsFile`, missing secrets provisioned, everything generated committed, then "install now?" — this machine (on the ISO, or a Mac), over ssh to an address, or later |
 | L3 NixOS host | On-prem: boot the fleet ISO on the target, `nixhold host install` → passphrase → "new host…" runs the add walk and installs in place. VPS / from another machine: `nixhold host add <name>` and answer "over ssh" with the address (scripted: `--install root@<ip>`); the fleet ISO makes the target reachable with zero typing, any installer works |
+| L3d darwin host | On the Mac itself: name the account after `identity.username`, install Command Line Tools and vanilla multi-user Nix, then `nix run github:fcalell/nixhold#nixhold -- host install <mac>`. With no fleet checkout yet, `--repo <owner/repo> --keys <dir>` (the two operator-encrypted ciphertexts, copied from any checkout or the safekeeping copy) clones over the deploy key first, so a wiped Mac needs the passphrase and nothing else. Preflight, host-key reconciliation, first switch, secrets verified — one command (see CLI) |
 | L4 add service | edit host/profile module → `nixhold deploy <name>` (provisions missing required secrets first) |
 | L5 new service module | `nixhold service new <name>` → edit |
 | L6 update inputs | `nixhold update` (from any directory): pull → flake update → the inputs that moved, from the lock diff → `deploy`'s host picker → deploy each picked host |
@@ -658,8 +724,8 @@ mode then runs the remote path's phases in place: disk pick →
 disko → stage host key (cache/escrow) into `/mnt/etc/ssh` → local
 closure build → `nixos-install` → facter written into the
 checkout. A reformat pushes nothing; a new host commits + pushes
-exactly what it generated (hosts-file entry, `keys/hosts/<n>/`,
-`secrets/hosts/<n>/`, `disko.nix`, `facter.json`) over the
+exactly what it generated (hosts-file entry with its `disk`,
+`keys/hosts/<n>/`, `secrets/hosts/<n>/`, `facter.json`) over the
 deploy-key remote. Darwin is untouched (ISO is NixOS-only).
 
 ---
@@ -688,8 +754,10 @@ deploy key").
 nixhold host add [<name>] [--install <user>@<ip>]
                                                     the walk: name, arch, profile, networks,
                                                     key + escrow, secrets, then "install now?"
-nixhold host install [<name>] [--remote <user>@<ip>] [--disk <by-id>] [--disko-from <path>] [--yes]
-                                                    reformat a host; the picker adds "new host…"
+nixhold host install [<name>] [--remote <user>@<ip>] [--disk <by-id>] [--yes]
+                                [--repo <owner/repo> --keys <dir>]
+                                                    reformat a host; the picker adds "new host…";
+                                                    --repo/--keys: darwin, no checkout yet
 nixhold host key <name> [--remote <user>@<ip>] [--yes]
                                                     make machine and repo agree about the host
                                                     key (repo wins; adopt when the fleet has none)
@@ -723,8 +791,14 @@ calls for.
   a terminal is attached, and is a usage error when none is (scripts
   pass the arguments). Picking is the confirmation; `--yes` stands
   in for it in scripts.
-- Every verb prints its plan before the first write and ends with
-  the single next command.
+- Every verb prints its plan before the first write, commits what
+  it generated, and ends with the single next command.
+- Prompts default from what is already known: the arch of the
+  machine being installed, the fleet's only network, the pinned
+  nixpkgs release (`lib.trivial.release`) or nix-darwin's
+  `system.maxStateVersion` for `stateVersion`. A question whose
+  answer the fleet cannot use — a public address in a fleet with
+  no internet network — is not asked.
 - One fleet-view eval per process: `nixhold.fleet` (hosts, arch,
   networks, derived addresses) is read once from any host into the
   scratch root; pickers, platform dispatch and address resolution
@@ -747,11 +821,35 @@ Notable shapes:
   host…", which hands off to `host add` — whose own last step is the
   install question. Darwin `host install <mac>` auto-dispatches from
   arch and runs locally.
-- disko + facter are install-time outputs (committed on success;
-  auto-commit restricted to those two files), never scaffold-time
-  placeholders. On the ISO the checkout is ephemeral, so `host add`
-  also commits what it wrote there, and both verbs push what they
-  committed.
+- **Generated files are committed by the verb that generated
+  them, on every machine.** Roster entry and its `disk`, host key
+  pair + escrow, operator identity, identity pubkeys, ciphertexts,
+  facter report: each verb `git add`s and commits exactly the paths
+  it wrote, never a blanket commit, and hand-edited files stay the
+  operator's. Pushing is the ISO's alone — its checkout is
+  ephemeral — everywhere else the push is the operator's. The
+  scaffolded NixOS host module is the `stateVersion` line alone:
+  hostname, platform, disko and the facter pointer are all
+  framework-set.
+- **Darwin install is fresh-machine complete.** Preflight before
+  anything is written: the login account is `identity.username`
+  (home, HM attachment and agenix ownership all key off it),
+  Command Line Tools are present (`xcode-select -p`), and the Nix
+  is vanilla (nix-darwin refuses activation when
+  `/usr/local/bin/determinate-nixd` exists and `nix.enable` is on).
+  The first switch's "Unexpected files in /etc" refusal is handled
+  in place: the files nix-darwin names are moved to
+  `<file>.before-nix-darwin`, the switch is retried once. After
+  activation the verb waits (bounded) for `/run/agenix` to hold
+  every active secret — agenix on darwin decrypts asynchronously
+  under launchd — kickstarts `system/activate-agenix` once if it
+  does not, then switches a second time so home-manager derives the
+  `.pub` files. On a machine with no fleet checkout, `--repo
+  <owner/repo> --keys <dir>` — the directory holding `operator.age`
+  and `repo.key.age` — clones over the deploy key into `~/<repo>`
+  before any of that, the same two ciphertexts the ISO bakes, read
+  through the same `$NIXHOLD_IDENTITY_FILE` / `$NIXHOLD_REPO_KEY_FILE`
+  path.
 - The CLI reads config via `nix eval --json
   .#<platform>Configurations.<host>.config.nixhold.<path>`; data
   is shaped in Nix, rendered by the CLI. Per-option docs =
@@ -813,7 +911,10 @@ lock is never auto-committed; the verb ends with the commit command.
 Provision-or-edit, decided by whether the ciphertext exists. Missing:
 run `generator` (non-interactive) / open `$EDITOR` prefilled with
 `template` / open an empty editor, encrypt to the computed
-recipients. Present: decrypt with the operator identity, edit,
+recipients, stage the ciphertext. An `sshKey` secret has the
+keygen generator by default; on a terminal the walk asks generate
+or paste, so an existing key registered elsewhere is adopted rather
+than replaced. Present: decrypt with the operator identity, edit,
 re-encrypt to the current recipients. No name: every missing secret
 on the host is provisioned in one numbered walk (the plan is printed
 before the first editor opens), and when none is missing the
@@ -946,20 +1047,32 @@ Network:
 Install & deploy:
 
 - **LUKS / dropbear-initrd** — threat model doesn't justify it;
-  power users bring `--disko-from`.
+  power users declare `disko.devices` themselves.
 - **Sub-disk install choices in the wizard** (dual-boot /
   install-into-free-space / root-size prompt) — disko and
   nixos-anywhere format the whole declared disk; adopting
   existing partitions is unsupported territory. One shape,
-  whole disk; dual-boot machines are hand-partitioned outside
-  the framework, custom sizes via `--disko-from`.
+  whole disk; a second OS on the same disk is hand-partitioned
+  outside the framework, custom layouts are a `disko.devices`
+  declaration. A second OS on its own disk needs none of this —
+  the framework formats only the declared disk.
+- **A framework option for the second OS's boot entry** — the EFI
+  device handle systemd-boot needs is readable only from the UEFI
+  shell; `boot.loader.systemd-boot.windows` in the host module is
+  the whole answer, and the picker prints it.
+- **`--disko-from`** — a custom layout is a declaration, not a
+  file copied into place; the placeholder `disko.nix` it replaced
+  went with it.
 - **VPS provisioning/lifecycle verbs** — provider tools do it.
 - **`recover` verb** — DR is existing verbs + judgment,
   documented.
-- **`CHANGE_ME` markers in generated files; facter stubs** —
-  hardware files are install-time outputs.
-- **Prompt-to-commit after install** — auto-commit, restricted to
-  the two generated hardware files; `--amend` to override.
+- **`CHANGE_ME` markers in generated files; facter stubs;
+  placeholder disko files** — hardware is data: the disk in the
+  roster, the report at its default path, both install-time
+  outputs.
+- **Prompt-to-commit; ISO-only auto-commit** — every verb commits
+  exactly the files it generated, on every machine; `--amend` to
+  override. Only the push is ISO-specific.
 - **Hostname auto-detection for install; unguarded local install
   on fleet machines** — local install is the default *on the ISO*,
   guarded by the installer-environment marker; every other machine

@@ -43,7 +43,9 @@ through):
   host is not in; public endpoints on a non-gateway host.
 - the same `subdomain` claimed twice on one network (across networks
   is fine).
-- a `tailscale`-typed network with no `magicDnsSuffix` — dev warning.
+- a `tailscale`-typed network with no `magicDnsSuffix` — dev
+  warning that proposes the suffix read from `tailscale status
+  --json` on the operator machine (a CLI read, never eval).
 - localhost endpoints actually binding 127.0.0.1. Obstacle: there is
   no uniform NixOS "bound ports" property to check against, so this
   needs a per-service convention or a runtime probe.
@@ -56,6 +58,7 @@ through):
 |---|---|---|
 | ISO prints its ssh host-key fingerprint on the console, and `host install --remote` shows the one it connects to | install over a LAN the operator does not control | the ISO key is random per boot, so this is the only way to verify it |
 | `status` compares each reachable host's live `/etc/ssh/ssh_host_ed25519_key.pub` with the committed `host.pub` | first drift incident | lint cannot do it (needs the network); `status` already talks to hosts nowhere else, so this is its first network read |
+| `host install` checks the tailnet has MagicDNS + HTTPS certificates on before installing a host with tailnet endpoints | first server whose `tailscale cert` fails at first boot | `tailscale status --json` on the operator machine: `CertDomains` empty means caddy's cert unit will loop; the admin-console flip is the operator's, the check is the framework's |
 | Proving escrow ↔ `host.pub` equality | **decision** | age stanzas carry no recipient fingerprint, so this needs the operator passphrase — possibly a `--verify` flag on `host key`, which lint must never call |
 | Operator key recovery beyond the passphrase | use case surfaces | Shamir split, or a hardware key as a second recipient |
 | Passphrase rotation verb | use case surfaces | manual rekey covers it today |
@@ -67,6 +70,7 @@ through):
 
 | Item | Trigger | Intended shape |
 |---|---|---|
+| Darwin implementation of `nixhold.services.tailscale` | the Mac's tailnet join is still an app install | `modules/services/tailscale/darwin.nix` over nix-darwin's `services.tailscale`; `workstationDarwin` enables it like the Linux profiles do |
 | `nixhold.deploy.network` option | operator wants a fleet-wide deploy path other than the tailnet | today the address is the tailnet entry of `derived.address.<host>` when it resolves, else the first non-null one; `--target` overrides |
 | `host rename` verb | the manual flow (L8) becomes a real pain | `git mv` + hostsFile edit + `secret rekey` + reinstall, in one verb |
 | Framework-managed remote builders | a consumer informs the design | `fleet.builders.<system>` — reserved, unclaimed |
@@ -77,8 +81,6 @@ Lint rules named in the design but not written (trigger: the first
 violation that reaches a host):
 
 - every shipped service module declares `nixhold.services.<name>`.
-- every NixOS host imports disko and sets the facter report (warn
-  dev / error strict).
 - no manual `age.secrets` wiring outside the `nixhold.secrets`
   manifest; no undeclared `age.secrets` reads.
 - kebab-case service names.
