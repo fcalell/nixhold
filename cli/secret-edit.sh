@@ -116,7 +116,7 @@ nh_secret_provision() {
     desc="$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].description // ""')"
     nh_info "[$idx/$total] $name${desc:+ — $desc}"
     if [ -n "$generator" ]; then
-      nh_info "  running its generator — no editor, no prompt"
+      nh_info "  running its generator (no editor; it may prompt)"
     else
       nh_info "  opening $(nh_editor_cmd) — save content to encrypt, save EMPTY to skip"
     fi

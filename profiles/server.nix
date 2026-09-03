@@ -21,12 +21,15 @@
   nixhold.services.openssh.enable = lib.mkDefault true;
   nixhold.services.tailscale.enable = lib.mkDefault true;
 
-  nix.settings = {
-    experimental-features = lib.mkDefault [
-      "nix-command"
-      "flakes"
-    ];
-    auto-optimise-store = lib.mkDefault true;
+  # Store hygiene: weekly gc + optimise on every shipped profile.
+  nix.gc = {
+    automatic = lib.mkDefault true;
+    dates = lib.mkDefault "weekly";
+    options = lib.mkDefault "--delete-older-than 14d";
+  };
+  nix.optimise = {
+    automatic = lib.mkDefault true;
+    dates = lib.mkDefault [ "weekly" ];
   };
 
   # Server-shape defaults — keep the image small, lean on

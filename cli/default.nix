@@ -16,6 +16,8 @@ pkgs.writeShellApplication {
     openssh
     age
     rage
+    # The framework-declared console password secret's generator.
+    mkpasswd
     rsync
     nix
     git

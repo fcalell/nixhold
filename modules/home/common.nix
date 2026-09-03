@@ -2,7 +2,7 @@
 # nixos.nix and darwin.nix (which contribute only the HM platform
 # module import and the stateVersion strategy). Emits HM symlinks
 # for secrets with `homePath`, `.pub` derivation for `sshKey`
-# secrets, and the fleet-peer ssh client config.
+# secrets, the fleet-peer ssh client config, and the git author.
 {
   config,
   lib,
@@ -82,6 +82,16 @@ in
         programs.ssh = {
           enable = lib.mkDefault true;
           settings = sshSettings;
+        };
+
+        # Git author from identity, only where git is enabled: the
+        # username (commit attribution stays stable across fleets and
+        # forges) and the email.
+        programs.git = lib.mkIf hmArgs.config.programs.git.enable {
+          settings.user = {
+            name = lib.mkDefault username;
+            email = lib.mkDefault identity.email;
+          };
         };
 
         home.file = lib.mapAttrs' (name: s: {

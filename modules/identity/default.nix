@@ -33,11 +33,19 @@ in
   };
 
   # Cross-platform auto-wiring. NixOS and nix-darwin both expose
-  # `nix.settings.trusted-users` — mkDefault so a host or profile
-  # can override without `mkForce`. `root` stays in the list: writing
-  # the setting replaces nix.conf's built-in `trusted-users = root`.
-  config.nix.settings.trusted-users = lib.mkDefault [
-    "root"
-    config.nixhold.identity.username
-  ];
+  # `nix.settings` — mkDefault so a host or profile can override
+  # without `mkForce`. `root` stays in trusted-users: writing the
+  # setting replaces nix.conf's built-in `trusted-users = root`.
+  # Flakes are on everywhere because every CLI verb needs them on
+  # every host.
+  config.nix.settings = {
+    trusted-users = lib.mkDefault [
+      "root"
+      config.nixhold.identity.username
+    ];
+    experimental-features = lib.mkDefault [
+      "nix-command"
+      "flakes"
+    ];
+  };
 }
