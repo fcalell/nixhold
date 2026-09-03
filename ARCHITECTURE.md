@@ -672,8 +672,10 @@ One bash CLI, 14 verbs. Access: bare `nixhold` post-install
 per-subcommand flake apps.
 
 **Fleet-root resolution — verbs work from anywhere.** Fleet
-context resolves as: `$NIXHOLD_FLEET` → upward walk from `$PWD`
-(wins inside any checkout, e.g. a second worktree) →
+context resolves as: `$NIXHOLD_FLEET` → upward walk from `$PWD` to
+the nearest `flake.nix` that calls `mkFleet` (wins inside any fleet
+checkout, e.g. a second worktree; the framework checkout is a flake,
+not a fleet) →
 `programs.nixhold.fleetDir` (default `~/<repo-basename>` derived
 from `layout.repoUrl`; the module bakes the value into the
 wrapped CLI). When the resolved directory doesn't exist — a

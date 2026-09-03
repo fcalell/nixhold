@@ -108,11 +108,12 @@ nh_status_row() {
 }
 
 nh_status_fleet() {
-  local rc=0 line
+  local rc=0 line hosts
+  hosts="$(nh_hosts)" || return 1
   printf '%-16s %-8s %-9s %-8s %s\n' HOST PLATFORM SERVICES SECRETS ""
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     nh_status_row "${line%% *}" "${line##* }" || rc=1
-  done < <(nh_hosts)
+  done <<<"$hosts"
   return "$rc"
 }

@@ -9,9 +9,10 @@ nh_info() { printf '\033[36m·\033[0m %s\n' "$*" >&2; }
 nh_ok() { printf '\033[32m✓\033[0m %s\n' "$*" >&2; }
 
 # Locate the operator's fleet flake. Resolution order: $NIXHOLD_FLEET
-# → nearest ancestor of $PWD holding a flake.nix (so a second worktree
-# wins over the baked default while you stand in it) →
-# $NIXHOLD_FLEET_DEFAULT, which programs.nixhold bakes into the
+# → nearest ancestor of $PWD holding a flake.nix that calls mkFleet
+# (so a second worktree wins over the baked default while you stand
+# in it, and the framework checkout — a flake, not a fleet — does not)
+# → $NIXHOLD_FLEET_DEFAULT, which programs.nixhold bakes into the
 # wrapped CLI. Every verb runs inside a fleet.
 #
 # Contract: only the path reaches stdout — every caller consumes this
@@ -37,12 +38,15 @@ nh_fleet_root() {
     return 0
   fi
 
-  local dir="$PWD"
+  local dir="$PWD" nonfleet=""
   while :; do
     if [ -f "$dir/flake.nix" ]; then
-      _NH_FLEET_ROOT="$dir"
-      printf '%s' "$_NH_FLEET_ROOT"
-      return 0
+      if grep -Eq '\.mkFleet[[:space:]]*\{' "$dir/flake.nix"; then
+        _NH_FLEET_ROOT="$dir"
+        printf '%s' "$_NH_FLEET_ROOT"
+        return 0
+      fi
+      nonfleet="${nonfleet:-$dir}"
     fi
     [ "$dir" = "/" ] && break
     dir="${dir%/*}"
@@ -73,7 +77,7 @@ nh_fleet_root() {
     return 0
   fi
 
-  nh_err "no fleet found — cd into a checkout (flake.nix here or above), set NIXHOLD_FLEET=/path, or enable programs.nixhold so the default checkout is baked in"
+  nh_err "no fleet found${nonfleet:+ ($nonfleet/flake.nix is not a nixhold fleet: it does not call mkFleet)} — cd into a fleet checkout, set NIXHOLD_FLEET=/path, or enable programs.nixhold so the default checkout is baked in"
   return 1
 }
 
