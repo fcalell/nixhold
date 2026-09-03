@@ -101,9 +101,9 @@ containers can still implement any `nixhold.services.*` module).
     any host is committed (encrypted to the operator when
     private: wrapped operator identity, secret ciphertexts,
     escrowed host SSH keys). The only state outside git is the
-    passphrase. `~/.config/nixhold` and `~/.cache/nixhold` are
-    caches, never the sole copy of anything. Any host can be
-    installed or recovered from the installer ISO + passphrase.
+    passphrase. `~/.cache/nixhold` is a cache, never the sole copy
+    of anything. Any host can be installed or recovered from the
+    installer ISO + passphrase.
 
 ---
 
