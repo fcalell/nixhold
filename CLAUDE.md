@@ -3,10 +3,11 @@
 This repo is **nixhold**, the framework. The personal fleet that
 dogfoods it lives in a separate repo at `~/nix/`.
 
-## Source of truth
+## Where things are
 
 **`ARCHITECTURE.md` is the architecture spec** — the framework as
-implemented; every decision there is locked. **`ROADMAP.md` is the
+implemented, each decision the best shape known when it was
+written, not a verdict. **`ROADMAP.md` is the
 plan** — only work that is not implemented yet, each item with its
 trigger. Before designing anything new, read the relevant
 ARCHITECTURE section and check whether the ROADMAP already holds
@@ -27,8 +28,10 @@ ROADMAP.
 - One operator, 1–10 hosts target scale. No multi-operator, no
   per-secret ACLs, no observability stack, no LUKS.
 - Architectural changes go through ARCHITECTURE first. Draft the
-  section, surface 2–4 decisions for the user to lock, then edit
-  ARCHITECTURE. Implementation follows the locked design.
+  section, surface 2–4 decisions for the user, then edit
+  ARCHITECTURE. Implementation follows the agreed design. A
+  better shape found while working goes the same route: propose
+  it with its cost, build it once agreed.
 
 ## Repo layout
 

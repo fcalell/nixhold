@@ -6,7 +6,7 @@ one source of truth. Set identity, network topology, and a host
 roster; the framework wires the system user, home-manager, agenix
 secrets, Caddy/TLS, firewall, cross-host SSH, and an operator CLI.
 
-Status: **pre-v1.** The implemented design is the source of truth in
+Status: **pre-v1.** The implemented design is described in
 [ARCHITECTURE.md](./ARCHITECTURE.md); planned work is in
 [ROADMAP.md](./ROADMAP.md); this README is the practical quickstart.
 

@@ -102,7 +102,7 @@ forker who is not the author.
 - **Template scaffolds with commented examples** — flake.nix and
   hosts.nix carrying worked examples in comments; no disko, no
   wizards, no `CHANGE_ME` markers.
-- **`docs/`** — filenames are LOCKED (renames are breaking):
+- **`docs/`** — filenames are stable (renames are breaking):
   `concepts.md`, `profiles.md`, `modules.md`, `verbs.md`,
   `discovery.md`.
 - **Canonical invocation in walkthroughs**: `nix run .#nixhold --`;

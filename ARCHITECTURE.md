@@ -1,14 +1,15 @@
 # nixhold — architecture
 
 The architecture of nixhold as implemented. Every decision here is
-locked; code implements this document. Planned work lives in
-ROADMAP.md. To change the architecture: draft the change here,
-surface 2–4 decisions for the operator to lock, edit, then
-implement.
+the current one, the best shape known when it was written; code
+implements this document. Planned work lives in ROADMAP.md. To
+change the architecture, whether planned or because the work shows
+a better shape: draft the change here, surface 2–4 decisions for
+the operator, edit, then implement.
 
 Format notes for readers (human or LLM): decisions are stated once,
-in the section that owns them. "Rejected" entries at the bottom are
-final. Field shapes are given as tables; the implementation in
+in the section that owns them. "Rejected" entries at the bottom
+record shapes turned down and why. Field shapes are given as tables; the implementation in
 `modules/` and `cli/` is the reference for exact code. Operator
 runbooks and fleet-specific wishlists live in consuming fleet repos,
 not here.
@@ -819,8 +820,9 @@ journald is uniform; no namespace reserved before a consumer.
 
 ## Rejected
 
-Final decisions. They guard the design: reversing one is an
-architecture change, drafted here like any other.
+Shapes turned down, with the reason. Reversing one is an
+architecture change, drafted here like any other, and warranted
+once its reason no longer holds.
 
 Architecture:
 
