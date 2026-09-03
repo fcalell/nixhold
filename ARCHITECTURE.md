@@ -308,10 +308,11 @@ authored nor imported by the operator:
 - **The install disk** — `hosts.<n>.disk`, a `/dev/disk/by-id`
   path in the roster, written by the disk picker. The framework
   renders the one shipped layout from it into `disko.devices`:
-  whole disk, GPT, 512M ESP + ext4 root, no encryption. The disko
-  module is in the NixOS baseline; a host with `disk = null` and no
-  `disko.devices` of its own is an install-time error, never a
-  placeholder. What the shape implies is set alongside it
+  whole disk, GPT, 1G ESP mounted `umask=0077` (kernels and the
+  loader's random seed are not for other local accounts) + ext4
+  root, no encryption. The disko module is in the NixOS baseline; a
+  host with `disk = null` and no `disko.devices` of its own is an
+  install-time error, never a placeholder. What the shape implies is set alongside it
   (`mkDefault`): systemd-boot with EFI variables, and zram swap,
   since the layout has no swap partition.
 - **The facter report** — `nixhold.hardware.facterReport` defaults

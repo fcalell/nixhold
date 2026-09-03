@@ -6,9 +6,9 @@
 #   - the install disk, `nixhold.fleet.hosts.<host>.disk` — a
 #     /dev/disk/by-id path the disk picker writes into the roster. The
 #     one shipped layout is rendered from it below: whole disk, GPT,
-#     512M ESP + ext4 root, no encryption. What the shape implies
-#     (systemd-boot with EFI variables, zram swap — the layout has no
-#     swap partition) is set alongside it at mkDefault. A host that
+#     1G ESP mounted umask=0077 + ext4 root, no encryption. What the
+#     shape implies (systemd-boot with EFI variables, zram swap — the
+#     layout has no swap partition) is set alongside it at mkDefault. A host that
 #     wants anything else declares `disko.devices` in its own module
 #     and leaves `disk` null; install then formats what that names.
 #   - the facter report, `nixhold.hardware.facterReport` — defaults to
@@ -83,12 +83,16 @@ in
           type = "gpt";
           partitions = {
             ESP = {
-              size = "512M";
+              size = "1G";
               type = "EF00";
               content = {
                 type = "filesystem";
                 format = "vfat";
                 mountpoint = "/boot";
+                # Kernels, initrds and systemd-boot's random seed live
+                # here; no other local account (a kiosk user, say) gets
+                # to read them.
+                mountOptions = [ "umask=0077" ];
               };
             };
             root = {

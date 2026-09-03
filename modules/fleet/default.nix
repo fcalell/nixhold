@@ -123,7 +123,7 @@ let
             The install disk as a `/dev/disk/by-id` path, written by
             `nixhold host install`'s disk picker. The framework
             renders its one shipped layout from it (whole disk, GPT,
-            512M ESP + ext4 root — see `nixhold.hardware`). `null`
+            1G ESP + ext4 root — see `nixhold.hardware`). `null`
             with a `disko.devices` declaration in the host's own
             module is the custom-layout path; `null` with neither is
             an install-time error. NixOS hosts only.
