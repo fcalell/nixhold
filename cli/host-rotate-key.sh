@@ -3,8 +3,9 @@
 #
 # Generates a fresh SSH host keypair for <name>, commits the new pubkey
 # + escrow under keysDir (so it becomes the host's age recipient),
-# re-encrypts every secret to the rotated recipient set, and then
-# SHIPS the key: a rotation the machine never receives is not a
+# re-encrypts every secret to the rotated recipient set (the rekey
+# commits the ciphertexts, the rotation commits the key pair), and
+# then SHIPS the key: a rotation the machine never receives is not a
 # rotation, it is an outage waiting for the next activation. The
 # install step targets the machine the same way `host install` does —
 # `--remote <user>@<ip>`, or in place when this machine is <name>.
@@ -238,6 +239,7 @@ EOF
     return 1
   fi
   nh_ok "cached new key at $cache (old key kept as ssh_host_ed25519_key.old)"
+  nh_commit_paths "$root" "host $name: rotate host key" "$dir"
   nh_ok "rotate-key complete for $name"
 
   nh_rotate_install "$name" "$remote" "$no_install" "$yes"
@@ -283,7 +285,7 @@ nh_rotate_install() {
   # pubkey is no longer a key any connection to $name should accept.
   rm -f "$cache/host.key.age.prev" "$cache/host.pub.prev"
   nh_ok "$name now runs the rotated key"
-  nh_info "commit keys/ + secrets/, then 'nixhold deploy $name' so the host receives the re-encrypted ciphertexts"
+  nh_info "next: nixhold deploy $name — the host receives the re-encrypted ciphertexts"
 }
 
 # nh_rotate_pending <name> <reason> — one message for every path that
@@ -300,5 +302,5 @@ nh_rotate_pending() {
   if [ -f "$cache/host.key.age.prev" ]; then
     nh_info "the previous escrow is kept at $cache/host.key.age.prev until the new key is installed — it is the key $name is still running"
   fi
-  nh_info "commit keys/ + secrets/, then 'nixhold deploy $name' once the key is in place"
+  nh_info "then: nixhold deploy $name, once the key is in place"
 }

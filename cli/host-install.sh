@@ -379,8 +379,10 @@ nh_darwin_install() {
       nh_err "rekey failed — secrets are NOT decryptable by $name yet; fix and re-run install"
       return 1
     }
-    nh_info "commit + push keys/ and secrets/ once the install finishes"
   fi
+  local keys_dir
+  keys_dir="$(nh_worktree_keys_dir)" || return 2
+  nh_commit_paths "$root" "host $name: host key" "$keys_dir/hosts/$name"
 
   # 2. Activate (nix-darwin requires root for switch).
   if command -v darwin-rebuild >/dev/null 2>&1; then
@@ -578,11 +580,15 @@ EOF
   fi
 
   # 5. The machine is bootable by now; the repo side is best-effort.
-  #    disko + facter are install-time outputs, committed on success —
+  #    disko + facter are install-time outputs (plus the host-key
+  #    escrow when the install backfilled it), committed on success —
   #    auto-commit never reaches beyond them. On the installer the
   #    checkout is ephemeral, so the commit is pushed too.
   if [ "$rc" -eq 0 ]; then
-    nh_commit_paths "$root" "host $name: install (disko + facter)" "$disko_target" "$facter_target"
+    local keys_dir
+    keys_dir="$(nh_worktree_keys_dir 2>/dev/null)" || keys_dir="$root/keys"
+    nh_commit_paths "$root" "host $name: install (disko + facter)" \
+      "$disko_target" "$facter_target" "$keys_dir/hosts/$name"
     nh_push_if_installer "$root"
     nh_info "next: once $name is on the tailnet, 'nixhold deploy $name' for every change after this"
   fi

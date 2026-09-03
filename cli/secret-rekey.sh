@@ -3,13 +3,16 @@
 # Re-encrypts every existing secret to its current recipient set —
 # run after committing a new host key (rotate-key) or changing the
 # recipient model. Walks every host's declared secrets, decrypts each
-# present .age with the operator identity, and re-encrypts.
+# present .age with the operator identity, re-encrypts, and commits
+# the ciphertexts it rewrote (a caller that also rewrote the host key
+# commits that itself, after this).
 
 cmd_secret_rekey() {
   nh_require_cmd age jq nix
 
-  local sdir
+  local sdir root
   sdir="$(nh_worktree_secrets_dir)" || return 2
+  root="$(nh_fleet_root)" || return 2
 
   # Skip the passphrase prompt entirely when there's no ciphertext to
   # re-encrypt.
@@ -52,7 +55,8 @@ cmd_secret_rekey() {
       exit 1
     }
 
-    local count=0 failed=0 host platform json name target rfile tmp
+    local count=0 failed=0 host platform json name target rfile tmp rekeyed=() keys_dir
+    keys_dir="$(nh_worktree_keys_dir 2>/dev/null)" || keys_dir=""
     while IFS= read -r host; do
       [ -n "$host" ] || continue
       # A skipped host means its secrets stay encrypted to a STALE
@@ -108,6 +112,7 @@ cmd_secret_rekey() {
         fi
         rm -f "$tmp"
         count=$((count + 1))
+        rekeyed+=("$target")
         nh_info "rekeyed hosts/$host/$name.age"
       done < <(printf '%s' "$json" | jq -r 'keys[]')
     done < <(nh_all_hosts)
@@ -117,5 +122,7 @@ cmd_secret_rekey() {
       exit 1
     fi
     nh_ok "rekeyed $count secret(s)"
+    # shellcheck disable=SC2086 # the identity.pub glob is meant to expand
+    nh_commit_paths "$root" "secrets: rekey" "${rekeyed[@]}" ${keys_dir:+"$keys_dir"/hosts/*/identity.pub}
   )
 }

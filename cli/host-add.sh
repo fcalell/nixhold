@@ -11,8 +11,8 @@
 #   4. Provision every declared-but-missing secret.
 #   5. Ask "install now?": this machine (on the ISO, or a Mac), over
 #      ssh to an address, or later. --install <addr> answers it.
-# On the installer ISO the checkout is ephemeral, so what this verb
-# wrote is committed and pushed before the install starts.
+# What this verb wrote is committed before the install starts; on the
+# installer ISO, whose checkout is ephemeral, it is pushed too.
 
 cmd_host_add() {
   local name="" install_target=""
@@ -180,21 +180,23 @@ EOF
     nh_warn "fleet is not a git worktree — if it becomes one, 'git add' the generated files before evaluating"
   fi
 
-  # Provision any declared-but-missing secrets. Best-effort — the
-  # host's own module may not be evaluable yet (the operator hasn't
-  # written it), so a failure here is a warning.
+  # The roster entry, the scaffold, the host key pair and (on a first
+  # host) the operator identity: committed now, before the secrets
+  # walk that may open editors or fail.
+  nh_commit_paths "$root" "host $name: add" \
+    "$hosts_file" "$root/hosts/$name" "$keys_dir/hosts/$name" \
+    "$keys_dir/operator.pub" "$keys_dir/operator.age"
+
+  # Provision any declared-but-missing secrets (each ciphertext is
+  # committed by the walk). Best-effort — the host's own module may
+  # not be evaluable yet (the operator hasn't written it), so a
+  # failure here is a warning.
   . "$NIXHOLD_LIB_ROOT/secret-edit.sh"
   nh_provision_missing_secrets "$name" || nh_warn "secret provisioning skipped (host not evaluable yet)"
 
-  # The installer's checkout is ephemeral: commit + push what this verb
-  # wrote before an install that may take a while or fail. Elsewhere
-  # committing is the operator's, and the verb says so at the end.
-  local sdir
-  sdir="$(nh_worktree_secrets_dir)" || sdir="$root/secrets"
-  if nh_installer_env; then
-    nh_commit_paths "$root" "host $name: add"       "$hosts_file" "$root/hosts/$name" "$keys_dir/hosts/$name" "$sdir/hosts/$name"       "$keys_dir/operator.pub" "$keys_dir/operator.age"
-    nh_push_if_installer "$root"
-  fi
+  # The installer's checkout is ephemeral: push before an install that
+  # may take a while or fail.
+  nh_push_if_installer "$root"
   nh_ok "$name is in the fleet"
 
   nh_add_install_question "$name" "$arch" "$install_target"
@@ -218,7 +220,7 @@ nh_add_install_question() {
     *) later="nixhold host install $name --remote root@<ip>  (a target booted from the fleet ISO or any installer)" ;;
   esac
   if ! nh_tty; then
-    nh_info "next: commit hosts.nix, hosts/$name, keys/, secrets/ — then install with: $later"
+    nh_info "next: $later"
     return 0
   fi
   local options=()
@@ -246,7 +248,7 @@ nh_add_install_question() {
       cmd_host_install "$name" --remote "$addr"
       ;;
     *)
-      nh_info "next: commit hosts.nix, hosts/$name, keys/, secrets/ — then install with: $later"
+      nh_info "next: $later"
       ;;
   esac
 }

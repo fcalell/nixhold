@@ -69,8 +69,8 @@ EOF
   [ -f "$keys_dir/repo.key.age" ] && had_key=1
   nh_ensure_repo_deploy_key || return 1
   if [ "$had_key" -eq 0 ]; then
+    nh_commit_paths "$root" "keys: repo deploy key" "$keys_dir/repo.key.age"
     nh_warn "the image is inert until that pubkey is registered on $repo as a deploy key WITH WRITE ACCESS"
-    nh_warn "commit $keys_dir/repo.key.age too — the ISO bakes it, and repo + passphrase is the recovery contract"
     if ! nh_prompt_confirm "Deploy key registered — build the image now?"; then
       nh_info "aborted — re-run 'nixhold iso' once the key is registered"
       return 0

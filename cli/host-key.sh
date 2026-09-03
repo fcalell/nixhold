@@ -68,5 +68,9 @@ EOF
     }
   fi
   nh_ok "$name: machine and repo agree"
-  nh_info "next: commit keys/hosts/$name (and secrets/ if rekeyed), then 'nixhold deploy $name'"
+  local root keys_dir
+  root="$(nh_fleet_root)" || return 1
+  keys_dir="$(nh_worktree_keys_dir)" || return 2
+  nh_commit_paths "$root" "host $name: host key" "$keys_dir/hosts/$name"
+  nh_info "next: nixhold deploy $name"
 }

@@ -356,10 +356,13 @@ nh_repo_git() {
   esac
 }
 
-# nh_commit_paths <root> <msg> <path…> — auto-commit is restricted to
-# what a verb generated; never a blanket `git commit -a`. Missing
-# paths are skipped, and a fleet without a git identity (the ISO)
-# commits under a framework one. Prints nothing on stdout.
+# nh_commit_paths <root> <msg> <path…> — every verb commits exactly
+# the paths it generated, on every machine; never a blanket `git
+# commit -a`, so hand-edited files stay the operator's. A path that
+# neither exists nor is tracked is skipped; a tracked path the verb
+# deleted is committed as a deletion. Unchanged paths make no commit.
+# A checkout with no git identity (the ISO, a fresh Mac) commits
+# under a framework one. Prints nothing on stdout.
 nh_commit_paths() {
   local root="$1" msg="$2"
   shift 2
@@ -369,17 +372,16 @@ nh_commit_paths() {
   }
   local present=() p
   for p in "$@"; do
-    if [ -e "$p" ]; then present+=("$p"); fi
+    if [ -e "$p" ] || [ -n "$(git -C "$root" ls-files -- "$p" 2>/dev/null)" ]; then
+      present+=("$p")
+    fi
   done
   [ "${#present[@]}" -gt 0 ] || return 0
-  git -C "$root" add -- "${present[@]}" || {
+  git -C "$root" add -A -- "${present[@]}" || {
     nh_warn "git add failed — commit the generated files yourself"
     return 0
   }
-  if git -C "$root" diff --cached --quiet -- "${present[@]}"; then
-    nh_info "no changes to commit"
-    return 0
-  fi
+  git -C "$root" diff --cached --quiet -- "${present[@]}" && return 0
   local ident=()
   if [ -z "$(git -C "$root" config user.email || true)" ]; then
     ident=(-c user.name=nixhold -c user.email=nixhold@localhost)
@@ -393,7 +395,8 @@ nh_commit_paths() {
 
 # nh_push_if_installer <root> — the installer's checkout is ephemeral:
 # whatever a verb committed there must reach the fleet repo or the
-# next operator never sees it. Elsewhere pushing is the operator's.
+# next operator never sees it. Elsewhere pushing is the operator's:
+# every verb commits, only the ISO pushes.
 # nh_repo_git, not git: on the installer the push rides the baked
 # deploy key.
 nh_push_if_installer() {

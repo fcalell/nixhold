@@ -77,7 +77,7 @@ nh_ensure_operator_identity() {
     return 1
   fi
   chmod 0644 "$wrapped" "$pub"
-  nh_ok "operator identity written: $pub (recipient) + $wrapped (wrapped private key) — commit both"
+  nh_ok "operator identity written: $pub (recipient) + $wrapped (wrapped private key)"
   root="$(nh_fleet_root)" || return 0
   nh_stage_for_eval "$root" "$pub" "$wrapped"
 }

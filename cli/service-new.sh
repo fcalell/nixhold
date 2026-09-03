@@ -1,5 +1,8 @@
 # nixhold service new <name>
-# Scaffolds a service module under <layout.modulesDir>/services/.
+# Scaffolds a service module under <layout.modulesDir>/services/ and
+# stages it, so the eval that follows the operator's edit sees it. It
+# is not committed: the scaffold is a starting point, and what the
+# operator writes into it is theirs.
 
 cmd_service_new() {
   local name="${1:-}"
@@ -35,4 +38,7 @@ in {
 }
 EOF
   nh_ok "scaffolded $target"
+  local root
+  root="$(nh_fleet_root)" || return 0
+  nh_stage_for_eval "$root" "$target"
 }

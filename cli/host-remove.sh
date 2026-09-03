@@ -1,7 +1,8 @@
 # nixhold host remove [<name>] [--yes]
 # Deletes the host entry from `hostsFile`, plus `secrets/hosts/<name>/`
-# and `keys/hosts/<name>/`. Does NOT touch
-# `~/.cache/nixhold/host-keys/<name>/` — the operator removes that
+# and `keys/hosts/<name>/`, and commits the removal. Does NOT touch
+# `hosts/<name>/` (the operator's module may be kept for a successor)
+# or `~/.cache/nixhold/host-keys/<name>/` — the operator removes those
 # manually if they want a clean break.
 
 cmd_host_remove() {
@@ -76,5 +77,7 @@ cmd_host_remove() {
     rm -rf "$keys_dir/hosts/$name"
     nh_ok "removed $keys_dir/hosts/$name"
   fi
-  nh_info "next: remove hosts/$name if you keep no module for it, then commit"
+  nh_commit_paths "$root" "host $name: remove" \
+    "$hosts_file" "$secrets_dir/hosts/$name" "$keys_dir/hosts/$name"
+  nh_info "next: remove hosts/$name if you keep no module for it"
 }

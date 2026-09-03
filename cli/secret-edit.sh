@@ -13,7 +13,9 @@
 # and when nothing is missing the existing secrets are offered to edit.
 # Idempotent: existing ciphertexts are never re-provisioned. Secrets
 # with `sshIdentity = true` also get their derived pubkey committed as
-# keys/hosts/<host>/identity.pub.
+# keys/hosts/<host>/identity.pub. Every ciphertext written is staged
+# the moment it lands (an untracked file is invisible to the
+# dirty-flake eval that must read it next) and committed at the end.
 #
 # The required-secret walk `deploy` and `host install` run before a
 # build lives here too (nh_provision_required_secrets).
@@ -91,9 +93,11 @@ cmd_secret_edit() {
 nh_secret_provision() {
   local host="$1" json="$2" sdir="$3"
   shift 3
-  local total="$#" plan name
+  local total="$#" plan name root keys_dir
   plan="$(printf '%s, ' "$@")"
   nh_info "$total secret(s) to provision on $host: ${plan%, }"
+  root="$(nh_fleet_root)" || return 1
+  keys_dir="$(nh_worktree_keys_dir 2>/dev/null)" || keys_dir=""
 
   # Warm the recipient-check probes HERE: each per-secret subshell
   # below inherits the memo but cannot write it back, so probing lazily
@@ -103,7 +107,7 @@ nh_secret_provision() {
   # Iterated over "$@", not a here-string-fed `read` loop: a redirect
   # on the loop would hand $EDITOR (and the gate prompt) a stdin that
   # is not the operator's terminal.
-  local added=0 failed=0 rc idx=0 target generator template desc
+  local added=0 failed=0 rc idx=0 target generator template desc written=()
   for name in "$@"; do
     idx=$((idx + 1))
     target="$sdir/hosts/$host/$name.age"
@@ -175,12 +179,16 @@ nh_secret_provision() {
         exit 1
       fi
       nh_ok "encrypted $target"
+      nh_stage_for_eval "$root" "$target"
       if [ "$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].sshIdentity // false')" = "true" ]; then
         nh_commit_identity_pub "$host" "$tmp" || true
       fi
     ) || rc=$?
     case "$rc" in
-      0) added=$((added + 1)) ;;
+      0)
+        added=$((added + 1))
+        written+=("$target")
+        ;;
       2) ;; # skipped on purpose (empty content), already warned
       *) failed=1 ;;
     esac
@@ -188,7 +196,8 @@ nh_secret_provision() {
 
   if [ "$added" -gt 0 ]; then
     nh_ok "provisioned $added secret(s) on $host"
-    nh_info "next: commit $sdir/hosts/$host"
+    nh_commit_paths "$root" "secrets: provision $host: $(printf '%s ' "${written[@]##*/}" | sed 's/\.age / /g; s/ $//')" \
+      "${written[@]}" ${keys_dir:+"$keys_dir/hosts/$host/identity.pub"}
   elif [ "$failed" -eq 0 ]; then
     nh_info "nothing provisioned on $host ($total skipped)"
   fi
@@ -248,7 +257,8 @@ nh_secret_edit_one() {
       exit 1
     }
     nh_ok "updated $target"
-    nh_info "next: commit it, then 'nixhold deploy $host'"
+    nh_commit_paths "$(nh_fleet_root)" "secrets: update $host/$name" "$target"
+    nh_info "next: nixhold deploy $host"
   )
 }
 
