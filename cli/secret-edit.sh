@@ -214,7 +214,12 @@ nh_secret_provision() {
 
   if [ "$added" -gt 0 ]; then
     nh_ok "provisioned $added secret(s) on $host"
-    nh_commit_paths "$root" "secrets: provision $host: $(printf '%s ' "${written[@]##*/}" | sed 's/\.age / /g; s/ $//')" \
+    local header
+    header="secrets($host): provision $(printf '%s ' "${written[@]##*/}" | sed 's/\.age / /g; s/ $//')"
+    # The fleet's commit hook caps a header at 60 characters, so a batch
+    # whose names overflow it commits as a count instead.
+    [ "${#header}" -le 60 ] || header="secrets($host): provision $added secret(s)"
+    nh_commit_paths "$root" "$header" \
       "${written[@]}" ${keys_dir:+"$keys_dir/hosts/$host/identity.pub"}
   elif [ "$failed" -eq 0 ]; then
     nh_info "nothing provisioned on $host ($total skipped)"
@@ -275,7 +280,7 @@ nh_secret_edit_one() {
       exit 1
     }
     nh_ok "updated $target"
-    nh_commit_paths "$(nh_fleet_root)" "secrets: update $host/$name" "$target"
+    nh_commit_paths "$(nh_fleet_root)" "secrets($host): update $name" "$target"
     nh_info "next: nixhold deploy $host"
   )
 }

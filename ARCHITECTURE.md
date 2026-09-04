@@ -827,8 +827,13 @@ Notable shapes:
   pair + escrow, operator identity, identity pubkeys, ciphertexts,
   facter report: each verb `git add`s and commits exactly the paths
   it wrote, never a blanket commit, and hand-edited files stay the
-  operator's. Pushing is the ISO's alone — its checkout is
-  ephemeral — everywhere else the push is the operator's. The
+  operator's. A generated header is a Conventional Commit of at
+  most 60 characters (`host(<name>): key`, `secrets(<host>):
+  provision <names>`), so it survives a fleet that holds its
+  checkout to that contract with a hook; a batch whose names
+  overflow the ceiling commits as a count. Pushing is the ISO's
+  alone, since its checkout is ephemeral; everywhere else the push
+  is the operator's. The
   scaffolded NixOS host module is the `stateVersion` line alone:
   hostname, platform, disko and the facter pointer are all
   framework-set.

@@ -653,7 +653,7 @@ nh_darwin_install() {
   fi
   local keys_dir
   keys_dir="$(nh_worktree_keys_dir)" || return 2
-  nh_commit_paths "$root" "host $name: host key" "$keys_dir/hosts/$name"
+  nh_commit_paths "$root" "host($name): key" "$keys_dir/hosts/$name"
 
   # Required secrets before the build, as on NixOS: activation would
   # only fail later with a worse error.
@@ -885,7 +885,7 @@ EOF
   if [ "$rc" -eq 0 ]; then
     local keys_dir
     keys_dir="$(nh_worktree_keys_dir 2>/dev/null)" || keys_dir="$root/keys"
-    nh_commit_paths "$root" "host $name: install (disk + facter)" \
+    nh_commit_paths "$root" "host($name): install (disk + facter)" \
       "$hosts_file" "$facter_target" "$keys_dir/hosts/$name"
     nh_push_if_installer "$root"
     nh_info "next: once $name is on the tailnet, 'nixhold deploy $name' for every change after this"

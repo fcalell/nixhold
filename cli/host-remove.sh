@@ -77,7 +77,7 @@ cmd_host_remove() {
     rm -rf "$keys_dir/hosts/$name"
     nh_ok "removed $keys_dir/hosts/$name"
   fi
-  nh_commit_paths "$root" "host $name: remove" \
+  nh_commit_paths "$root" "host($name): remove" \
     "$hosts_file" "$secrets_dir/hosts/$name" "$keys_dir/hosts/$name"
   nh_info "next: remove hosts/$name if you keep no module for it"
 }

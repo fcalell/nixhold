@@ -239,7 +239,7 @@ EOF
     return 1
   fi
   nh_ok "cached new key at $cache (old key kept as ssh_host_ed25519_key.old)"
-  nh_commit_paths "$root" "host $name: rotate host key" "$dir"
+  nh_commit_paths "$root" "host($name): rotate key" "$dir"
   nh_ok "rotate-key complete for $name"
 
   nh_rotate_install "$name" "$remote" "$no_install" "$yes"

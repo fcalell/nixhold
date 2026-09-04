@@ -216,7 +216,7 @@ EOF
   # The roster entry, the scaffold, the host key pair and (on a first
   # host) the operator identity: committed now, before the secrets
   # walk that may open editors or fail.
-  nh_commit_paths "$root" "host $name: add" \
+  nh_commit_paths "$root" "host($name): add" \
     "$hosts_file" "$hosts_dir/$name" "$keys_dir/hosts/$name" \
     "$keys_dir/operator.pub" "$keys_dir/operator.age"
 
