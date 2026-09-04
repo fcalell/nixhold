@@ -37,10 +37,17 @@ in
     # The installer script re-invokes `curl` by name to download the
     # binary, so curl must be on PATH for the whole pipeline — an
     # absolute-path curl on the fetch alone is not enough.
+    #
+    # A failed download is a warning, not an activation failure: the
+    # activation script runs under `set -e`, and on a freshly installed
+    # host it runs at boot, possibly before the network is up. Aborting
+    # there would leave the whole home unmanaged over one optional
+    # binary; the next activation retries the bootstrap.
     home.activation.claude-code-native-bootstrap = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
       if [ ! -x "$HOME/.local/bin/claude" ]; then
-        run env PATH="${lib.makeBinPath [ pkgs.curl ]}:$PATH" ${pkgs.bash}/bin/bash -c \
-          "curl -fsSL https://claude.ai/install.sh | ${pkgs.bash}/bin/bash"
+        run env PATH="${lib.makeBinPath [ pkgs.curl ]}:$PATH" ${pkgs.bash}/bin/bash -o pipefail -c \
+          "curl -fsSL https://claude.ai/install.sh | ${pkgs.bash}/bin/bash" \
+          || warnEcho "claude-code-native: bootstrap failed (no network?) — the next activation retries"
       fi
     '';
   };
