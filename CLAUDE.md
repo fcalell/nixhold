@@ -54,7 +54,7 @@ profiles/              shipped profiles (server, workstationDarwin, desktopLinux
                        exposed as nixhold.profiles.*
 cli/                   one writeShellApplication; subcommand sources
 template/              scaffold for `nix flake init -t .#`
-checks/                synthetic fleet fixture mkFleet is run against in CI
+checks/                synthetic fleet fixture mkFleet is run against by flake check
 ```
 
 ## Verify

@@ -697,7 +697,7 @@ equals repo + passphrase, the same boundary as principle 16:
   hosts, ciphertexts, escrows — in the squashfs. The ISO module
   asserts it: every `/etc/nixhold/keys/*` entry must be a store
   path of its own, and the `fixture-iso` check evaluates the
-  fixture's image so a regression fails in CI;
+  fixture's image so a regression fails `nix flake check`;
 - `layout.repoUrl` (required to build the ISO), plus
   `$NIXHOLD_IDENTITY_FILE` and `$NIXHOLD_REPO_KEY_FILE` pointing
   the CLI at the two ciphertexts, and github.com's published SSH
