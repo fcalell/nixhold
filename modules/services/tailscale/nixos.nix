@@ -34,6 +34,17 @@ in
             description = "Tailscale pre-auth key (tskey-auth-…) — create at login.tailscale.com/admin/settings/keys";
           };
           services.tailscale.authKeyFile = config.age.secrets.${cfg.authKeySecret}.path;
+          # nixpkgs' autoconnect sends the key once per state change and
+          # otherwise waits for its start timeout, then fails for good:
+          # a network that came up late, or a key the control plane had
+          # not finished propagating, leaves the box off the tailnet on
+          # the one boot that matters. Retry the way the tailnet cert
+          # oneshot does; a spent key fails the same way each time and
+          # is the operator's to replace.
+          systemd.services.tailscaled-autoconnect.serviceConfig = {
+            Restart = "on-failure";
+            RestartSec = 30;
+          };
         })
       ]
     ))

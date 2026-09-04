@@ -397,7 +397,7 @@ are declared by the framework, so a forker never writes them:
 | Secret | Declared by | Shape |
 |---|---|---|
 | `password` | NixOS identity module | owner root, `required = false`, generator `mkpasswd -m yescrypt` (prompts on the TTY, emits the hash); wired to the operator's `hashedPasswordFile` once `active`. Without it a freshly installed box has a locked console — SSH only |
-| `<authKeySecret>` | tailscale service when the option is set | owner root, 0400; see Network exposure |
+| `<authKeySecret>` | tailscale service when the option is set | owner root, 0400; the join unit retries on failure every 30 s, so a late network or a slow control plane converges and only a spent key stays failed |
 
 Nothing here forces provisioning: `required = false` keeps the
 host evaluable, and the `host add` walk asks for it up front.
