@@ -142,9 +142,11 @@ nh_deploy_host() {
       if [ "$local_host" -eq 1 ]; then
         ( cd "$root" && sudo nixos-rebuild "${args[@]}" --flake ".#$name" )
       else
-        # Connect as the operator user (+ --use-remote-sudo), not root:
+        # Connect as the operator user (+ --elevate=sudo), not root:
         # the hardened openssh preset is prohibit-password and no root
-        # authorized key is planted; the operator user is authorized.
+        # authorized key is planted; the operator user is authorized,
+        # and the NixOS identity module grants it passwordless sudo —
+        # the remote session has no terminal to type a password into.
         local user addr
         user="$(nh_host_eval "$name" "$platform" "nixhold.identity.username" | jq -r '.')"
         if [ -z "$target" ]; then
@@ -175,7 +177,7 @@ nh_deploy_host() {
           --flake "$root#$name" \
           --target-host "$target" \
           --build-host "$target" \
-          --use-remote-sudo
+          --elevate=sudo
       fi
       ;;
     darwin)

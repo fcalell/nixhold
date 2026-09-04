@@ -242,6 +242,7 @@ all `mkDefault` unless named:
 | nix | `trusted-users`; `nix-command` + `flakes` enabled in the baseline, since every verb needs them on every host |
 | home-manager | the user's HM module; `home.stateVersion` tied to the system's on NixOS; git author `name = username`, `email = email`, gated on `programs.git.enable` |
 | console password | `nixhold.secrets.password` declared by the NixOS identity module (see Secrets) |
+| sudo | passwordless for the operator on NixOS (a `NOPASSWD` rule on the user, normal priority). The remote verbs — `deploy`, `host key`/`rotate-key --remote`, `logs` — run `sudo` over an ssh session with no terminal, and the operator's login key already activates any closure on the host, so a password on top guards nothing. The console password still gates the tty |
 | store hygiene | every shipped profile runs weekly `nix.gc` (`--delete-older-than 14d`) and `nix.optimise`; on darwin with the explicit launchd interval `nix.gc.automatic` needs |
 
 ---
@@ -887,7 +888,10 @@ switch`. Local iff `$HOSTNAME == <name>` (reliable: the framework
 owns host naming). Remote NixOS: `--target-host` **and**
 `--build-host` point at the target — **each machine builds its own
 closure**; the operator machine never builds foreign arches
-(applies to install too via `--build-on-remote`). Remote darwin:
+(applies to install too via `--build-on-remote`). The connection is
+the operator's, activation is `--elevate=sudo` on the target; the
+identity module's passwordless rule is what lets that succeed with
+no terminal (see Identity auto-wiring). Remote darwin:
 refused (deploy Macs locally). The address comes from
 `derived.address.<name>`: the tailnet entry when it resolves,
 otherwise the first non-null address of any other network;

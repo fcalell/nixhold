@@ -49,5 +49,28 @@ in
     description = "console login password for ${identity.username} (typed at the mkpasswd prompt; the hash is what is stored)";
   };
 
+  # Root without a password for the operator. The CLI's remote verbs
+  # (deploy's `--elevate=sudo`, `host key`/`rotate-key --remote`,
+  # `logs`) run `sudo` over an ssh session that has no terminal to
+  # type a password into, and the operator's login key already
+  # activates any closure on the host — a password on top guards
+  # nothing the key does not. nixpkgs orders its own wheel rule at
+  # 600, so this one (default 1000) is the last match and its NOPASSWD
+  # tag wins; the console password stays what it was for the tty.
+  security.sudo.extraRules = [
+    {
+      users = [ identity.username ];
+      commands = [
+        {
+          command = "ALL";
+          options = [
+            "NOPASSWD"
+            "SETENV"
+          ];
+        }
+      ];
+    }
+  ];
+
   programs.zsh.enable = lib.mkDefault true;
 }
