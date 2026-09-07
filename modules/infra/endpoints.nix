@@ -119,6 +119,21 @@ let
   ) declared;
 
   declaredNetworks = lib.concatStringsSep ", " (lib.attrNames fleetNetworks ++ [ "localhost" ]);
+
+  # The external URL of every resolved endpoint, keyed
+  # `<service>.<endpoint>`. Always https: caddy terminates TLS on
+  # both network types (the tailscale-issued node cert, ACME on the
+  # internet), so what a client outside the box types is https
+  # whatever the backend speaks.
+  urls = lib.foldl' (
+    acc: e:
+    acc
+    // {
+      ${e.service} = (acc.${e.service} or { }) // {
+        ${e.endpoint} = "https://${e.fqdn}${lib.optionalString (e.pathPrefix != null) e.pathPrefix}";
+      };
+    }
+  ) { } resolved;
 in
 {
   options.nixhold.infra.endpoints = mkOption {
@@ -138,6 +153,26 @@ in
 
       Framework-facing (`internal`): service modules declare
       endpoints, they do not read them back.
+    '';
+  };
+
+  # Unlike `endpoints`, this one is not internal: a service module
+  # reads back the URL of its OWN endpoint when the app has to know
+  # its external origin (vaultwarden's DOMAIN, an OIDC redirect URI, a
+  # webhook callback). Reading another service's URL, or re-deriving
+  # an FQDN from the network's fields, is what this exists to prevent
+  # — deriving the same answer twice is how caddy and the firewall
+  # drifted apart before ./endpoints.nix owned the resolution.
+  options.nixhold.infra.url = mkOption {
+    type = types.attrsOf (types.attrsOf types.str);
+    readOnly = true;
+    default = urls;
+    description = ''
+      External URL of each resolved endpoint on this host, keyed
+      `<service>.<endpoint>` — scheme, FQDN and `pathPrefix`, no
+      trailing slash. Endpoints on the built-in `localhost` network
+      are absent (they get no vhost), as is any endpoint that fails
+      to resolve — those are assertions, not empty strings.
     '';
   };
 

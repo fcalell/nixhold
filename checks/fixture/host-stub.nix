@@ -12,12 +12,30 @@
 # ones, since one listener serves both. The tailnet-ONLY posture —
 # membership of no internet network at all, which is what the sshd
 # firewall scoping keys off — lives on fixture-node.
-{ config, lib, ... }:
+#
+# It is also where the shipped HTTP services are built: vaultwarden,
+# taskchampion and syncthing are imported and enabled below, so the
+# check covers each one's endpoint declaration, its backup wiring and
+# — for vaultwarden — the `nixhold.infra.url` read-back its DOMAIN
+# depends on. `syncthing`'s GUI password is `required`, so its
+# ciphertext is committed under ./secrets/fixture-server/ like every
+# other fixture secret: a throwaway nothing decrypts.
+{
+  config,
+  lib,
+  inputs,
+  ...
+}:
 {
   imports = [
     ./modules/fixtureweb.nix
     ./known-hosts-assertions.nix
     ./repositories.nix
+    # The forker idiom, which is what the fixture stands in for: a
+    # host imports the implementations of the services it enables.
+    inputs.nixhold.modules.services.vaultwarden
+    inputs.nixhold.modules.services.taskchampion
+    inputs.nixhold.modules.services.syncthing
   ];
 
   # No machine ever ran `host install` for a fixture host, so there is
@@ -50,6 +68,27 @@
     };
   };
 
+  # The shipped HTTP services. Each declares its own endpoint whole
+  # except for the network, which is fleet data — the one field a host
+  # names. `backupDir` puts the nightly copies under a shared root the
+  # `backups` group carries off the box.
+  nixhold.services = {
+    vaultwarden = {
+      enable = true;
+      expose.web.network = "tailnet";
+      backupDir = "/var/lib/backups/vaultwarden";
+    };
+    taskchampion = {
+      enable = true;
+      expose.sync.network = "tailnet";
+      backupDir = "/var/lib/backups/taskchampion";
+    };
+    syncthing = {
+      enable = true;
+      expose.gui.network = "tailnet";
+    };
+  };
+
   # The `unit` path, NixOS-only: the secret is the fixtureweb unit's
   # EnvironmentFile, so it defaults to root/0400 and never reaches
   # $HOME. Its ciphertext is committed (fixture-gateway runs the same
@@ -68,6 +107,32 @@
           config.systemd.services.fixtureweb.serviceConfig.EnvironmentFile
           == [ config.age.secrets.fixtureweb.path ];
         message = "fixture: the fixtureweb unit does not read its `unit` secret as an EnvironmentFile";
+      }
+      {
+        # The endpoint model answers what an app needs to know about
+        # itself: vaultwarden mounts every route under DOMAIN, so a
+        # wrong FQDN or a dropped prefix is a vault nobody can log
+        # into. `nixhold.infra.url` is that answer, resolved once in
+        # modules/infra/endpoints.nix.
+        assertion =
+          config.services.vaultwarden.config.DOMAIN == "https://fixture-server.fixture.ts.net/vault";
+        message = "fixture: vaultwarden's DOMAIN is not the resolved URL of its own endpoint, got ${config.services.vaultwarden.config.DOMAIN}";
+      }
+      {
+        assertion =
+          config.nixhold.infra.url.taskchampion.sync == "https://fixture-server.fixture.ts.net/task";
+        message = "fixture: taskchampion's endpoint does not resolve to the node FQDN at /task";
+      }
+      {
+        # The sync protocol is not HTTP and gets no endpoint: its
+        # ports are scoped to the tailscale interface, never opened
+        # fleet-wide.
+        assertion =
+          !(lib.elem 22000 config.networking.firewall.allowedTCPPorts)
+          &&
+            lib.elem 22000
+              config.networking.firewall.interfaces.${config.services.tailscale.interfaceName}.allowedTCPPorts;
+        message = "fixture: syncthing's sync port is not scoped to the tailscale interface";
       }
       {
         # HOST scope is a PATH choice and nothing else: this host's

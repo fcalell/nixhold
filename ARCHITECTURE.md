@@ -166,8 +166,10 @@ Rules:
   can't run inside a pure flake-check sandbox. Build-blocking
   invariants are module assertions instead; the framework's own
   `checks` are the synthetic fixture fleet (`fixture-server`,
-  `fixture-gateway`, `fixture-iso`, `fixture-mac`), which is what
-  catches contract drift per commit.
+  `fixture-gateway`, `fixture-node`, `fixture-desktop`,
+  `fixture-iso`, `fixture-mac`), which is what catches contract
+  drift per commit. Every shipped profile is drawn by a host there:
+  a profile nothing builds is a profile nothing checks.
 - `profile` is a Nix value (attr reference), never a string. Typos
   fail at eval. No name-resolution layer anywhere.
 - Platform module bundles are single exports
@@ -188,7 +190,7 @@ Rules:
   `inputs.nixhold` like any forker.
 
 Framework flake outputs: `lib.mkFleet`, `nixosModules.nixhold`,
-`darwinModules.nixhold`, `homeManagerModules.nixhold`,
+`darwinModules.nixhold`,
 `profiles.{server,desktopLinux,workstationDarwin}`,
 `modules.services.*`, `modules.infra.*`, `apps.<sys>.nixhold`,
 `templates.default`, `formatter`, `checks`.
@@ -224,7 +226,18 @@ Concepts, not filesystem (principle 14):
   author's host kinds). Forkers compose their own by importing
   module values; multiple profiles compose via
   `{ imports = [ ... ]; }`. Everything profile-set is overridable
-  in the host file.
+  in the host file. A profile owns the whole shape of its host
+  kind, not a starting point for it: `desktopLinux` carries the
+  graphical seat end to end — greetd as the session entry,
+  hyprland, pipewire + rtkit, portals, graphics, NetworkManager,
+  nix-ld, a file manager, the workstation font set, and the wayland
+  environment PAM exports (`NIXOS_OZONE_WL`, `XDG_CURRENT_DESKTOP`,
+  the toolkit backends) — because a variable set in a compositor
+  config reaches that compositor's children and nothing else.
+  `workstationDarwin` carries the mac equivalent: Touch ID on
+  `sudo_local` (the darwin half of "Sudo asks") and the same font
+  set. Every value is `mkDefault`, so a host overrides the one
+  option rather than opting out of the profile.
 - **Per-host modules (layer 3)** are free-form NixOS/Darwin
   modules (service enables, home fragments, host extras) —
   operator filenames, no framework path conventions. Hardware is
@@ -292,7 +305,7 @@ all `mkDefault` unless named:
 | nix | `trusted-users`; `nix-command` + `flakes` enabled in the baseline, since every verb needs them on every host |
 | home-manager | the user's HM module; `home.stateVersion` tied to the system's on NixOS; git author `name = username`, `email = email`, gated on `programs.git.enable` |
 | console password | `nixhold.secrets.password` declared by the NixOS identity module, `required = true` there (it is the way in when ssh is not), **fleet scope** — one password for every NixOS host (see Secrets) |
-| outbound ssh | `nixhold.secrets.identity` — the fleet's single outbound key, **fleet scope**. `IdentityFile ~/.ssh/identity` on every fleet-peer matchBlock, gated on the secret being `active`; never `IdentitiesOnly`, so an agent-held token key is offered alongside it (see "Login keys") |
+| outbound ssh | `nixhold.secrets.identity` — the fleet's single outbound key, **fleet scope**. `IdentityFile ~/.ssh/identity` on every fleet-peer matchBlock, gated on the secret being `active`; never `IdentitiesOnly`, there or in the framework-owned `Host *` block, so an agent-held token key is offered alongside it (see "Login keys") |
 | git signing | `programs.git.signing = { format = "ssh"; key = "~/.ssh/identity.pub"; signByDefault = true; }`, gated on `identity.active` + `programs.git.enable` |
 | global env | `nixhold.secrets.env` (fleet scope) sourced into every login shell of the operator, both platforms, gated on `env.active` (see Repositories & env) |
 | forge ssh | one matchBlock per distinct forge host derived from `nixhold.repositories.*.url` — `IdentityFile ~/.ssh/identity`, `IdentitiesOnly`, no `User` |
@@ -457,6 +470,26 @@ key is offered alongside the file-backed one and whichever the
 host authorizes wins. Recovering a resident handle onto a new
 machine (`ssh-keygen -K`) is a runbook line on the fleet side, not
 framework work — the handle is a file only the token can produce.
+
+**The framework owns the `Host *` block too**, for the same
+reason: `IdentitiesOnly` there applies to every named block under
+it, so a fleet setting it globally would restore exactly the
+lockout the peer blocks avoid, and it would do so invisibly —
+nothing in the generated file says which block decided. The
+framework therefore declares the client defaults itself
+(`enableDefaultConfig = false` plus a `settings."*"` of
+`AddKeysToAgent yes`, no agent forwarding, no compression, no
+connection multiplexing, `known_hosts` unhashed at its usual
+path), each directive `mkDefault` so a fleet overrides one line
+without restating the block. The accepted cost is the other half
+of the trade: with no `IdentitiesOnly` at the top, ssh offers
+every agent-held key to every host it connects to, so an unrelated
+server learns which pubkeys the operator holds. Forge blocks pin
+themselves regardless, so what widens is fleet peers and ad-hoc
+hosts. A fleet that would rather have the tighter posture sets
+`IdentitiesOnly` itself and accepts that its token then needs a
+file at a default identity name on every machine — an artifact the
+repo cannot hold, which is why it is not the default.
 
 Framework auto-derivations from topology: ssh `matchBlocks` for
 every fleet peer (HostName from `derived.address`, User =
@@ -1013,6 +1046,46 @@ the field its type needs, a backend not in the service's ports, a
 `pathPrefix` are assertions, so a typo cannot yield a service the
 operator believes exposed that is simply not served. Multi-network
 exposure works by declaring endpoints on different networks.
+
+**Shipped HTTP services.** `vaultwarden` (Bitwarden backend, sqlite,
+`/vault`), `taskchampion` (taskwarrior 3.x replication, `/task`) and
+`syncthing` (GUI at `/sync`, sync protocol on the tailscale
+interface) ship as `nixhold.modules.services.*` beside openssh and
+tailscale, NixOS-only, imported by the host that enables them. Each
+one declares its endpoint **whole except for `network`**: the
+backend port, the path prefix, whether the prefix is stripped and
+the encoding are facts about the application and belong to the
+module — vaultwarden 404s under a stripped prefix, and that is not
+knowledge to hand an operator — while the network is fleet data, so
+the host names it:
+
+```nix
+nixhold.services.vaultwarden = {
+  enable = true;
+  expose.web.network = "tailnet";
+  backupDir = "/var/lib/backups/vaultwarden";
+};
+```
+
+A host that enables one and names no network gets "option ... is
+used but not defined", which is the honest failure: `network` is
+required on the endpoint type, and auto-picking a shared network was
+rejected (see Rejected, "addressOf").
+
+**An app that has to know its own origin** reads
+`nixhold.infra.url.<service>.<endpoint>` — the resolved
+`https://<fqdn><pathPrefix>` of one endpoint, derived in
+`modules/infra/endpoints.nix` beside the endpoint list itself.
+Vaultwarden's `DOMAIN` is the first consumer: with a path in DOMAIN
+it mounts every route under it and generates absolute links from it,
+so a service module that recomputed the FQDN from the network's
+fields would be the second derivation of the answer caddy already
+has — which is exactly how caddy and the firewall drifted before
+`endpoints.nix` owned resolution. Unlike `endpoints` this option is
+not internal, and its scope is narrow by construction: a module
+reads back the URL of an endpoint it declared. Endpoints on
+`localhost`, and any that fail to resolve, are absent — those are
+assertions, not empty strings.
 
 **sshd exposure follows the topology.**
 `nixhold.services.openssh` (the hardened preset: key-only,

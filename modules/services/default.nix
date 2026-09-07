@@ -14,6 +14,9 @@
 {
   imports = [
     ./openssh/default.nix
+    ./syncthing/default.nix
+    ./taskchampion/default.nix
     ./tailscale/default.nix
+    ./vaultwarden/default.nix
   ];
 }

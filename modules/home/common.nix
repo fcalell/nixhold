@@ -80,6 +80,39 @@ let
           lib.mapAttrs peerAddr (lib.filterAttrs (n: _: n != fleet.selfName) fleet.hosts)
         )
       );
+  # The `Host *` block: what every connection gets before any named
+  # block narrows it. home-manager is retiring its own implicit
+  # defaults, so the framework declares them (`enableDefaultConfig =
+  # false` below) rather than inheriting a set that is scheduled to
+  # disappear. These mirror what home-manager had, with
+  # `AddKeysToAgent` flipped on so a key is typed for once per boot.
+  #
+  # `IdentitiesOnly` is deliberately absent, and this is the block
+  # where its absence is decided: set here it would apply to the peer
+  # blocks too, which name `~/.ssh/identity` and nothing else, and a
+  # resident FIDO2 login key lives in the agent with no file to name
+  # (see "Login keys"). A fleet that authorizes a token would then be
+  # a fleet whose token cannot log in. The cost is the other half of
+  # the trade: without it ssh offers every agent-held key to every
+  # host it talks to, so an unrelated server learns which pubkeys the
+  # operator holds. Forge blocks pin themselves anyway
+  # (modules/repositories/default.nix), so this widens fleet peers and
+  # ad-hoc hosts only.
+  #
+  # Per-directive mkDefault: a fleet overrides one line without
+  # restating the block.
+  clientDefaults = lib.mapAttrs (_: lib.mkDefault) {
+    AddKeysToAgent = "yes";
+    ForwardAgent = false;
+    Compression = false;
+    ServerAliveInterval = 0;
+    ServerAliveCountMax = 3;
+    HashKnownHosts = false;
+    UserKnownHostsFile = "~/.ssh/known_hosts";
+    ControlMaster = "no";
+    ControlPath = "~/.ssh/master-%r@%n:%p";
+    ControlPersist = "no";
+  };
 in
 {
   config = {
@@ -112,7 +145,12 @@ in
 
         programs.ssh = {
           enable = lib.mkDefault true;
-          settings = sshSettings;
+          # Opt out of home-manager's implicit `Host *` defaults: the
+          # framework states the ones it wants, above.
+          enableDefaultConfig = false;
+          settings = sshSettings // {
+            "*" = clientDefaults;
+          };
         };
 
         # Git author from identity, only where git is enabled: the

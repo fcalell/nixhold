@@ -25,6 +25,12 @@
     ./home/nixos.nix
   ];
 
+  # The framework owns the loader, so it owns how many generations the
+  # boot menu carries. Two is enough to roll back the deploy that just
+  # broke, and keeps /boot from filling on the small ESP the shipped
+  # disko layout creates.
+  boot.loader.systemd-boot.configurationLimit = lib.mkDefault 2;
+
   # /tmp on a tmpfs, fleet-wide. The CLI stages plaintext key material
   # under $XDG_RUNTIME_DIR when there is one and $TMPDIR otherwise, and
   # so does anything else that reaches for a temp file — none of which

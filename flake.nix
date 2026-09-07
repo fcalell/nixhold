@@ -53,14 +53,16 @@
       # recommended path is `mkFleet`.
       nixosBaseline = import ./modules/baseline-nixos.nix;
       darwinBaseline = import ./modules/baseline-darwin.nix;
-      homeBaseline = import ./modules/baseline-home.nix;
     in
     {
       lib.mkFleet = import ./lib/mkFleet.nix;
 
+      # No `homeManagerModules`: home-manager is wired by the platform
+      # baselines (modules/home/), which need `nixhold.identity` and
+      # `nixhold.secrets` from the system config. Standalone
+      # home-manager is not a shape this framework serves.
       nixosModules.nixhold = nixosBaseline;
       darwinModules.nixhold = darwinBaseline;
-      homeManagerModules.nixhold = homeBaseline;
 
       # Per-service / per-infra modules surfaced individually so
       # profiles (and forker-authored profiles) can compose them
@@ -68,7 +70,10 @@
       modules = {
         services = {
           openssh = ./modules/services/openssh/nixos.nix;
+          syncthing = ./modules/services/syncthing/nixos.nix;
+          taskchampion = ./modules/services/taskchampion/nixos.nix;
           tailscale = ./modules/services/tailscale/nixos.nix;
+          vaultwarden = ./modules/services/vaultwarden/nixos.nix;
         };
         infra = {
           caddy = ./modules/infra/caddy.nix;
@@ -152,6 +157,11 @@
           # neither of the two above is. Its stub module asserts each
           # of those, so this check fails if the scoping regresses.
           fixture-node = fixture.nixosConfigurations.fixture-node.config.system.build.toplevel;
+
+          # The desktop profile. Hyprland, greetd, portals, nix-ld and
+          # the wayland session environment are only reachable here —
+          # every other NixOS fixture host is a server.
+          fixture-desktop = fixture.nixosConfigurations.fixture-desktop.config.system.build.toplevel;
 
           # The fleet's own installer image. Evaluating it covers the
           # whole ISO module — including the "THIN by contract"

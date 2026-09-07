@@ -106,6 +106,17 @@ self.lib.mkFleet {
       disk = "/dev/disk/by-id/fixture-node-root";
     };
 
+    # The desktopLinux host. Every other NixOS fixture host draws the
+    # `server` profile, so without this one the desktop profile's
+    # defaults — the session entry, the wayland environment, the
+    # portal and audio stack — are shipped and built nowhere.
+    fixture-desktop = {
+      arch = "x86_64-linux";
+      profile = self.profiles.desktopLinux;
+      modules = [ ./desktop-stub.nix ];
+      disk = "/dev/disk/by-id/fixture-desktop-root";
+    };
+
     # `networks` left to its default: every tailscale-typed network.
     # `identity` is fleet-scoped, so this host activates the SAME
     # committed throwaway ciphertext as fixture-server (nothing
