@@ -1,4 +1,4 @@
-{ ... }:
+{ lib, ... }:
 {
   imports = [
     ./identity
@@ -15,9 +15,20 @@
     ./services
     ./secrets
     ./secrets/nixos.nix
+    # Operator checkouts as fleet data: the env secret, the forge
+    # ssh wiring, the direnv library and the clone step all follow
+    # from one `nixhold.repositories` entry.
+    ./repositories
     ./hardware
     ./cli
     ./home
     ./home/nixos.nix
   ];
+
+  # /tmp on a tmpfs, fleet-wide. The CLI stages plaintext key material
+  # under $XDG_RUNTIME_DIR when there is one and $TMPDIR otherwise, and
+  # so does anything else that reaches for a temp file — none of which
+  # should ever be written to a disk that outlives the boot. mkDefault:
+  # a host that builds closures too big for RAM sets it back to false.
+  boot.tmp.useTmpfs = lib.mkDefault true;
 }

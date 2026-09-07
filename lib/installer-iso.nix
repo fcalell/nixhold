@@ -5,31 +5,43 @@
 # `packages.<arch>.installerIso`.
 #
 # The image is THIN by contract: CLI + tool belt, the operator's
-# login pubkeys on root, and exactly two ciphertexts. No repo
+# login pubkeys on root, and at most two ciphertexts — the fleet's
+# `identity` ssh key always (the clone credential), the wrapped
+# operator identity only when the fleet commits one. No repo
 # contents, no plaintext secrets, no host keys, no build closures —
 # so it goes stale only when the repo location, the login keys, the
-# operator identity, or the deploy key change.
+# operator identity, or the fleet's identity key change.
 #
 # "Thin" is a property of how the ciphertexts are baked, not just of
 # what is named here: `mkFleet` hands over paths *inside the fleet
 # checkout*, and a path coerced straight into `environment.etc`
-# carries its whole store path — the entire checkout (hosts,
-# ciphertexts, escrows) — into the squashfs. `builtins.path` re-adds
+# carries its whole store path — the entire checkout, every host's
+# ciphertexts — into the squashfs. `builtins.path` re-adds
 # each file as a store path of its own, by content, so the closure
-# holds the two files and nothing around them.
+# holds the baked files and nothing around them.
 #
-# The CLI finds both through the environment (see `NIXHOLD_*` below):
-# `$NIXHOLD_IDENTITY_FILE` is the wrapped operator identity every
-# verb unwraps, `$NIXHOLD_REPO_KEY_FILE` the deploy key
-# `nh_repo_git` clones and pushes the fleet repo with.
+# The CLI finds them through the environment (see `NIXHOLD_*`
+# below): `$NIXHOLD_IDENTITY_FILE` is the wrapped operator identity
+# every verb unwraps, `$NIXHOLD_CLONE_KEY_FILE` the fleet's own
+# `identity` ssh key `nh_repo_git` clones and pushes the fleet repo
+# with — the forge already authenticates it, so no deploy key of its
+# own is minted, registered or revoked.
 #
-# Nothing baked here is unencrypted-secret: stick + passphrase
-# equals repo + passphrase, the same boundary as principle 16.
+# The operator unlocks the fleet from this image by whichever route
+# they hold. A FIDO2 token is the first-class one — the plugin and
+# libfido2's udev rules are on the image, and the private half never
+# leaves the token — and a passphrase-wrapped identity is the other;
+# a fleet may commit both, and must have at least one (asserted
+# below), or the booted image reaches nothing.
+#
+# Nothing baked here is unencrypted-secret: stick + operator route
+# equals repo + operator route, the same boundary as principle 16.
 {
   repoUrl,
   operatorAuthorizedKeys,
   ageIdentityWrapped,
-  repoDeployKey,
+  ageRecipients,
+  cloneKey,
   diskoPackage,
 }:
 {
@@ -48,8 +60,8 @@ let
   # else. `mode` (rather than the default symlink) copies the byte
   # content into the image's /etc, so the running system never follows
   # a link back into a store path it did not need. `mkFleet` only
-  # emits `installerIso` once both files exist, so there is no
-  # existence check to make here.
+  # emits `installerIso` once the files it names here exist, so there
+  # is no existence check to make.
   bake = name: path: {
     source = builtins.path {
       inherit path;
@@ -58,10 +70,21 @@ let
     mode = "0400";
   };
 
+  # A token-only fleet commits no wrapped identity: there is nothing
+  # to bake and nothing to point `$NIXHOLD_IDENTITY_FILE` at, and the
+  # CLI resolves the route itself when the variable is unset.
+  hasWrappedIdentity = ageIdentityWrapped != null;
+
   keysEtc = {
+    "nixhold/keys/identity.age" = bake "nixhold-identity.age" cloneKey;
+  }
+  // lib.optionalAttrs hasWrappedIdentity {
     "nixhold/keys/operator.age" = bake "nixhold-operator.age" ageIdentityWrapped;
-    "nixhold/keys/repo.key.age" = bake "nixhold-repo.key.age" repoDeployKey;
   };
+
+  # A `age1fido2-hmac1…` line in the fleet's recipients file means a
+  # hardware token can decrypt what the image carries.
+  hasTokenRecipient = lib.any (lib.hasPrefix "age1fido2-hmac1") ageRecipients;
 in
 {
   networking.hostName = "nixhold-installer";
@@ -104,8 +127,9 @@ in
 
       run:  nixhold host install
 
-    The passphrase unwraps the operator identity, which decrypts the
-    repo deploy key, which clones the fleet. Nothing else is needed.
+    Your token (or your passphrase) unlocks the operator identity,
+    which decrypts the fleet's own SSH key, which clones the fleet.
+    Nothing else is needed.
   '';
 
   # The installer-environment marker. `host install` refuses local
@@ -119,13 +143,24 @@ in
   # this image bakes under /etc/nixhold/keys must be a store path of
   # its own. A path taken straight out of the fleet checkout is a
   # store *sub*path, and carrying one here puts the whole checkout —
-  # every host, ciphertext and escrow — into the squashfs. The check
+  # every host and every ciphertext — into the squashfs. The check
   # is on the merged config, so it also holds for entries a fleet
   # adds itself.
-  assertions = lib.mapAttrsToList (name: entry: {
-    assertion = builtins.dirOf (toString entry.source) == builtins.storeDir;
-    message = "nixhold installer ISO: /etc/${name} is baked from ${toString entry.source}, which lives inside another store path — all of it would land in the image. Re-add the file by content with `builtins.path`.";
-  }) (lib.filterAttrs (name: _: lib.hasPrefix "nixhold/keys/" name) config.environment.etc);
+  assertions =
+    lib.mapAttrsToList (name: entry: {
+      assertion = builtins.dirOf (toString entry.source) == builtins.storeDir;
+      message = "nixhold installer ISO: /etc/${name} is baked from ${toString entry.source}, which lives inside another store path — all of it would land in the image. Re-add the file by content with `builtins.path`.";
+    }) (lib.filterAttrs (name: _: lib.hasPrefix "nixhold/keys/" name) config.environment.etc)
+    ++ [
+      # The image's whole job is to reach the fleet repo, and the only
+      # thing standing between it and the clone key is the operator's
+      # own age route. Neither route committed means an image that
+      # boots, prompts, and can decrypt nothing.
+      {
+        assertion = hasTokenRecipient || hasWrappedIdentity;
+        message = "nixhold installer ISO: the fleet commits no operator route — `nixhold.layout.ageRecipient` has no `age1fido2-hmac1…` (hardware token) line and `nixhold.layout.ageIdentityWrapped` is null (no committed passphrase-wrapped identity at `keys/operator.age`). The booted image could not decrypt the fleet's own SSH key, so it could not clone. Enroll a token or commit a wrapped identity.";
+      }
+    ];
 
   # `environment.variables` (not `sessionVariables`) — these have to
   # reach the autologin root console shell, which reads /etc/profile.
@@ -133,38 +168,40 @@ in
   # who exports something else still wins.
   environment.variables = {
     NIXHOLD_REPO_URL = repoUrl;
-    NIXHOLD_IDENTITY_FILE = "/etc/nixhold/keys/operator.age";
-    NIXHOLD_REPO_KEY_FILE = "/etc/nixhold/keys/repo.key.age";
+    NIXHOLD_CLONE_KEY_FILE = "/etc/nixhold/keys/identity.age";
     NIXHOLD_FLEET_DEFAULT = "/root/${repoBasename}";
+  }
+  # Only when there is a file to point at. Exporting the path of a
+  # ciphertext the image does not carry would make every verb fail on
+  # a missing identity instead of falling through to the token.
+  // lib.optionalAttrs hasWrappedIdentity {
+    NIXHOLD_IDENTITY_FILE = "/etc/nixhold/keys/operator.age";
   };
 
   # The clone is the first thing `host install` does, on a machine
   # with no known_hosts and no operator at the keyboard to confirm a
   # fingerprint. github.com's published host keys ship with the image,
-  # so the deploy key meets a host it already trusts.
-  programs.ssh.knownHosts = {
-    "github.com-ed25519" = {
-      hostNames = [ "github.com" ];
-      publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
-    };
-    "github.com-ecdsa" = {
-      hostNames = [ "github.com" ];
-      publicKey = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=";
-    };
-    "github.com-rsa" = {
-      hostNames = [ "github.com" ];
-      publicKey = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=";
-    };
-  };
+  # so the clone key meets a host it already trusts. Same value the
+  # baselines pin on every installed machine.
+  programs.ssh.knownHosts = import ./github-known-hosts.nix;
 
-  # Tool belt, no `gh`: the deploy key is the git-host credential, so
-  # the ISO never authenticates against an API.
+  # A FIDO2 token is a route the image must be able to *use*, not
+  # just name: age dispatches `age1fido2-hmac1…` recipients to the
+  # plugin binary by name, and the plugin talks to the token through
+  # libfido2 — which needs its udev rules for the hidraw node to be
+  # reachable by the (root) console session at all.
+  services.udev.packages = [ pkgs.libfido2 ];
+
+  # Tool belt, no `gh`: the fleet's own ssh key is the git-host
+  # credential, so the ISO never authenticates against an API.
   environment.systemPackages = [
     (import ../cli { inherit pkgs; })
     diskoPackage
     pkgs.git
     pkgs.gum
     pkgs.age
+    pkgs.age-plugin-fido2-hmac
+    pkgs.libfido2
     pkgs.jq
     pkgs.nixos-facter
   ];

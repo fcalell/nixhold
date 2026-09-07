@@ -2,15 +2,8 @@
 let
   inherit (lib) mkOption types;
 
-  keysDir = config.nixhold.layout.keysDir;
   networks = config.nixhold.fleet.network;
   tailscaleNetworks = lib.attrNames (lib.filterAttrs (_: n: n.type == "tailscale") networks);
-
-  # First line of a committed pubkey file, trailing newline trimmed —
-  # `authorized_keys` entries must be single-line. Shared with
-  # ./known-hosts.nix so the two readers of `keys/hosts/<host>/*.pub`
-  # cannot drift apart.
-  pubkeyLine = import ../../lib/pubkey-line.nix "nixhold.fleet";
 
   archEnum = types.enum [
     "x86_64-linux"
@@ -152,21 +145,6 @@ let
           '';
           example = "homelab.example.com";
         };
-
-        loginPubkey = mkOption {
-          type = types.nullOr types.str;
-          defaultText = lib.literalMD "first line of `keys/hosts/<host>/identity.pub` when committed, else `null`";
-          description = ''
-            The operator's SSH login pubkey originating from this
-            host. Defaults to the committed
-            `keys/hosts/<host>/identity.pub` (written by the CLI
-            when it bootstraps/rekeys the host's `sshIdentity`
-            secret); an explicit value overrides. Aggregated across
-            hosts into `derived.operatorAuthorizedKeys` and
-            authorized on every host's operator account. `null`
-            until the host's key exists.
-          '';
-        };
       };
 
       config = {
@@ -174,11 +152,6 @@ let
         publicFqdn = lib.mkDefault (
           if lib.length domains == 1 then "${name}.${lib.head domains}" else null
         );
-        loginPubkey =
-          let
-            p = keysDir + "/hosts/${name}/identity.pub";
-          in
-          lib.mkDefault (if builtins.pathExists p then pubkeyLine p else null);
       };
     }
   );
@@ -283,10 +256,25 @@ in
         type = types.listOf types.str;
         readOnly = true;
         description = ''
-          Union of every host's non-null `loginPubkey` — the
-          operator's SSH login keys. Authorized on every host's
+          The operator's SSH login keys, authorized on every host's
           operator account (`users.users.<operator>`); root login
-          stays closed.
+          stays closed. Also what the installer ISO authorizes on
+          root.
+
+          One source, no precedence to reason about: every line of
+          the committed `keys/login.pub`, blank lines and `#`
+          comments dropped. Empty when that file is absent — which
+          means no host authorizes anyone over ssh, so lint flags it.
+
+          The file is the only login mechanism because a login key
+          need not be one the fleet holds: a hardware token's
+          resident key (`ssh-keygen -t ed25519-sk`) lives on the
+          token, and there may be several — one per token the
+          operator carries, so a lost token is not a lost fleet.
+          A fleet with no token keeps the one-key posture: the CLI
+          writes the `identity` secret's own pubkey into
+          `keys/login.pub` when it mints that key and the file is
+          missing or empty.
         '';
       };
     };

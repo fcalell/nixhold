@@ -37,6 +37,14 @@
     xwayland.enable = lib.mkDefault true;
   };
 
+  # The operator's FIDO2 token is used from the desktop, not only
+  # from the installer: `age-plugin-fido2-hmac` for secrets and
+  # `ssh -o SecurityKeyProvider` / an sk key for fleet login both
+  # reach the token through libfido2, which needs its udev rules for
+  # the hidraw node to be readable without root. `fido2-token` is on
+  # PATH so enrolling and listing credentials is a local operation.
+  services.udev.packages = [ pkgs.libfido2 ];
+
   # Wayland desktop essentials.
   security.polkit.enable = lib.mkDefault true;
   security.rtkit.enable = lib.mkDefault true;
@@ -61,6 +69,7 @@
   environment.systemPackages = with pkgs; [
     git
     htop
+    libfido2
     ripgrep
     tmux
     vim

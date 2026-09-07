@@ -19,4 +19,16 @@ in
       the convenient path, not the only one.
     '';
   };
+
+  options.nixhold.home.repositoriesDir = mkOption {
+    type = types.str;
+    default = "~/projects";
+    description = ''
+      Where `nixhold.repositories.<name>` checkouts live by
+      default: `<repositoriesDir>/<name>`. A leading `~` is the
+      operator's home. One place to move them all; a single
+      repository overrides with its own `path`.
+    '';
+    example = "~/src";
+  };
 }

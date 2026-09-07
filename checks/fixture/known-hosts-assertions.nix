@@ -18,7 +18,7 @@ let
   # Read independently of the module under test: if the layout
   # defaults ever stop resolving to the fixture's keys/ tree, the
   # comparison below fails instead of quietly comparing null to null.
-  committedServerKey = lib.removeSuffix "\n" (builtins.readFile ./keys/hosts/fixture-server/host.pub);
+  committedServerKey = lib.removeSuffix "\n" (builtins.readFile ./keys/hosts/fixture-server.pub);
 
   hmSettings = config.home-manager.users.${config.nixhold.identity.username}.programs.ssh.settings;
   # `settings` also carries HM's own `"*"` block; only fleet peers
@@ -31,11 +31,11 @@ in
   assertions = [
     {
       assertion = fleet.hostPubkey.fixture-server == committedServerKey;
-      message = "fixture: nixhold.fleet.hostPubkey.fixture-server did not read keys/hosts/fixture-server/host.pub";
+      message = "fixture: nixhold.fleet.hostPubkey.fixture-server did not read keys/hosts/fixture-server.pub";
     }
     {
       assertion = fleet.hostPubkey.fixture-mac == null;
-      message = "fixture: fixture-mac has no committed host.pub, so its hostPubkey must be null";
+      message = "fixture: fixture-mac has no committed keys/hosts/<host>.pub, so its hostPubkey must be null";
     }
     {
       assertion = (knownHosts.fixture-server or null) != null;

@@ -49,17 +49,20 @@ cmd_logs() {
   [ -z "$addr" ] && { nh_err "could not resolve address for $host"; return 1; }
 
   # SSH as the operator (the hardened openssh preset plants no root
-  # authorized key) and read the journal via sudo.
+  # authorized key) and read the journal via sudo — which asks for the
+  # operator's password once (see lib/ssh.sh).
   local user
   user="$(nh_host_eval "$host" nixos "nixhold.identity.username" | jq -r '.')"
   [ -z "$user" ] && { nh_err "could not resolve operator username for $host"; return 1; }
 
-  local args=(sudo journalctl -u "$service")
+  local args=(nh_rsudo journalctl -u "$service")
   [ -n "$lines" ] && args+=(-n "$lines")
   [ -n "$since" ] && args+=(--since "$since")
   [ "$follow" -eq 1 ] && args+=(-f)
 
   # ssh joins argv with spaces for the remote shell — re-quote so
-  # values like `--since "2 hours ago"` survive.
-  nh_ssh "$user@$addr" --host "$host" -- "$(printf '%q ' "${args[@]}")"
+  # values like `--since "2 hours ago"` survive. `nh_rsudo` is defined
+  # by nh_ssh_sudo's preamble; </dev/null because journalctl reads no
+  # stdin and the preamble has already taken the password line off it.
+  nh_ssh_sudo "$user@$addr" --host "$host" -- "$(printf '%q ' "${args[@]}")" </dev/null
 }

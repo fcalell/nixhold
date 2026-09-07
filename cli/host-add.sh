@@ -9,12 +9,18 @@
 #      Networks are asked only when the fleet declares more than the
 #      tailscale default, a public address only for a host on an
 #      internet network; publicFqdn defaults in the roster.
-#   2. Generate a host SSH keypair into the per-host cache; commit its
-#      pubkey + escrow under `nixhold.layout.keysDir` (a fleet with no
-#      operator identity yet gets one here).
+#   2. Make sure the fleet has an operator recipient and a fleet key:
+#      the FIRST host mints both (keys/operator.pub + keys/operator.age,
+#      keys/fleet.key.age + keys/fleet.pub), every later one finds them.
+#      No host key is generated here — a machine's SSH host key is
+#      minted at install and is a recipient of nothing.
 #   3. Scaffold <hostsDir>/<name>/default.nix and append the entry to
 #      `hostsFile`.
-#   4. Provision every declared-but-missing secret.
+#   4. Provision every declared-but-missing secret. On the FIRST host
+#      that is where the fleet's `identity` key and console password
+#      are minted; on every later one those ciphertexts already exist
+#      (both are fleet-scoped) and every host reads them with the one
+#      fleet key, so nothing is minted and nothing is rekeyed.
 #   5. Ask "install now?": this machine (on the ISO, or a Mac), over
 #      ssh to an address, or later. --install <addr> answers it.
 # What this verb wrote is committed before the install starts; on the
@@ -43,7 +49,7 @@ EOF
     return 1
   fi
 
-  nh_require_cmd gum jq nix ssh-keygen
+  nh_require_cmd gum jq nix age age-keygen
   local root
   root="$(nh_fleet_root)" || return 1
 
@@ -63,7 +69,7 @@ EOF
   hosts_file="$(nh_worktree_layout_file hostsFile 2>/dev/null)" || hosts_file="$root/hosts.nix"
   hosts_dir="$(nh_worktree_layout_dir hostsDir hosts)" || return 2
   if [ -f "$hosts_file" ] && grep -qE "^[[:space:]]+${name}[[:space:]]*=[[:space:]]*\{" "$hosts_file"; then
-    nh_err "host '$name' already present in $hosts_file (run 'host remove' first; 'host rotate-key' regenerates its key)"
+    nh_err "host '$name' already present in $hosts_file (run 'host remove' first, or 'host install $name' to re-image it)"
     return 1
   fi
 
@@ -71,7 +77,7 @@ EOF
   # first write: this verb may run inside `host install`'s picker,
   # where errexit is off, and a cancelled (Esc) gum prompt returns an
   # empty string. Unchecked, that wrote `arch = ""; profile = ;` into
-  # hosts.nix and minted a keypair + escrow for a half-added host.
+  # hosts.nix and minted an operator identity for a half-added host.
   local arch
   # shellcheck disable=SC2046 # nh_first emits one space-free option per line
   arch="$(nh_prompt_choose "Arch for $name:" \
@@ -155,37 +161,20 @@ EOF
     return 1
   fi
 
-  # Generate host SSH keypair into the per-host cache. The
-  # pubkey goes into the fleet (committed); the privkey stays in
-  # the cache (re-used for redeploys / install).
-  local cache="$NIXHOLD_CACHE_DIR/host-keys/$name"
-  if ! mkdir -p "$cache" || ! chmod 0700 "$cache"; then
-    nh_err "could not create the host-key cache at $cache"
-    return 1
-  fi
-  if [ ! -f "$cache/ssh_host_ed25519_key" ]; then
-    ssh-keygen -t ed25519 -N "" -C "nixhold-host-$name" -f "$cache/ssh_host_ed25519_key" >/dev/null || {
-      nh_err "could not generate a host SSH keypair at $cache"
-      return 1
-    }
-    nh_ok "generated host SSH keypair at $cache"
-  else
-    nh_info "host SSH key already cached at $cache (reusing)"
-  fi
-
-  # Commit the pubkey (the host's age recipient) AND escrow the private
-  # half beside it, in one call from one private key — so the host is
-  # re-imageable from repo + passphrase alone from birth and the pair
-  # can never disagree. (nh_layout evaluates to a read-only store path;
-  # nh_worktree_keys_dir re-roots it under the fleet, and falls back to
-  # <root>/keys when no host yet exists to evaluate layout from — which
-  # is the case while adding the first host.) A fleet with no operator
-  # pubkey yet gets a warning rather than a half-added host; lint flags
-  # the missing escrow.
+  # The fleet's own key material, minted on the FIRST host and found on
+  # every later one: the operator recipient (a passphrase identity when
+  # the fleet names no token) and the fleet age key every host decrypts
+  # with. Both are prerequisites of the secrets walk below — a
+  # ciphertext written before the fleet key exists would be one no host
+  # could read — so they are settled before anything is scaffolded.
   local keys_dir
   keys_dir="$(nh_worktree_keys_dir)" || return 2
-  nh_escrow_host_key "$name" "$cache/ssh_host_ed25519_key" || {
-    nh_err "host key for $name is NOT escrowed — nothing else was written"
+  nh_ensure_operator_identity || {
+    nh_err "this fleet has no operator recipient — nothing was written"
+    return 1
+  }
+  nh_fleet_key_ensure || {
+    nh_err "this fleet has no fleet key — nothing was written"
     return 1
   }
 
@@ -209,16 +198,16 @@ EOF
   # flake includes modified tracked files but NOT untracked ones, so
   # without this every following eval (secret bootstrap, lint,
   # --install) sees a hosts.nix entry whose ./hosts/<name> files
-  # "don't exist" — and, worse, the recipients computation silently
-  # omits the invisible host.pub.
-  nh_stage_for_eval "$root" "$keys_dir/hosts/$name" "$hosts_dir/$name" "$hosts_file"
+  # "don't exist".
+  nh_stage_for_eval "$root" "$hosts_dir/$name" "$hosts_file"
 
-  # The roster entry, the scaffold, the host key pair and (on a first
-  # host) the operator identity: committed now, before the secrets
-  # walk that may open editors or fail.
+  # The roster entry, the scaffold and (on a first host) the operator
+  # seat + the fleet key: committed now, before the secrets walk that
+  # may open editors or fail.
   nh_commit_paths "$root" "host($name): add" \
-    "$hosts_file" "$hosts_dir/$name" "$keys_dir/hosts/$name" \
-    "$keys_dir/operator.pub" "$keys_dir/operator.age"
+    "$hosts_file" "$hosts_dir/$name" \
+    "$keys_dir/operator.pub" "$keys_dir/operator.age" \
+    "$keys_dir/fleet.key.age" "$keys_dir/fleet.pub"
 
   # Provision any declared-but-missing secrets (each ciphertext is
   # committed by the walk). Best-effort — the host's own module may
@@ -328,7 +317,15 @@ nh_default_state_version() {
     darwin) expr="toString (inputs.nixhold.inputs.nix-darwin.lib.darwinSystem { system = builtins.currentSystem; modules = [ ]; }).config.system.maxStateVersion" ;;
     *) return 0 ;;
   esac
-  nix eval --raw --no-warn-dirty --impure --expr "with builtins.getFlake \"$root\"; $expr" 2>/dev/null || true
+  # $root reaches the expression through the environment, not through
+  # string interpolation: a checkout path holding a quote or a `${`
+  # would otherwise be parsed as Nix and could inject an expression.
+  # (`--argstr` is not an option here — `nix eval --expr` does not
+  # auto-call a function, unlike `--file`.) `$expr` above is one of two
+  # literals in this function, never operator input.
+  NIXHOLD_EVAL_ROOT="$root" \
+    nix eval --raw --no-warn-dirty --impure \
+    --expr "with builtins.getFlake (builtins.getEnv \"NIXHOLD_EVAL_ROOT\"); $expr" 2>/dev/null || true
 }
 
 # Append a host entry just before the closing brace of the hosts.nix

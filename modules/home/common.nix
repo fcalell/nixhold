@@ -33,13 +33,13 @@ let
       addrs = lib.filter (a: a != null) (map (n: fleet.derived.address.${peerName}.${n} or null) shared);
     in
     if addrs == [ ] then null else lib.head addrs;
-  # The operator's outbound key: the (at most one, per assertion)
-  # secret declaring `sshIdentity = true`.
-  identityKey =
-    let
-      matches = lib.attrValues (lib.filterAttrs (_: s: s.sshIdentity) config.nixhold.secrets);
-    in
-    if matches == [ ] then null else "~/${(lib.head matches).homePath}";
+  # The fleet's one outbound SSH key: the framework-declared
+  # `identity` secret (below). It is a framework declaration, so the
+  # framework may know its name — the rule that names never carry
+  # behaviour is about operator-chosen names. `null` until the
+  # ciphertext is provisioned, so a fresh host still evaluates.
+  identitySecret = config.nixhold.secrets.identity;
+  identityKey = if identitySecret.active then "~/${identitySecret.homePath}" else null;
   sshSettings =
     lib.mapAttrs
       (
@@ -48,9 +48,18 @@ let
           HostName = addr;
           User = username;
         }
+        # Name the fleet's own key whenever the fleet has one — it is
+        # the key a no-token fleet authorizes (the CLI seeds
+        # `keys/login.pub` from it), so leaving it unnamed would make
+        # `ssh <peer>` depend on ssh's default filenames. But never
+        # `IdentitiesOnly`: the operator's other login keys are
+        # hardware-token resident keys with no file to name, offered
+        # by the agent, and pinning this one to the exclusion of the
+        # rest is exactly how a token fleet locks itself out. Forge
+        # blocks keep both — a forge authenticates the fleet's
+        # OUTBOUND key alone (modules/repositories/default.nix).
         // lib.optionalAttrs (identityKey != null) {
           IdentityFile = identityKey;
-          IdentitiesOnly = true;
         }
         # A peer whose host key is committed is pinned system-wide by
         # modules/fleet/known-hosts.nix, so there is nothing left to
@@ -63,12 +72,34 @@ let
       )
       (
         lib.filterAttrs (_: a: a != null) (
-          lib.mapAttrs peerAddr (lib.filterAttrs (n: _: n != config.networking.hostName) fleet.hosts)
+          # Peers = every fleet host but THIS one, keyed off the fleet
+          # name (`selfName`) rather than the OS hostname: a darwin
+          # host's MDM name routinely differs from its fleet key, and
+          # matching on the wrong one leaves the host with an ssh
+          # block pointing at itself.
+          lib.mapAttrs peerAddr (lib.filterAttrs (n: _: n != fleet.selfName) fleet.hosts)
         )
       );
 in
 {
   config = {
+    # Framework declaration, every host, both platforms: THE
+    # outbound SSH key of the fleet — fleet peers and every git
+    # forge, authentication and commit signing. Fleet-scoped: one
+    # key for every host, so it is registered on each forge once and
+    # revoking it revokes the fleet (which is what a solo operator
+    # wants — a compromised machine means every key it held is
+    # burned anyway, and per-host keys would put a manual forge step
+    # in front of every new machine). Not required: a host evaluates
+    # (and installs) before the fleet has one.
+    nixhold.secrets.identity = {
+      scope = "fleet";
+      sshKey = true;
+      required = false;
+      category = "framework";
+      description = "the fleet's outbound SSH key (fleet peers, git forges, commit signing)";
+    };
+
     home-manager = {
       useGlobalPkgs = lib.mkDefault true;
       useUserPackages = lib.mkDefault true;
@@ -86,11 +117,18 @@ in
 
         # Git author from identity, only where git is enabled: the
         # username (commit attribution stays stable across fleets and
-        # forges) and the email.
+        # forges) and the email. Commits are signed with the same key
+        # that reaches the forge — one key for the fleet, registered
+        # once as both an authentication and a signing key.
         programs.git = lib.mkIf hmArgs.config.programs.git.enable {
           settings.user = {
             name = lib.mkDefault username;
             email = lib.mkDefault identity.email;
+          };
+          signing = lib.mkIf (identityKey != null) {
+            format = lib.mkDefault "ssh";
+            key = lib.mkDefault "${identityKey}.pub";
+            signByDefault = lib.mkDefault true;
           };
         };
 

@@ -1,43 +1,60 @@
-# nixhold host key <name> [--remote <user>@<ip>] [--yes]
+# nixhold host key <name> [--remote <user>@<ip>]
 #
-# Make the machine and the repo agree about <name>'s host key. The
-# decision procedure is nh_reconcile_host_key (lib/escrow.sh) — the
-# same one `host install` runs on darwin — and the repo wins: the
-# fleet's key goes back on a machine that drifted whenever the fleet
-# can produce it, the machine's key is adopted only when the fleet
-# has nothing, and adoption is refused when it would strand
-# ciphertexts (that is a `host rotate-key`). An adoption rekeys the
-# host's secrets to the new recipient in the same run.
+# ADOPTION. Reads the SSH host pubkey the machine is actually running
+# and records it as `keys/hosts/<name>.pub` — the file every verb pins
+# its connections against, and the only thing the fleet uses a host key
+# for. Nothing is escrowed, nothing is rekeyed, no secret changes: a
+# host SSH key is a machine identity here, not a recipient.
 #
-# It exists because the machine can end up holding a key the fleet
-# never escrowed — a host installed before the escrow existed, a key
-# minted in place on a fresh macOS, a rotation the machine never
-# received — and until they agree the recovery contract (repo +
-# passphrase re-images any host) is quietly broken.
+# It exists for the two states that leave the repo's copy stale: a
+# machine installed by something other than `nixhold host install`
+# (an adopted box, a reinstalled Mac), and a machine whose key was
+# regenerated under it — after which every pinned connection fails
+# closed, which looks exactly like an attack until the operator has
+# checked the fingerprint out of band and run this.
+#
+# While it is there, it also makes sure the machine holds the fleet
+# key: /etc/nixhold/fleet.pub is world-readable, so the comparison is
+# free, and a machine that holds the wrong one decrypts nothing at its
+# next activation.
 
 cmd_host_key() {
-  local name="" remote="" yes=0
+  local name="" remote=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --remote) remote="${2:-}"; shift 2 ;;
-      --yes) yes=1; shift ;;
+      --remote)
+        remote="${2:-}"
+        shift 2
+        ;;
       -h | --help)
         cat <<'EOF'
-Usage: nixhold host key <name> [--remote <user>@<ip>] [--yes]
+Usage: nixhold host key <name> [--remote <user>@<ip>]
 
-  Reads the key <name>'s machine is running and makes machine and
-  repo agree: same key, the escrow is refreshed; the fleet holds
-  the committed key, it goes back on the machine; the fleet holds
-  none, the machine's key is adopted and the secrets rekeyed.
+  Records the SSH host pubkey <name>'s machine is running as
+  keys/hosts/<name>.pub — the fleet's known_hosts pin, and the fix
+  after a machine's host key was regenerated (check its fingerprint
+  out of band first). Re-installs /etc/nixhold/fleet.key when the
+  machine holds a different fleet key than the repo names.
 
-  --remote      act over SSH (connect as root, or as a
-                passwordless-sudo user). Without it the machine is
-                THIS one, which must be <name>.
+  --remote      act over SSH (connect as root, or as the operator —
+                its sudo password is prompted for once). Without it
+                the machine is THIS one, which must be <name>.
 EOF
         return 0
         ;;
-      -*) nh_err "unknown flag: $1"; return 1 ;;
-      *) if [ -z "$name" ]; then name="$1"; shift; else nh_err "extra arg: $1"; return 1; fi ;;
+      -*)
+        nh_err "unknown flag: $1"
+        return 1
+        ;;
+      *)
+        if [ -z "$name" ]; then
+          name="$1"
+          shift
+        else
+          nh_err "extra arg: $1"
+          return 1
+        fi
+        ;;
     esac
   done
   if [ -z "$name" ]; then
@@ -53,24 +70,35 @@ EOF
 
   local target
   target="$(nh_key_target "$name" "$remote")" || {
-    nh_err "this machine is '$(hostname -s 2>/dev/null || hostname)', not '$name' — run this on $name, or pass --remote <user>@<ip>"
+    nh_err "this machine is '$(nh_hostname)', not '$name' — run this on $name, or pass --remote <user>@<ip>"
     return 1
   }
 
-  nh_reconcile_host_key "$name" "$target" "$yes" || return 1
-
-  if [ "$_NH_KEY_ADOPTED" -eq 1 ]; then
-    nh_info "re-encrypting secrets to include the adopted recipient"
-    . "$NIXHOLD_LIB_ROOT/secret-rekey.sh"
-    cmd_secret_rekey || {
-      nh_err "rekey failed — $name's secrets are NOT decryptable by its key yet; fix and re-run 'nixhold host key $name'"
-      return 1
-    }
+  # A Mac that has never run sshd has no host key to record; mint one
+  # in place rather than recording nothing.
+  if [ -z "$target" ] && [ "$(uname -s)" = "Darwin" ]; then
+    nh_ensure_darwin_host_key || return 1
   fi
-  nh_ok "$name: machine and repo agree"
-  local root keys_dir
-  root="$(nh_fleet_root)" || return 1
+
+  local live
+  live="$(nh_read_live_host_pub "$target" "$name")" || return 1
+
+  local out keys_dir root
   keys_dir="$(nh_worktree_keys_dir)" || return 2
-  nh_commit_paths "$root" "host($name): key" "$keys_dir/hosts/$name"
+  root="$(nh_fleet_root)" || return 1
+  out="$(nh_commit_host_pub "$name" "$live")" || return 1
+  nh_ok "$name's live host pubkey is recorded at $out"
+  nh_commit_paths "$root" "host($name): pubkey" "$keys_dir/hosts/$name.pub"
+
+  # The fleet key, while the connection is open. Reads
+  # /etc/nixhold/fleet.pub and installs only on a mismatch, so a
+  # machine that already holds the current key costs no unlock.
+  local sync=()
+  [ -z "$target" ] || sync=(--remote "$target" --host "$name")
+  nh_fleet_key_sync "${sync[@]}" || {
+    nh_err "$name does not hold the fleet key — it decrypts nothing until it does; fix the operator route and re-run"
+    return 1
+  }
+
   nh_info "next: nixhold deploy $name"
 }

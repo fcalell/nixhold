@@ -23,34 +23,49 @@ let
   # Single-line pubkey reader shared with modules/fleet (age rejects a
   # stray newline in a recipient just as sshd does in authorized_keys).
   pubkeyLine = import ../../lib/pubkey-line.nix "nixhold.secrets";
+  # The one committed key file that is a LIST rather than a line: the
+  # operator reaches their secrets by however many routes they hold
+  # (hardware token, passphrase-wrapped identity, or both), and each
+  # is a recipient of its own.
+  pubkeyLines = import ../../lib/pubkey-lines.nix;
 
-  # Recipients every secret on THIS host is encrypted to: the operator
-  # (so they can edit/rekey from any device with the wrapped key) plus
-  # this host's SSH host key (so it decrypts at activation via the
-  # default age.identityPaths). Both come from committed pubkeys —
-  # paths derived from declared data, never discovered (principle 14).
-  # Guarded by pathExists so a host declared before its keys land still
-  # evaluates; lint flags the missing host recipient.
-  hostPubPath = layout.keysDir + "/hosts/${hostName}/host.pub";
+  # Recipients EVERY ciphertext under `layout.secrets` is encrypted
+  # to, host-scoped and fleet-scoped alike: every operator route in
+  # `layout.ageRecipient` (so they can edit and rekey from any device
+  # that holds one of them) plus the one fleet key in
+  # `keys/fleet.pub`, which every host holds at
+  # `/etc/nixhold/fleet.key` and decrypts with at activation. The set
+  # never varies per host, so adding or removing a host rekeys
+  # nothing. Both come from committed pubkeys — paths derived from
+  # declared data, never discovered (principle 14) — and both are
+  # guarded by pathExists so a fleet evaluates before its keys land;
+  # lint flags a missing one.
+  fleetPubPath = layout.keysDir + "/fleet.pub";
 
   # The default generator of an `sshKey` secret: a fresh ed25519 key
   # on stdout (what gets encrypted), its pubkey on stderr (what the
   # operator registers wherever the key is used). ssh-keygen insists
   # on writing to disk, so the pair is made in a private dir the trap
-  # removes on every exit path.
-  keygen = name: ''
+  # removes on every exit path. The key's comment — which outlives
+  # the mint, in `authorized_keys` and on every forge — names the
+  # thing that owns it: a fleet secret is the fleet's, so stamping
+  # the host that happened to run the generator would misdescribe it
+  # on every OTHER host from then on.
+  keygen = scope: name: ''
     (
       umask 077
       d="$(mktemp -d)" || exit 1
       trap 'rm -rf "$d"' EXIT INT TERM
-      ssh-keygen -q -t ed25519 -N "" -C "${hostName}-${name}" -f "$d/key" || exit 1
+      ssh-keygen -q -t ed25519 -N "" -C "${scopeLabel scope}-${name}" -f "$d/key" || exit 1
       cat "$d/key" || exit 1
-      { echo "pubkey of ${hostName}/${name} (register it where this key is used):"; cat "$d/key.pub"; } >&2
+      { echo "pubkey of ${scopeLabel scope}/${name} (register it where this key is used):"; cat "$d/key.pub"; } >&2
     )
   '';
-  recipientsForHost =
-    lib.optional (builtins.pathExists layout.ageRecipient) (pubkeyLine layout.ageRecipient)
-    ++ lib.optional (builtins.pathExists hostPubPath) (pubkeyLine hostPubPath);
+  # Who a secret of this scope belongs to, for operator-facing labels.
+  scopeLabel = scope: if scope == "fleet" then "fleet" else hostName;
+  fleetRecipients =
+    lib.optionals (builtins.pathExists layout.ageRecipient) (pubkeyLines layout.ageRecipient)
+    ++ lib.optional (builtins.pathExists fleetPubPath) (pubkeyLine fleetPubPath);
 
   secretSubmodule = types.submodule (
     { name, config, ... }:
@@ -58,15 +73,16 @@ let
       options = {
         owner = mkOption {
           type = types.str;
-          default = "user";
+          defaultText = lib.literalMD ''`"root"` when `unit` is set, else `"user"`'';
           example = "vaultwarden";
           description = ''
             Owning unix user for the decrypted file. The literal
-            string `"user"` (the default) is a shortcut expanding to
-            `config.nixhold.identity.username` with mode `"0600"`.
-            Service modules pass the service-account name
-            (`"vaultwarden"`, `"caddy"`, …); operator-owned secrets
-            declare nothing.
+            string `"user"` is a shortcut expanding to
+            `config.nixhold.identity.username` with mode `"0600"`;
+            it is the default for everything but a `unit` secret,
+            which systemd reads as root. Service modules pass the
+            service-account name (`"vaultwarden"`, `"caddy"`, …);
+            operator-owned secrets declare nothing.
           '';
         };
 
@@ -84,16 +100,59 @@ let
           '';
         };
 
-        sshIdentity = mkOption {
-          type = types.bool;
-          default = false;
+        scope = mkOption {
+          type = types.enum [
+            "host"
+            "fleet"
+          ];
+          default = "host";
           description = ''
-            Marks THE operator's outbound SSH identity on this host
-            (implies `sshKey`; at most one per host). The home
-            module wires it as `IdentityFile` for fleet-peer
-            matchBlocks; the CLI commits its derived pubkey as
-            `keys/hosts/<host>/identity.pub`, which defaults
-            `fleet.hosts.<host>.loginPubkey`.
+            Where the secret's ciphertext lives, and nothing else —
+            every host decrypts with the same fleet key, so scope is
+            a PATH choice, not an access one. `"host"` (default): one
+            ciphertext per host at
+            `<layout.secrets>/<host>/<name>.age`, so two hosts running
+            the same service do not collide. `"fleet"`: ONE ciphertext
+            for the whole fleet at `<layout.secrets>/<name>.age`,
+            which every declaring host reads the same bytes of.
+            `recipients` is identical either way.
+          '';
+        };
+
+        unit = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          description = ''
+            Name of a systemd unit this secret is the environment
+            file of (NixOS only). The platform half sets
+            `systemd.services.<unit>.serviceConfig.EnvironmentFile`
+            to the decrypted path once the secret is `active`, so a
+            service module declares "this unit reads these
+            KEY=value pairs" and nothing else. systemd reads the
+            file as root before dropping privileges, so `owner`
+            defaults to root (mode `0400`). Mutually exclusive with
+            `homePath` / `sshKey`: an environment file is not a
+            thing the operator holds in `$HOME`.
+          '';
+          example = "vaultwarden";
+        };
+
+        category = mkOption {
+          type = types.enum [
+            "framework"
+            "service"
+            "repository"
+            "operator"
+          ];
+          defaultText = lib.literalMD ''`"service"` when `unit` is set, else `"operator"`'';
+          description = ''
+            Who declared this secret, for the CLI's grouping and for
+            reading a host's secret surface at a glance. Set by the
+            declarer: `framework` for the ones the framework itself
+            declares on every host, `service` for a service module's,
+            `repository` for the env file of a
+            `nixhold.repositories` entry, `operator` (the default)
+            for anything a fleet declares directly.
           '';
         };
 
@@ -169,7 +228,7 @@ let
             `.pub` alongside (via `ssh-keygen -y` at HM
             activation).
           '';
-          example = ".ssh/personal";
+          example = ".ssh/identity";
         };
 
         # Derived (readOnly): what the framework computes from the
@@ -201,7 +260,9 @@ let
           readOnly = true;
           description = ''
             The ciphertext's place in the fleet checkout, derived
-            as `<layout.secrets>/hosts/<host>/<name>.age`. Being a
+            from `scope`: `<layout.secrets>/<host>/<name>.age`
+            for a host secret, `<layout.secrets>/<name>.age`
+            for a fleet one. Being a
             subpath of the checkout, it carries a reference to the
             *whole* checkout, so it is only ever used for existence
             checks and operator-facing messages — never handed to a
@@ -222,7 +283,7 @@ let
             `system.build.toplevel` — handing over the checkout
             subpath instead would put the entire fleet source (every
             host's ciphertexts, the wrapped operator identity, the
-            host-key escrows) into every host's world-readable
+            wrapped fleet key) into every host's world-readable
             `/nix/store`. Same idiom as the installer ISO's `bake`.
             Falls back to `sourceFile` while the ciphertext does not
             exist yet — there is no content to copy then, and the
@@ -248,25 +309,30 @@ let
           type = types.listOf types.str;
           readOnly = true;
           description = ''
-            Age recipients this secret is encrypted to: the operator
-            recipient (`layout.ageRecipient`) plus the owning host's
-            SSH host pubkey (`layout.keysDir/hosts/<host>/host.pub`),
-            each included when committed. The CLI reads this to
-            generate an ephemeral agenix RULES file at edit/rekey
-            time; lint reads it to enforce that every host is a
-            recipient of the secrets it decrypts. Same value for
-            every secret on a host — recipients are per-host, not
-            per-secret, in v1.
+            Age recipients this secret is encrypted to: every
+            operator route committed in `layout.ageRecipient` (one
+            per line — token, passphrase-wrapped identity, or both)
+            plus the fleet key's recipient line
+            (`layout.keysDir/fleet.pub`), each included when
+            committed. The CLI reads this to generate an ephemeral
+            age recipient set at edit/rekey time. The same value for
+            every secret of every host and every scope: one fleet
+            key, so no recipient set varies per host and `nixhold
+            secret rekey` is needed only when the operator's own
+            routes change or the fleet key rotates.
           '';
         };
       };
 
       config = {
-        # sshIdentity is the stronger claim; declaring it alone is
-        # enough (an explicit sshKey definition still wins).
-        sshKey = lib.mkDefault config.sshIdentity;
         homePath = lib.mkDefault (if config.sshKey then ".ssh/${name}" else null);
-        generator = lib.mkDefault (if config.sshKey then keygen name else null);
+        generator = lib.mkDefault (if config.sshKey then keygen config.scope name else null);
+        # Defaults that depend on another option are stated at
+        # option-default priority (mkOptionDefault), not mkDefault:
+        # a service module writing `owner = lib.mkDefault "caddy"`
+        # must win, and two mkDefaults would tie instead.
+        owner = lib.mkOptionDefault (if config.unit != null then "root" else "user");
+        category = lib.mkOptionDefault (if config.unit != null then "service" else "operator");
         resolvedOwner = if config.owner == "user" then username else config.owner;
         resolvedMode =
           if config.mode != null then
@@ -275,17 +341,25 @@ let
             "0600"
           else
             "0400";
-        sourceFile = layoutSecrets + "/hosts/${hostName}/${name}.age";
+        # One ciphertext per host, or one for the fleet. A fleet
+        # secret sits at the root of the tree with no host component:
+        # the whole point of it is that every declaring host decrypts
+        # the same bytes.
+        sourceFile =
+          if config.scope == "fleet" then
+            layoutSecrets + "/${name}.age"
+          else
+            layoutSecrets + "/${hostName}/${name}.age";
         file =
           if builtins.pathExists config.sourceFile then
             builtins.path {
               path = config.sourceFile;
-              name = "nixhold-secret-${hostName}-${name}.age";
+              name = "nixhold-secret-${if config.scope == "fleet" then "fleet" else hostName}-${name}.age";
             }
           else
             config.sourceFile;
         active = config.required || builtins.pathExists config.sourceFile;
-        recipients = recipientsForHost;
+        recipients = fleetRecipients;
       };
     }
   );
@@ -302,10 +376,36 @@ in
       set), and the CLI manifest for
       `nixhold secret list / bootstrap`.
 
-      Each entry is `nixhold.secrets.<name> = { owner, mode?,
-      description?, template?, generator?, required?, homePath? }`.
-      The encrypted file path is derived (not configurable) per
-      the `secrets/hosts/<host>/<name>.age` convention.
+      Each entry is `nixhold.secrets.<name> = { scope?, category?,
+      owner?, mode?, description?, template?, generator?,
+      required?, homePath?, sshKey?, unit? }`. The encrypted file
+      path is derived (not configurable) from `scope`:
+      `secrets/<host>/<name>.age` for a host secret,
+      `secrets/<name>.age` for a fleet one.
+
+      The operator rarely writes an entry here at all: everything
+      that needs a secret declares its own (the framework's
+      `identity` and `env`, a service module under
+      `mkIf cfg.enable`, a `nixhold.repositories` entry), named
+      after the thing that consumes it and gone the moment that
+      thing is off.
+    '';
+  };
+
+  # Framework declaration, every host, both platforms: the
+  # operator's global environment. One fleet-wide ciphertext of
+  # KEY=value lines, sourced into every shell by the platform
+  # halves — the escape hatch for the values that are not
+  # NixOS-shaped (API tokens read by ad-hoc tooling). Not
+  # required: a fleet that never provisions it never notices it.
+  config.nixhold.secrets.env = {
+    scope = "fleet";
+    required = false;
+    category = "framework";
+    owner = "user";
+    description = "global env (KEY=value lines) sourced into every shell of the operator";
+    template = ''
+      # KEY=value, one per line. Sourced by every shell.
     '';
   };
 
@@ -314,48 +414,38 @@ in
   # fail with the fix spelled out instead. `required = false`
   # secrets are filtered out of `age.secrets` by the platform
   # halves until their ciphertext lands.
-  config.assertions =
-    lib.concatLists (
-      lib.mapAttrsToList (name: s: [
-        {
-          assertion = !s.required || builtins.pathExists s.sourceFile;
-          message = ''
-            nixhold.secrets.${name}: missing ciphertext ${toString s.sourceFile}.
-            Run `nixhold secret edit <host>` (or declare it with
-            `required = false` until it is provisioned).
-          '';
-        }
-        {
-          assertion = s.homePath == null || s.owner == "user";
-          message = ''
-            nixhold.secrets.${name}: homePath is only meaningful with
-            owner = "user" (got owner = "${s.owner}").
-          '';
-        }
-        {
-          assertion = !s.sshKey || s.owner == "user";
-          message = ''
-            nixhold.secrets.${name}: sshKey marks an operator-owned
-            key; it requires owner = "user" (got owner = "${s.owner}").
-          '';
-        }
-        {
-          assertion = !s.sshIdentity || s.sshKey;
-          message = ''
-            nixhold.secrets.${name}: sshIdentity implies sshKey; do
-            not set sshKey = false on the identity secret.
-          '';
-        }
-      ]) config.nixhold.secrets
-    )
-    ++ [
+  config.assertions = lib.concatLists (
+    lib.mapAttrsToList (name: s: [
       {
-        assertion = lib.count (s: s.sshIdentity) (lib.attrValues config.nixhold.secrets) <= 1;
+        assertion = !s.required || builtins.pathExists s.sourceFile;
         message = ''
-          nixhold.secrets: at most one secret per host may set
-          sshIdentity = true (it becomes the single IdentityFile for
-          fleet-peer ssh).
+          nixhold.secrets.${name}: missing ciphertext ${toString s.sourceFile}.
+          Run `nixhold secret edit <host>` (or declare it with
+          `required = false` until it is provisioned).
         '';
       }
-    ];
+      {
+        assertion = s.homePath == null || s.owner == "user";
+        message = ''
+          nixhold.secrets.${name}: homePath is only meaningful with
+          owner = "user" (got owner = "${s.owner}").
+        '';
+      }
+      {
+        assertion = !s.sshKey || s.owner == "user";
+        message = ''
+          nixhold.secrets.${name}: sshKey marks an operator-owned
+          key; it requires owner = "user" (got owner = "${s.owner}").
+        '';
+      }
+      {
+        assertion = s.unit == null || (s.homePath == null && !s.sshKey);
+        message = ''
+          nixhold.secrets.${name}: `unit` makes the secret a
+          systemd EnvironmentFile read as root; it cannot also be
+          an operator file in $HOME (homePath / sshKey).
+        '';
+      }
+    ]) config.nixhold.secrets
+  );
 }

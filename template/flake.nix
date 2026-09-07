@@ -19,6 +19,13 @@
       # itself can't be derived — set it to build the installer ISO.
       # layout.repoUrl = "owner/repo";
 
+      # The keys you log in to your own hosts with are fleet DATA,
+      # not a flake argument: commit the public halves to
+      # `keys/login.pub`, one per line (a hardware token's
+      # `ssh-keygen -t ed25519-sk` key, one line per token you
+      # carry). `nixhold secret edit identity` writes the fleet's own
+      # key there when the file is missing.
+
       # Declare every network your hosts talk over here. Hosts
       # reference networks by name in their `networks` field.
       networks = {

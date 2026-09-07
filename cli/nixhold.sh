@@ -30,12 +30,12 @@ export NIX_CONFIG
 . "$NIXHOLD_LIB_ROOT/lib/ssh.sh"
 # shellcheck source=lib/secrets.sh
 . "$NIXHOLD_LIB_ROOT/lib/secrets.sh"
-# shellcheck source=lib/escrow.sh
-. "$NIXHOLD_LIB_ROOT/lib/escrow.sh"
+# shellcheck source=lib/operator.sh
+. "$NIXHOLD_LIB_ROOT/lib/operator.sh"
 
-# One process-wide exit path: wipes the scratch root (host keys, the
-# repo deploy key, unwrapped identities) and runs whatever rollback a
-# verb registered with nh_at_exit. Signals run it too, so a Ctrl-C
+# One process-wide exit path: wipes the scratch root (the fleet key,
+# freshly minted host keys, the clone key, unwrapped identities) and
+# runs whatever rollback a verb registered with nh_at_exit. Signals run it too, so a Ctrl-C
 # mid-rotation is rolled back rather than left half-applied.
 trap nh_run_at_exit EXIT
 trap 'nh_run_at_exit; exit 130' INT
@@ -52,8 +52,7 @@ opens a picker when left out.
 Hosts:
   host add [<name>]                 Register a host: keys, secrets, then install.
   host install [<name>] [--remote …] Reformat a host (the picker adds "new host…").
-  host key <name> [--remote …]      Make machine and repo agree about its host key.
-  host rotate-key <name> [--remote …] New host key: escrow, rekey, install it.
+  host key <name> [--remote …]      Record the machine's live SSH host pubkey.
   host remove [<name>]              Delete a host from the fleet.
 
 Daily:
@@ -63,8 +62,10 @@ Daily:
   logs [<host>] [<service>]         Tail journald for a unit on a host.
 
 Secrets:
+  secret list [<host>] [--fleet]    No host: the fleet inventory and its keys.
   secret edit [<host>] [<name>]     Provision a missing secret, or edit one.
-  secret rekey                      Re-encrypt all secrets to current recipients.
+  secret rekey                      Re-encrypt every secret to the current keys.
+  secret rotate                     New fleet key, rekey, then deploy it out.
 
 Framework:
   iso [--flash <device>]            Build (and write) the fleet installer image.
@@ -101,12 +102,16 @@ main() {
       sub="$1"
       shift
       case "$sub" in
-        add | install | key | remove | rotate-key)
+        add | install | key | remove)
           . "$NIXHOLD_LIB_ROOT/host-$sub.sh"
-          cmd_host_"${sub//-/_}" "$@"
+          cmd_host_"$sub" "$@"
           ;;
         escrow | install-key)
           nh_err "'host $sub' was folded into 'host key <name>'"
+          exit 1
+          ;;
+        rotate-key)
+          nh_err "'host rotate-key' was folded into 'secret rotate' — host SSH keys are no longer secret recipients; 'nixhold host install' mints a fresh one, 'nixhold host key <name>' records the live one"
           exit 1
           ;;
         *)
@@ -124,7 +129,7 @@ main() {
       sub="$1"
       shift
       case "$sub" in
-        edit | rekey)
+        list | edit | rekey | rotate)
           . "$NIXHOLD_LIB_ROOT/secret-$sub.sh"
           cmd_secret_"${sub}" "$@"
           ;;

@@ -50,10 +50,14 @@ nh_fleet_view() {
   return 1
 }
 
+# Drops the fleet view AND the per-host `nixhold.secrets` memos
+# (nh_host_secrets): a roster that lost a host must not keep answering
+# for it — the recipient union of every fleet-scoped secret is
+# computed from exactly that roster.
 nh_fleet_view_reset() {
   local root
   root="$(nh_tmp_root)" || return 0
-  rm -f "$root/fleet.json"
+  rm -f "$root/fleet.json" "$root"/secrets.*.json
 }
 
 # nh_hosts [platform] — "<name> <platform>" per line, nixos first,

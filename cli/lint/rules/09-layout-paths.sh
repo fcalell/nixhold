@@ -6,10 +6,10 @@
 # the store copy always exists (it is a copy of the flake), so testing
 # it would prove nothing.
 #
-# Also: `layout.repoUrl` set with no keys/repo.key.age means the
-# installer ISO cannot clone or push the fleet repo — a warning in
-# both modes, since the deploy key is only needed once an ISO is
-# built.
+# Also: `layout.repoUrl` set with no secrets/identity.age means the
+# installer ISO has no credential to clone or push the fleet repo with
+# — a warning in both modes, since the clone key is only needed once
+# an ISO is built.
 
 worst=0
 
@@ -25,7 +25,7 @@ fi
 # demand (even under a stale override, so nothing fails late) — and a
 # fleet that authors no fleet modules/profiles legitimately has no
 # such dir.
-for key in secrets hostsFile keysDir ageRecipient ageIdentityWrapped; do
+for key in secrets hostsFile keysDir ageRecipient; do
   # stderr is NOT suppressed: exit 3 means the value resolves into
   # another flake input, and the helper's message names it.
   p="$(nh_worktree_layout_file "$key")" || {
@@ -45,13 +45,25 @@ for key in secrets hostsFile keysDir ageRecipient ageIdentityWrapped; do
   fi
 done
 
-keys_dir="$(nh_worktree_keys_dir)" || {
+# `ageIdentityWrapped` is nullOr path: a fleet whose operator seat is a
+# FIDO2 token commits no keys/operator.age and the option evaluates to
+# null. Null and "could not probe" are the same non-zero from the
+# helper, so this is a skip rather than an error — the four keys above
+# already fail loudly on an eval that is broken, and rule 04 is what
+# checks that SOME route into the ciphertexts exists.
+p="$(nh_worktree_layout_file ageIdentityWrapped 2>/dev/null)" || p=""
+if [ -n "$p" ] && [ ! -e "$p" ]; then
+  echo "VIOLATION: nixhold.layout.ageIdentityWrapped resolves to $p, which does not exist (set it to null if this fleet has no passphrase identity)"
+  worst=3
+fi
+
+sdir="$(nh_worktree_secrets_dir)" || {
   [ "$worst" -lt 2 ] && worst=2
   exit "$worst"
 }
 repo="$(nh_layout repoUrl 2>/dev/null | jq -r '. // empty')"
-if [ -n "$repo" ] && [ ! -e "$keys_dir/repo.key.age" ]; then
-  echo "WARNING: layout.repoUrl is set ($repo) but $keys_dir/repo.key.age is missing — the ISO cannot clone or push the fleet repo ('nixhold iso' generates and escrows it)"
+if [ -n "$repo" ] && [ ! -e "$sdir/identity.age" ]; then
+  echo "WARNING: layout.repoUrl is set ($repo) but $sdir/identity.age is missing — the ISO cannot clone the fleet repo, since the fleet's own identity key is what it clones with ('nixhold secret edit <host> identity' provisions it)"
 fi
 
 [ "$worst" -eq 0 ] && echo "OK: every layout path exists in the worktree"

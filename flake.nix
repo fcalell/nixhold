@@ -114,7 +114,28 @@
         let
           fixture = import ./checks/fixture { inherit inputs self; };
         in
-        nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
+        {
+          # The CLI itself, and shellcheck over every verb and library
+          # it sources. writeShellApplication only checks the two-line
+          # wrapper in cli/default.nix; the sourced files are copied
+          # into the store unread, so this is the gate that reads them.
+          nixhold = self.packages.${system}.nixhold;
+          cli-shellcheck =
+            let
+              pkgs = nixpkgs.legacyPackages.${system};
+            in
+            pkgs.runCommand "nixhold-cli-shellcheck" { nativeBuildInputs = [ pkgs.shellcheck ]; } ''
+              cd ${./cli}
+              # SC1090: the dispatcher and the lint runner source by
+              # computed name; every file they can reach is checked here
+              # directly. The locale is for shellcheck's own output —
+              # the sources carry UTF-8 in their messages.
+              export LC_ALL=C.UTF-8
+              shellcheck -x -s bash -e SC1090 ./*.sh lib/*.sh lint/rules/*.sh
+              touch $out
+            '';
+        }
+        // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
           fixture-server = fixture.nixosConfigurations.fixture-server.config.system.build.toplevel;
 
           # The internet-facing host. One caddy listener serves every
@@ -123,6 +144,14 @@
           # the firewall take for an internet endpoint are only
           # reachable here.
           fixture-gateway = fixture.nixosConfigurations.fixture-gateway.config.system.build.toplevel;
+
+          # The tailnet-only host. The framework's default SSH posture
+          # — sshd NOT opened fleet-wide, port 22 scoped to the
+          # tailscale interface, no fail2ban — is only reachable on a
+          # host that is a member of no internet-typed network, which
+          # neither of the two above is. Its stub module asserts each
+          # of those, so this check fails if the scoping regresses.
+          fixture-node = fixture.nixosConfigurations.fixture-node.config.system.build.toplevel;
 
           # The fleet's own installer image. Evaluating it covers the
           # whole ISO module — including the "THIN by contract"

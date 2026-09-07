@@ -1,4 +1,9 @@
-{ config, lib, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 # Fixture-only service that exercises the caddy exposure paths. It
 # declares the backend port only; each fixture host declares the
 # endpoints it wants on it (`expose` is an ordinary option), so one
@@ -25,5 +30,22 @@ in
 
   config = lib.mkIf cfg.enable {
     nixhold.services.fixtureweb.network.ports.web = 8088;
+
+    # A real unit, so the `unit` secret has something to attach to.
+    # It runs `true`: the check builds the closure, it never boots.
+    systemd.services.fixtureweb = {
+      description = "fixture web service (build-only stand-in)";
+      serviceConfig.ExecStart = "${pkgs.coreutils}/bin/true";
+    };
+
+    # The `unit` shape: an EnvironmentFile the service reads, owned by
+    # root at 0400 by default, with no presence in $HOME. Not required
+    # — fixture-gateway runs the same service with no ciphertext, which
+    # is the inactive branch.
+    nixhold.secrets.fixtureweb = {
+      unit = "fixtureweb";
+      required = false;
+      description = "env file for the fixture web service";
+    };
   };
 }

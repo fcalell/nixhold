@@ -11,6 +11,14 @@
 #   - Remote darwin: refused (deploy Macs locally).
 # Several hosts deploy in order; a failure on one does not abandon
 # the rest, and the verb reports the failed set at the end.
+#
+# Before the build: required secrets with no ciphertext are
+# provisioned, then the host is made to hold the fleet key. That check
+# is a `cat /etc/nixhold/fleet.pub` compared with keys/fleet.pub — free
+# when they agree, and only when they do not does the verb open
+# keys/fleet.key.age (a passphrase prompt, or a touch of the operator's
+# FIDO2 token) and install it. No rekey: every host reads every secret
+# with that one key, so a host joining the fleet changes no ciphertext.
 
 # The required-secret walk lives in the sibling verb.
 # shellcheck source=secret-edit.sh
@@ -96,7 +104,7 @@ EOF
 # macOS/MDM hostname routinely differ.
 nh_deploy_eligible() {
   local line name platform macs=0 here
-  here="$(hostname -s 2>/dev/null || hostname)"
+  here="$(nh_hostname)"
   macs="$(nh_hosts darwin | wc -l | tr -d ' ')"
   while IFS= read -r line; do
     name="${line%% *}"
@@ -122,7 +130,7 @@ nh_deploy_host() {
   arch="$(nh_host_arch "$name")"
 
   local local_host=0
-  if [ "$(hostname -s 2>/dev/null || hostname)" = "$name" ]; then
+  if [ "$(nh_hostname)" = "$name" ]; then
     local_host=1
   fi
 
@@ -134,34 +142,67 @@ nh_deploy_host() {
     return 1
   }
 
+  # The address is resolved here rather than in the nixos branch below:
+  # the fleet-key check travels over the same connection, and a host
+  # nothing can reach must fail before the build rather than after it.
+  local user addr
+  if [ "$platform" = "nixos" ] && [ "$local_host" -ne 1 ]; then
+    user="$(nh_host_eval "$name" "$platform" "nixhold.identity.username" | jq -r '.')"
+    if [ -z "$target" ]; then
+      addr="$(nh_deploy_addr "$name")"
+      [ -z "$addr" ] && {
+        nh_err "could not resolve deploy address for $name (on the tailnet yet? pass --target <addr>)"
+        return 1
+      }
+      target="${user}@${addr}"
+    else
+      case "$target" in
+        *@*) ;;
+        *) target="${user}@${target}" ;;
+      esac
+    fi
+  fi
+
+  # Then the other half of "this host must be able to read what it
+  # declares": every secret is encrypted to the ONE fleet key, so the
+  # only thing a host needs is that key at /etc/nixhold/fleet.key. The
+  # machine's own /etc/nixhold/fleet.pub says which one it holds, so
+  # this is a comparison first and an install only on a mismatch —
+  # which is what makes a routine deploy prompt for nothing.
+  local sync=()
+  if [ "$platform" = "nixos" ] && [ "$local_host" -ne 1 ] && [ -n "$target" ]; then
+    sync=(--remote "$target" --host "$name")
+  fi
+  nh_fleet_key_sync "${sync[@]}" || {
+    nh_err "$name does not hold the fleet key — it would activate unable to decrypt any secret"
+    return 1
+  }
+
   local args=("$mode")
   case "$platform" in
     nixos)
       nh_require_cmd nixos-rebuild
       [ "$dry_run" -eq 1 ] && args=(dry-build)
       if [ "$local_host" -eq 1 ]; then
-        ( cd "$root" && sudo nixos-rebuild "${args[@]}" --flake ".#$name" )
+        (cd "$root" && sudo nixos-rebuild "${args[@]}" --flake ".#$name")
       else
         # Connect as the operator user (+ --elevate=sudo), not root:
         # the hardened openssh preset is prohibit-password and no root
-        # authorized key is planted; the operator user is authorized,
-        # and the NixOS identity module grants it passwordless sudo —
-        # the remote session has no terminal to type a password into.
-        local user addr
-        user="$(nh_host_eval "$name" "$platform" "nixhold.identity.username" | jq -r '.')"
-        if [ -z "$target" ]; then
-          addr="$(nh_deploy_addr "$name")"
-          [ -z "$addr" ] && { nh_err "could not resolve deploy address for $name (on the tailnet yet? pass --target <addr>)"; return 1; }
-          target="${user}@${addr}"
-        else
-          case "$target" in *@*) ;; *) target="${user}@${target}" ;; esac
-        fi
+        # authorized key is planted, so the operator user is the only
+        # way in. Its sudo asks for a password, and the remote session
+        # has no terminal to type one into — hence
+        # --ask-elevate-password, which prompts HERE (getpass on the
+        # local tty) once per host and feeds the answer to the
+        # target's `sudo --stdin`. Same mechanism as lib/ssh.sh's
+        # nh_ssh_sudo, implemented by nixos-rebuild itself.
+        #
         # nixos-rebuild spawns its own ssh; $NIX_SSHOPTS is the only way
         # in. Pin it to $name's committed host key exactly as nh_ssh
         # does, so a deploy cannot activate a closure on whatever
-        # answered at that address. Nothing to pin (no host.pub yet, or
-        # a scratch path ssh's word-split env var cannot carry) leaves
-        # ssh on its own known_hosts, which asks rather than assumes.
+        # answered at that address. Nothing to pin (no keys/hosts/<n>.pub
+        # yet, or a scratch path ssh's word-split env var cannot carry)
+        # leaves ssh on its own known_hosts, which asks rather than
+        # assumes.
         local pin="" pinrc=0
         pin="$(nh_ssh_pin_opts "$name" "${target##*@}")" || pinrc=$?
         case "$pinrc" in
@@ -177,7 +218,8 @@ nh_deploy_host() {
           --flake "$root#$name" \
           --target-host "$target" \
           --build-host "$target" \
-          --elevate=sudo
+          --elevate=sudo \
+          --ask-elevate-password
       fi
       ;;
     darwin)
@@ -189,7 +231,7 @@ nh_deploy_host() {
         return 1
       fi
       if [ "$local_host" -ne 1 ]; then
-        nh_warn "local hostname is '$(hostname -s 2>/dev/null || hostname)', not '$name' — assuming this machine IS $name (darwin deploys are local-only)"
+        nh_warn "local hostname is '$(nh_hostname)', not '$name' — assuming this machine IS $name (darwin deploys are local-only)"
       fi
       if ! command -v darwin-rebuild >/dev/null 2>&1; then
         nh_err "darwin-rebuild not on PATH — the first activation goes through 'nixhold host install $name'"
@@ -198,7 +240,7 @@ nh_deploy_host() {
       [ "$dry_run" -eq 1 ] && args=(check)
       # nix-darwin requires root for switch (since the 25.05-era
       # activation refactor), same as the NixOS path.
-      ( cd "$root" && sudo darwin-rebuild "${args[@]}" --flake ".#$name" )
+      (cd "$root" && sudo darwin-rebuild "${args[@]}" --flake ".#$name")
       ;;
     *)
       nh_err "unsupported arch for $name: $arch"

@@ -38,7 +38,9 @@
   documentation.man.enable = lib.mkDefault false;
   documentation.nixos.enable = lib.mkDefault false;
   services.fwupd.enable = lib.mkDefault false;
-  services.fail2ban.enable = lib.mkDefault true;
+  # fail2ban is not a profile decision: the openssh module turns it on
+  # for a host that is actually on an internet-typed network, and a
+  # tailnet-only server has nothing reaching sshd to ban.
 
   environment.systemPackages = with pkgs; [
     git

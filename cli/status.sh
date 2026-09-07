@@ -22,7 +22,7 @@ cmd_status() {
   fi
 
   if [ -z "$host" ]; then
-    host="$(hostname -s 2>/dev/null || hostname)"
+    host="$(nh_hostname)"
     if ! nh_host_platform "$host" >/dev/null 2>&1; then
       if nh_tty; then
         host="$(nh_pick_host "Status of which host?")" || return 1
@@ -52,7 +52,7 @@ nh_status_host() {
     nh_err "host '$host' ($platform) does not evaluate — see the error above"
     return 1
   fi
-  if ! secrets_json="$(nh_host_eval "$host" "$platform" nixhold.secrets)"; then
+  if ! secrets_json="$(nh_host_secrets "$host" "$platform")"; then
     nh_err "host '$host' ($platform) does not evaluate — see the error above"
     return 1
   fi
@@ -76,14 +76,20 @@ nh_status_host() {
     | @tsv
   ' | awk -F'\t' '{ printf "    %-28s %-12s %-20s %s\n", $1, $2, $3, $4 }'
   echo
+  # Category and scope are what tell the operator whether a missing
+  # secret is theirs to write at all: `nixhold secret list` is the
+  # full per-secret view, this is the one-glance summary.
   printf '  secrets:\n'
-  printf '%s' "$secrets_json" | jq -r --arg dir "$sdir/hosts/$host" '
-    to_entries[]
-    | "\(.key)\t\(if .value.required then "required" else "optional" end)\t\(.value.description // "")"
-  ' | while IFS=$'\t' read -r name req desc; do
+  printf '%s' "$secrets_json" | jq -r '
+    to_entries | sort_by((.value.category // "operator"), .key)[]
+    | [ .key, (.value.category // "operator"), (.value.scope // "host"),
+        (if .value.required then "required" else "optional" end),
+        (.value.description // "") ]
+    | @tsv
+  ' | while IFS=$'\t' read -r name category scope req desc; do
     local state="missing"
-    [ -e "$sdir/hosts/$host/$name.age" ] && state="present"
-    printf '    %-24s %-8s %-8s %s\n' "$name" "$state" "$req" "$desc"
+    [ -e "$(nh_secret_file "$sdir" "$host" "$name" "$scope")" ] && state="present"
+    printf '    %-24s %-12s %-6s %-8s %-8s %s\n' "$name" "$category" "$scope" "$state" "$req" "$desc"
   done
 }
 
@@ -91,19 +97,22 @@ nh_status_host() {
 # continues — one broken host must not hide the rest of the fleet —
 # but the verb's exit status remembers it.
 nh_status_row() {
-  local host="$1" platform="$2" services_json secrets_json services secrets missing sdir
+  local host="$1" platform="$2" services_json secrets_json services secrets missing sdir name
   sdir="$(nh_worktree_secrets_dir)" || return 1
   if ! services_json="$(nh_host_eval "$host" "$platform" nixhold.services 2>/dev/null)" \
-    || ! secrets_json="$(nh_host_eval "$host" "$platform" nixhold.secrets 2>/dev/null)"; then
+    || ! secrets_json="$(nh_host_secrets "$host" "$platform" 2>/dev/null)"; then
     printf '%-16s %-8s %-9s %-8s %s\n' "$host" "$platform" eval-err eval-err ""
     return 1
   fi
   services="$(printf '%s' "$services_json" | jq '[.[] | select(.enable // false)] | length')"
   secrets="$(printf '%s' "$secrets_json" | jq 'length')"
   missing=0
-  for name in $(printf '%s' "$secrets_json" | jq -r 'keys[]'); do
-    [ -e "$sdir/hosts/$host/$name.age" ] || missing=$((missing + 1))
-  done
+  local scope
+  while IFS=$'\t' read -r name scope; do
+    [ -n "$name" ] || continue
+    [ -e "$(nh_secret_file "$sdir" "$host" "$name" "$scope")" ] || missing=$((missing + 1))
+  done < <(printf '%s' "$secrets_json" | jq -r '
+    to_entries[] | [ .key, (.value.scope // "host") ] | @tsv')
   printf '%-16s %-8s %-9s %-8s %s\n' "$host" "$platform" "$services" "$secrets" "$([ "$missing" -eq 0 ] || printf '%s missing' "$missing")"
 }
 

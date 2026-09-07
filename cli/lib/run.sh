@@ -85,12 +85,13 @@ nh_fleet_root() {
 # checkout doesn't exist yet (first login after an ISO install), so
 # offer to clone $NIXHOLD_REPO_URL ("owner/repo", github.com assumed)
 # there. Runs through nh_repo_git: the installer image clones over the
-# repo deploy key it bakes, a fleet machine over the operator's own
-# credentials. Interactive by construction: no TTY means no offer.
+# fleet's own `identity` key, which it bakes; a fleet machine over the
+# operator's own credentials. Interactive by construction: no TTY
+# means no offer.
 _NH_CLONING=0
 nh_clone_fleet() {
   local dir="$1" repo="${NIXHOLD_REPO_URL:-}" remote reply=""
-  # Unwrapping the deploy key can walk back through nh_fleet_root (the
+  # Unwrapping the clone key can walk back through nh_fleet_root (the
   # identity may live in the fleet), which would land here again on a
   # machine that has no checkout yet. One attempt per process.
   if [ "$_NH_CLONING" = "1" ]; then
@@ -127,7 +128,7 @@ nh_clone_fleet() {
   _NH_CLONING=1
   if ! nh_repo_git clone "$remote" "$dir" >&2; then
     _NH_CLONING=0
-    nh_err "clone of $remote failed — check the fleet repo credentials (deploy key on the installer, your own SSH key otherwise)"
+    nh_err "clone of $remote failed — check the fleet repo credentials (the fleet identity key on the installer, your own SSH key otherwise)"
     return 1
   fi
   _NH_CLONING=0
@@ -159,18 +160,22 @@ nh_host_eval() {
   nix eval --json --no-warn-dirty "$root#$set.$host.config.$path"
 }
 
-# The operator identity lives in the fleet (layout.ageIdentityWrapped).
+# The passphrase-wrapped operator identity lives in the fleet
+# (layout.ageIdentityWrapped), on a fleet that has one at all — an
+# operator whose only seat is a FIDO2 token commits none.
 # $NIXHOLD_IDENTITY_FILE names an out-of-tree copy of the wrapped
-# identity when one exists — the installer ISO bakes one — and is
-# otherwise empty.
+# identity when one exists — the installer ISO bakes one when the
+# fleet has one — and is otherwise empty.
 NIXHOLD_IDENTITY_FILE="${NIXHOLD_IDENTITY_FILE:-}"
 export NIXHOLD_IDENTITY_FILE
 
-# Per-host private-key cache (host SSH key + host age identity).
-# Survives `host remove` so the operator can recover. Honors a
-# pre-set value (useful for tests / multiple isolated fleets).
-NIXHOLD_CACHE_DIR="${NIXHOLD_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/nixhold}"
-export NIXHOLD_CACHE_DIR
+# The CLONE credential: the fleet's own `identity` ssh key, still
+# encrypted. The installer ISO bakes `secrets/identity.age` and points
+# this at it; `host install --repo/--keys` sets it from the directory
+# the operator brought. Empty everywhere else — a fleet machine clones
+# and pushes on the operator's own credentials.
+NIXHOLD_CLONE_KEY_FILE="${NIXHOLD_CLONE_KEY_FILE:-}"
+export NIXHOLD_CLONE_KEY_FILE
 
 nh_require_cmd() {
   for c in "$@"; do
@@ -184,15 +189,35 @@ nh_require_cmd() {
 # ---------------------------------------------------------------------
 # Process-scoped scratch space + exit handlers.
 #
-# Key material (host keys, the repo deploy key, the unwrapped operator
+# Key material (host keys, the fleet key, the clone key, the unwrapped
 # identity) is staged under ONE 0700 directory keyed on the CLI's pid,
 # wiped by a single EXIT handler installed by the dispatcher. Deriving
 # the root from $$ rather than a shell variable is what makes it usable
 # from command substitution: `d="$(nh_tmpdir …)"` runs in a subshell,
 # where an appended array — or a trap — would be thrown away.
 
+# nh_scratch_root_path — where the process scratch root lives (it may
+# not exist yet). $XDG_RUNTIME_DIR first: on a systemd login that is a
+# per-user 0700 tmpfs, wiped at logout and never written to a disk —
+# which is where plaintext host keys and unwrapped identities belong.
+# A session without one (a Mac, a bare `su`, cron), or a runtime dir
+# that is not a directory this uid owns, falls back to $TMPDIR/tmp,
+# where the 0700 + ownership checks below are the whole guarantee.
+#
+# `$$` is the CLI's pid even when read from a subshell, so every caller
+# — including the command substitutions in nh_tmpdir — agrees on the
+# path, and the dispatcher's single exit handler wipes exactly it.
+nh_scratch_root_path() {
+  local base="${TMPDIR:-/tmp}"
+  if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR" ] && [ -O "$XDG_RUNTIME_DIR" ]; then
+    base="$XDG_RUNTIME_DIR"
+  fi
+  printf '%s/nixhold-%s' "$base" "$$"
+}
+
 nh_tmp_root() {
-  local root="${TMPDIR:-/tmp}/nixhold-$$"
+  local root
+  root="$(nh_scratch_root_path)"
   # Plain `mkdir`, not `mkdir -p`: the parent always exists, and -p
   # would happily adopt whatever already sits at $root — a symlink, or
   # another user's directory. A failing mkdir is therefore either the
@@ -200,7 +225,7 @@ nh_tmp_root() {
   # real directory, owned by this uid) or an entry we must refuse.
   if ! mkdir "$root" 2>/dev/null; then
     if [ -L "$root" ] || [ ! -d "$root" ] || [ ! -O "$root" ]; then
-      nh_err "cannot stage key material in $root — either ${TMPDIR:-/tmp} is not writable, or something already sits at that path that is not a directory of ours (remove it, or point \$TMPDIR elsewhere)"
+      nh_err "cannot stage key material in $root — either its parent is not writable, or something already sits at that path that is not a directory of ours (remove it, or point \$TMPDIR elsewhere)"
       return 1
     fi
   fi
@@ -214,7 +239,7 @@ nh_tmp_root() {
 nh_tmpdir() {
   local label="${1:-tmp}" root d
   root="$(nh_tmp_root)" || {
-    nh_err "could not create the scratch directory under ${TMPDIR:-/tmp}"
+    nh_err "could not create the scratch directory at $(nh_scratch_root_path)"
     return 1
   }
   d="$(mktemp -d "$root/$label.XXXXXX")" || {
@@ -247,7 +272,8 @@ nh_run_at_exit() {
   for f in $_NH_EXIT_HANDLERS; do
     "$f" || true
   done
-  local root="${TMPDIR:-/tmp}/nixhold-$$"
+  local root
+  root="$(nh_scratch_root_path)"
   [ -d "$root" ] && rm -rf "$root"
   return 0
 }
@@ -271,63 +297,63 @@ nh_sudo() {
   fi
 }
 
-# nh_repo_deploy_key — plaintext path of the fleet repo's deploy key,
-# or nothing.
+# nh_clone_key — plaintext path of the credential git clones and
+# pushes with, or nothing.
 #
-#   0 + path   a deploy key is in hand (installer environment)
+#   0 + path   a clone key is in hand (installer environment)
 #   1          none configured — use the operator's own credentials
 #   2          one is configured but unusable (reported)
 #
-# The installer image bakes keys/repo.key.age and points
-# $NIXHOLD_REPO_KEY_FILE at it; the operator passphrase is what turns
-# it into a usable key, so the decrypt happens once per CLI process
-# into the scratch root (tmpfs on the ISO) and is wiped on exit. Off
-# the ISO nothing is configured and git runs on the operator's own SSH
-# credentials — a fleet machine has them already.
-nh_repo_deploy_key() {
-  local src="${NIXHOLD_REPO_KEY_FILE:-}" root out
+# The credential is the fleet's OWN `identity` ssh key: it is already
+# registered on every forge the fleet's repositories name, so a
+# separate repo deploy key bought nothing but a second key to rotate.
+# The installer image bakes `secrets/identity.age` and points
+# $NIXHOLD_CLONE_KEY_FILE at it; the operator's seat — the passphrase,
+# or the token — is what turns it into a usable key, so the decrypt
+# happens once per CLI process into the scratch root (tmpfs on the ISO)
+# and is wiped on exit. Off the ISO nothing is configured and git runs
+# on the operator's own SSH credentials — a fleet machine has them
+# already.
+nh_clone_key() {
+  local src="${NIXHOLD_CLONE_KEY_FILE:-}" root out
   if [ -z "$src" ] && nh_installer_env; then
-    src="/etc/nixhold/keys/repo.key.age"
+    src="/etc/nixhold/keys/identity.age"
     [ -f "$src" ] || src=""
   fi
   [ -n "$src" ] || return 1
   if [ ! -f "$src" ]; then
-    nh_err "no repo deploy key at $src (from \$NIXHOLD_REPO_KEY_FILE) — the installer image is incomplete"
+    nh_err "no clone key at $src (from \$NIXHOLD_CLONE_KEY_FILE) — the installer image is incomplete"
     return 2
   fi
   root="$(nh_tmp_root)" || {
-    nh_err "could not create the scratch directory for the repo deploy key"
+    nh_err "could not create the scratch directory for the clone key"
     return 2
   }
-  out="$root/repo-deploy.key"
+  out="$root/clone.key"
   if [ -s "$out" ]; then
     printf '%s' "$out"
     return 0
   fi
   nh_require_cmd age ssh git || return 2
 
-  # Subshell + trap: the unwrapped operator identity never outlives the
-  # decrypt. errexit is off in here (the caller tests our status), so
-  # every step exits explicitly.
+  # Subshell: the key's plaintext is written 0600 before it is moved
+  # into place. errexit is off in here (the caller tests our status),
+  # so every step exits explicitly.
   if ! (
     set -euo pipefail
-    idfile="$(mktemp "$root/id.XXXXXX")" || exit 1
-    chmod 600 "$idfile" || exit 1
-    trap 'rm -f "$idfile"' EXIT
-    nh_unwrap_identity "$idfile" || exit 1
-    age -d -i "$idfile" -o "$out.tmp" "$src" || exit 1
+    nh_age_decrypt "$src" "$out.tmp" || exit 1
     chmod 600 "$out.tmp" || exit 1
   ); then
     rm -f "$out.tmp"
-    nh_err "could not decrypt the repo deploy key at $src (wrong passphrase, or it predates the current operator key)"
+    nh_err "could not decrypt the clone key at $src (the operator's seat did not open it, or it predates the current operator key)"
     return 2
   fi
   if ! mv "$out.tmp" "$out"; then
     rm -f "$out.tmp"
-    nh_err "could not stage the decrypted repo deploy key at $out"
+    nh_err "could not stage the decrypted clone key at $out"
     return 2
   fi
-  nh_info "using the fleet repo deploy key from $src"
+  nh_info "using the fleet identity key from $src to reach the fleet repo"
   printf '%s' "$out"
 }
 
@@ -336,17 +362,18 @@ nh_repo_deploy_key() {
 # credential choice is made in exactly one place. Purely local git
 # (add, commit, rev-parse) keeps calling git directly.
 #
-# The deploy key is not written into the clone as core.sshCommand: its
+# The clone key is not written into the clone as core.sshCommand: its
 # plaintext lives in this process's scratch root, so a persisted
 # command would point at a path the next invocation has already wiped.
 nh_repo_git() {
   local key="" rc=0 sshcmd
-  key="$(nh_repo_deploy_key)" || rc=$?
+  key="$(nh_clone_key)" || rc=$?
   case "$rc" in
     0)
       # git re-splits GIT_SSH_COMMAND through the shell, so the key path
-      # is quoted for it: the scratch root lives under $TMPDIR, which is
-      # the operator's and may contain spaces.
+      # is quoted for it: the scratch root lives under
+      # $XDG_RUNTIME_DIR or $TMPDIR, either of which is the operator's
+      # and may contain spaces.
       printf -v sshcmd 'ssh -i %q -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new' "$key"
       GIT_SSH_COMMAND="$sshcmd" git "$@"
       return $?
@@ -398,7 +425,7 @@ nh_commit_paths() {
 # next operator never sees it. Elsewhere pushing is the operator's:
 # every verb commits, only the ISO pushes.
 # nh_repo_git, not git: on the installer the push rides the baked
-# deploy key.
+# fleet identity key.
 nh_push_if_installer() {
   local root="$1"
   nh_installer_env || return 0
@@ -418,4 +445,11 @@ nh_stage_for_eval() {
   git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
   git -C "$root" add --intent-to-add -- "$@" 2>/dev/null ||
     nh_warn "git add of the generated files failed — 'git add' them before evaluating"
+}
+
+# nh_hostname -> this machine's short hostname. `uname -n` rather than
+# `hostname`: the latter is not in the CLI's runtimeInputs, and on a
+# minimal NixOS it is not on PATH at all.
+nh_hostname() {
+  uname -n | cut -d. -f1
 }

@@ -6,31 +6,76 @@
 #                              a terminal; paste is the editor path)
 #               template set:  prefill $EDITOR with it, encrypt what's saved
 #               neither:       open an empty $EDITOR, encrypt what's saved
-#   present  -> decrypt with the operator identity, open $EDITOR,
-#               re-encrypt to the current recipient set
-# No <host>: pick one. No <name>: every missing secret on the host is
-# provisioned in one numbered walk — the plan is printed before the
-# first editor opens, because once $EDITOR owns the screen the buffer
-# name <host>.<name> in its titlebar is the only identification left —
-# and when nothing is missing the existing secrets are offered to edit.
-# Idempotent: existing ciphertexts are never re-provisioned. Secrets
-# with `sshIdentity = true` also get their derived pubkey committed as
-# keys/hosts/<host>/identity.pub. Every ciphertext written is staged
-# the moment it lands (an untracked file is invisible to the
-# dirty-flake eval that must read it next) and committed at the end.
+#   present  -> decrypt with the operator's seat, open $EDITOR,
+#               re-encrypt to the fleet's recipient set
+#
+# Arguments. Two of them are `<host> <name>`. ONE is whichever it
+# matches: a host name opens that host's walk, anything else is taken
+# as a SECRET name and resolved across the fleet — a fleet-scoped
+# secret is `secrets/<name>.age` and needs no host at all, a
+# host-scoped one declared on exactly one host resolves to that host,
+# and one declared on several opens a picker. None opens the host
+# picker.
+#
+# The walk (no name) prints the plan exactly as `secret list` renders
+# it before the first editor opens — once $EDITOR owns the screen the
+# buffer name <host>.<name> in its titlebar is the only identification
+# left. It prompts only for **required and missing** secrets; an
+# optional one is listed with the command that would provision it, and
+# never opens an editor unasked — most of a fleet's secrets are
+# optional (`identity`, `env`, every repository's), and prompting for
+# each would make provisioning one a chore of skipping the rest. The
+# named form works for anything declared, optional included. When
+# nothing is required-missing, the existing secrets are offered to edit.
+#
+# Scope decides WHERE, and only where: a host secret is
+# `secrets/<host>/<name>.age`, a fleet secret the single
+# `secrets/<name>.age`. Both are encrypted to the same set — every
+# operator recipient line plus keys/fleet.pub — so nothing here
+# computes a per-host recipient list, and adding a host rekeys nothing.
+#
+# Idempotent: existing ciphertexts are never re-provisioned. The
+# framework-declared `identity` secret — fleet-scoped, one key for
+# every host — is also the fleet's login key when nothing else is
+# authorized: writing it fills in keys/login.pub if that file is
+# missing or empty. Every file written is staged the moment it lands
+# (an untracked file is invisible to the dirty-flake eval that must
+# read it next) and committed at the end.
 #
 # The required-secret walk `deploy` and `host install` run before a
 # build lives here too (nh_provision_required_secrets).
 
+# The grouped plan is `secret list`'s renderer.
+# shellcheck source=secret-list.sh
+. "$NIXHOLD_LIB_ROOT/secret-list.sh"
+
 cmd_secret_edit() {
-  local host="${1:-}" name="${2:-}"
-  if [ "$host" = "-h" ] || [ "$host" = "--help" ]; then
-    echo "Usage: nixhold secret edit [<host>] [<name>]"
+  local host="" name="" resolved
+  if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+    cat <<'EOF'
+Usage: nixhold secret edit [<host>] [<name>]
+
+  <host> <name>   that secret on that host.
+  one argument    a host name opens its walk; anything else is a
+                  secret name, resolved across the fleet.
+  no argument     pick a host.
+EOF
     return 0
   fi
   nh_require_cmd age jq nix
 
-  if [ -z "$host" ]; then
+  if [ -n "${2:-}" ]; then
+    host="$1"
+    name="$2"
+  elif [ -n "${1:-}" ]; then
+    if nh_host_platform "$1" >/dev/null 2>&1; then
+      host="$1"
+    else
+      resolved="$(nh_secret_resolve_name "$1")" || return 1
+      host="${resolved%%$'\t'*}"
+      name="$1"
+    fi
+  else
     if ! nh_tty; then
       nh_err "expected: nixhold secret edit <host> [<name>]"
       return 1
@@ -44,14 +89,14 @@ cmd_secret_edit() {
     return 1
   }
   sdir="$(nh_worktree_secrets_dir)" || return 2
-  json="$(nh_host_eval "$host" "$platform" nixhold.secrets)" || return 2
+  json="$(nh_host_secrets "$host" "$platform")" || return 2
 
   if [ -n "$name" ]; then
     if ! printf '%s' "$json" | jq -e --arg n "$name" 'has($n)' >/dev/null 2>&1; then
       nh_err "secret '$name' is not declared on $host (add nixhold.secrets.$name first)"
       return 1
     fi
-    if [ -e "$sdir/hosts/$host/$name.age" ]; then
+    if [ -e "$(nh_secret_file "$sdir" "$host" "$name" "$(nh_secret_scope "$json" "$name")")" ]; then
       nh_secret_edit_one "$host" "$json" "$sdir" "$name"
     else
       nh_secret_provision "$host" "$json" "$sdir" "$name"
@@ -59,27 +104,85 @@ cmd_secret_edit() {
     return $?
   fi
 
-  local missing=() present=() n
-  while IFS= read -r n; do
-    [ -n "$n" ] || continue
-    if [ -e "$sdir/hosts/$host/$n.age" ]; then present+=("$n"); else missing+=("$n"); fi
-  done < <(printf '%s' "$json" | jq -r 'keys[]')
+  # The plan first, in `secret list`'s grouping: it is the same
+  # question ("what does this host want, and what has it got"), and
+  # the walk below is exactly what its status column says.
+  nh_secret_list_host "$host" "$platform" || return $?
+  echo
 
-  if [ "${#missing[@]}" -gt 0 ]; then
-    nh_secret_provision "$host" "$json" "$sdir" "${missing[@]}"
-    return $?
+  local required_missing=() optional=() present=() n req scope
+  while IFS=$'\t' read -r n scope req; do
+    [ -n "$n" ] || continue
+    if [ -e "$(nh_secret_file "$sdir" "$host" "$n" "$scope")" ]; then
+      present+=("$n")
+    elif [ "$req" = "true" ]; then
+      required_missing+=("$n")
+    else
+      optional+=("$n")
+    fi
+  done < <(printf '%s' "$json" | jq -r '
+    to_entries | sort_by(.key)[]
+    | [ .key, (.value.scope // "host"), (.value.required | tostring) ] | @tsv')
+
+  local rc=0
+  if [ "${#required_missing[@]}" -gt 0 ]; then
+    nh_secret_provision "$host" "$json" "$sdir" "${required_missing[@]}" || rc=$?
   fi
+  # Optional ones are named, never opened: the command that would
+  # provision one is the whole prompt.
+  for n in "${optional[@]:-}"; do
+    [ -n "$n" ] || continue
+    nh_info "optional, not provisioned: $n — provision with 'nixhold secret edit $host $n'"
+  done
+  [ "$rc" -eq 0 ] || return "$rc"
+  [ "${#required_missing[@]}" -eq 0 ] || return 0
+
   if [ "${#present[@]}" -eq 0 ]; then
-    nh_info "no secrets declared on $host"
+    nh_info "nothing required is missing on $host"
     return 0
   fi
   if ! nh_tty; then
-    nh_info "every declared secret on $host has a ciphertext — name one to edit it: nixhold secret edit $host <name>"
+    nh_info "nothing required is missing on $host — name a secret to edit it: nixhold secret edit $host <name>"
     return 0
   fi
-  nh_info "every declared secret on $host has a ciphertext"
+  nh_info "nothing required is missing on $host"
   name="$(gum choose --header "Edit which secret on $host?" "${present[@]}")" || return 1
   nh_secret_edit_one "$host" "$json" "$sdir" "$name"
+}
+
+# nh_secret_resolve_name <name> — which host to edit <name> through,
+# as "<host>\t<scope>" on stdout. A fleet-scoped secret has ONE
+# ciphertext, so any declarer is the same file and the first is taken.
+# A host-scoped one is a file per host: exactly one declarer resolves,
+# several open a picker (and, with nobody to ask, are listed rather
+# than guessed at).
+nh_secret_resolve_name() {
+  local name="$1" rows fleet hosts count
+  rows="$(nh_secret_declarers "$name")" || true
+  if [ -z "$rows" ]; then
+    nh_err "'$name' is neither a host in this fleet nor a secret any host declares — 'nixhold secret list' shows the inventory"
+    return 1
+  fi
+  fleet="$(printf '%s\n' "$rows" | awk -F'\t' '$2 == "fleet" { print $1; exit }')"
+  if [ -n "$fleet" ]; then
+    printf '%s\tfleet' "$fleet"
+    return 0
+  fi
+  hosts="$(printf '%s\n' "$rows" | awk -F'\t' 'NF { print $1 }' | sort -u)"
+  count="$(printf '%s\n' "$hosts" | grep -c .)"
+  if [ "$count" -eq 1 ]; then
+    printf '%s\thost' "$hosts"
+    return 0
+  fi
+  if ! nh_tty; then
+    nh_err "'$name' is declared on several hosts ($(printf '%s' "$hosts" | paste -sd' ' -)) and each has its own ciphertext — name the host: nixhold secret edit <host> $name"
+    return 1
+  fi
+  local pick
+  # shellcheck disable=SC2086 # host names, split on purpose
+  pick="$(gum choose --header "'$name' on which host?" $hosts)" || return 1
+  [ -n "$pick" ] || return 1
+  printf '%s\thost' "$pick"
 }
 
 # nh_secret_provision <host> <secrets-json> <secrets-dir> <name…> —
@@ -101,18 +204,33 @@ nh_secret_provision() {
   root="$(nh_fleet_root)" || return 1
   keys_dir="$(nh_worktree_keys_dir 2>/dev/null)" || keys_dir=""
 
-  # Warm the recipient-check probes HERE: each per-secret subshell
-  # below inherits the memo but cannot write it back, so probing lazily
-  # would re-run those nix evals once per secret.
+  # Warm the recipient probes and settle the fleet key HERE: each
+  # per-secret subshell below inherits the memo but cannot write it
+  # back, so a lazy probe would re-run those nix evals once per secret
+  # — and a fleet key minted inside a subshell would be minted again by
+  # the next one.
   nh_probe_recipient_inputs
+  nh_fleet_key_ensure || return 1
 
   # Iterated over "$@", not a here-string-fed `read` loop: a redirect
   # on the loop would hand $EDITOR (and the gate prompt) a stdin that
   # is not the operator's terminal.
-  local added=0 failed=0 rc idx=0 target generator template desc sshkey choice written=()
+  local added=0 failed=0 rc idx=0 target scope generator template desc sshkey choice
+  local written=()
   for name in "$@"; do
     idx=$((idx + 1))
-    target="$sdir/hosts/$host/$name.age"
+    scope="$(nh_secret_scope "$json" "$name")"
+    target="$(nh_secret_file "$sdir" "$host" "$name" "$scope")"
+    # Provisioning is for a secret that has NO ciphertext: `age -R -o`
+    # truncates whatever sits at the target, so an existing one is
+    # never walked into. The realistic case is fleet scope — one
+    # ciphertext for the whole fleet, so every host after the first
+    # that declares it finds it already there, and the walk must be a
+    # no-op rather than an overwrite.
+    if [ -e "$target" ]; then
+      nh_info "[$idx/$total] $name already provisioned at $target — left as it is (edit it with 'nixhold secret edit $host $name')"
+      continue
+    fi
     generator="$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].generator // ""')"
     template="$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].template // ""')"
     desc="$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].description // ""')"
@@ -159,7 +277,7 @@ nh_secret_provision() {
       : >"$tmp"
       chmod 600 "$tmp"
 
-      nh_recipients_file "$json" "$host" "$name" "$rfile" || exit 1
+      nh_recipients_file "$rfile" || exit 1
       if [ -n "$generator" ]; then
         # The generator is operator-declared config; run it in this
         # already-isolated subshell rather than spawning an external
@@ -191,6 +309,14 @@ nh_secret_provision() {
         exit 2
       fi
       mkdir -p "$(dirname "$target")" || exit 1
+      # Re-checked with the plaintext in hand: the editor (or the
+      # generator's prompt) can have taken minutes, and a fleet
+      # ciphertext provisioned meanwhile — from another terminal, or by
+      # the same walk on another host — must not be truncated here.
+      if [ -e "$target" ]; then
+        nh_warn "$target appeared while $name was being written — NOT overwritten (edit it with 'nixhold secret edit $host $name')"
+        exit 2
+      fi
       if ! age -R "$rfile" -o "$target" "$tmp"; then
         rm -f "$target"
         nh_err "encryption of $target failed"
@@ -198,8 +324,11 @@ nh_secret_provision() {
       fi
       nh_ok "encrypted $target"
       nh_stage_for_eval "$root" "$target"
-      if [ "$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].sshIdentity // false')" = "true" ]; then
-        nh_commit_identity_pub "$host" "$tmp" || true
+      # The framework declares `identity` on every host and nothing
+      # else mints an outbound key: on a fleet that authorizes nobody
+      # yet, its pubkey becomes keys/login.pub.
+      if [ "$name" = "identity" ]; then
+        nh_login_pub_default_from_identity "$tmp" || true
       fi
     ) || rc=$?
     case "$rc" in
@@ -219,8 +348,9 @@ nh_secret_provision() {
     # The fleet's commit hook caps a header at 60 characters, so a batch
     # whose names overflow it commits as a count instead.
     [ "${#header}" -le 60 ] || header="secrets($host): provision $added secret(s)"
-    nh_commit_paths "$root" "$header" \
-      "${written[@]}" ${keys_dir:+"$keys_dir/hosts/$host/identity.pub"}
+    local commit=("${written[@]}")
+    [ -z "$keys_dir" ] || commit+=("$keys_dir/login.pub" "$keys_dir/fleet.key.age" "$keys_dir/fleet.pub")
+    nh_commit_paths "$root" "$header" "${commit[@]}"
   elif [ "$failed" -eq 0 ]; then
     nh_info "nothing provisioned on $host ($total skipped)"
   fi
@@ -236,8 +366,9 @@ nh_secret_provision() {
 # Checked explicitly rather than through errexit: -e is ignored in a
 # subshell whose exit code the caller tests.
 nh_secret_edit_one() {
-  local host="$1" json="$2" sdir="$3" name="$4" target
-  target="$sdir/hosts/$host/$name.age"
+  local host="$1" json="$2" sdir="$3" name="$4" target scope
+  scope="$(nh_secret_scope "$json" "$name")"
+  target="$(nh_secret_file "$sdir" "$host" "$name" "$scope")"
   (
     set -euo pipefail
     # One 0700 dir so the buffer can carry an identifying name
@@ -249,20 +380,14 @@ nh_secret_edit_one() {
     # alike.
     workdir="$(nh_tmpdir secret)" || exit 2
     rfile="$workdir/recipients"
-    idfile="$workdir/identity"
     safe="$host.$name"
     safe="${safe//[^A-Za-z0-9._-]/_}"
     tmp="$workdir/$safe"
-    : >"$idfile"
     : >"$tmp"
-    chmod 600 "$idfile" "$tmp"
+    chmod 600 "$tmp"
 
-    nh_recipients_file "$json" "$host" "$name" "$rfile" || exit 1
-    nh_unwrap_identity "$idfile" || exit 1
-    age -d -i "$idfile" -o "$tmp" "$target" || {
-      nh_err "could not decrypt $target with the operator identity"
-      exit 1
-    }
+    nh_recipients_file "$rfile" || exit 1
+    nh_age_decrypt "$target" "$tmp" || exit 1
     # The plaintext is encrypted back byte-for-byte, so nothing is ever
     # prefilled into the buffer: identity lives in its filename.
     nh_info "opening $(nh_editor_cmd) for $host/$name"
@@ -280,7 +405,15 @@ nh_secret_edit_one() {
       exit 1
     }
     nh_ok "updated $target"
-    nh_commit_paths "$(nh_fleet_root)" "secrets($host): update $name" "$target"
+    local paths=("$target")
+    if [ "$name" = "identity" ]; then
+      nh_login_pub_default_from_identity "$tmp" || true
+      local login
+      if login="$(nh_login_pub_file 2>/dev/null)"; then
+        paths+=("$login")
+      fi
+    fi
+    nh_commit_paths "$(nh_fleet_root)" "secrets($host): update $name" "${paths[@]}"
     nh_info "next: nixhold deploy $host"
   )
 }
@@ -290,14 +423,15 @@ nh_secret_edit_one() {
 # only when the host can't be probed at all (an absent ciphertext is
 # data, not an error).
 nh_missing_secrets() {
-  local host="$1" platform="$2" required="${3:-0}" sdir json name
+  local host="$1" platform="$2" required="${3:-0}" sdir json name scope
   sdir="$(nh_worktree_secrets_dir)" || return 1
-  json="$(nh_host_eval "$host" "$platform" nixhold.secrets 2>/dev/null)" || return 1
-  while IFS= read -r name; do
+  json="$(nh_host_secrets "$host" "$platform" 2>/dev/null)" || return 1
+  while IFS=$'\t' read -r name scope; do
     [ -n "$name" ] || continue
-    [ -e "$sdir/hosts/$host/$name.age" ] || printf '%s\n' "$name"
+    [ -e "$(nh_secret_file "$sdir" "$host" "$name" "$scope")" ] || printf '%s\n' "$name"
   done < <(printf '%s' "$json" | jq -r --argjson req "$required" \
-    'to_entries[] | select($req == 0 or .value.required) | .key')
+    'to_entries[] | select($req == 0 or .value.required)
+     | [ .key, (.value.scope // "host") ] | @tsv')
 }
 
 # nh_provision_required_secrets <host> <platform> — what `deploy` and
@@ -311,18 +445,95 @@ nh_provision_required_secrets() {
   [ -n "$missing" ] || return 0
   nh_warn "required secrets missing on $host — provisioning them first"
   # shellcheck disable=SC2086 # names are attr names, split on purpose
-  nh_secret_provision "$host" "$(nh_host_eval "$host" "$platform" nixhold.secrets)" \
+  nh_secret_provision "$host" "$(nh_host_secrets "$host" "$platform")" \
     "$(nh_worktree_secrets_dir)" $missing
 }
 
-# nh_provision_missing_secrets <host> — the full walk `host add` runs:
-# every declared secret with no ciphertext, required or not.
+# nh_provision_missing_secrets <host> — the walk `host add` ends on.
+#
+# It provisions the required-missing secrets AND the fleet's
+# `identity` key. `identity` is `required = false` — a host must stay
+# evaluable before the fleet has one — yet minting it is part of
+# registering the FIRST machine rather than of running a service: it
+# is the key the operator registers on every forge the fleet's
+# repositories name (so the forge list is printed with it), it is what
+# the installer ISO clones with, and on a fleet that authorizes nobody
+# yet its pubkey becomes keys/login.pub. `password` needs no special
+# case: it is `required` on NixOS, so the required set already carries
+# it.
+#
+# Both are fleet-scoped, so this only ever fires on the first host
+# that declares them: the loop skips every secret whose ciphertext is
+# already in the worktree, and a later `host add` finds them there and
+# rekeys nothing — every host reads them with the one fleet key.
+#
+# Everything else optional — `env`, every repository's env — is named
+# with the command that provisions it and never opens an editor here:
+# those are fleet-wide, provisioned once from any host, and a
+# registration that turned into a dozen editors to skip would be a
+# worse walk.
 nh_provision_missing_secrets() {
-  local host="$1" platform missing
+  local host="$1" platform json sdir wanted=() optional=() n scope required rc=0
   platform="$(nh_host_platform "$host")" || return 1
-  missing="$(nh_missing_secrets "$host" "$platform")" || return 1
-  [ -n "$missing" ] || return 0
-  # shellcheck disable=SC2086 # names are attr names, split on purpose
-  nh_secret_provision "$host" "$(nh_host_eval "$host" "$platform" nixhold.secrets)" \
-    "$(nh_worktree_secrets_dir)" $missing
+  json="$(nh_host_secrets "$host" "$platform")" || return 1
+  sdir="$(nh_worktree_secrets_dir)" || return 1
+  while IFS=$'\t' read -r n scope required; do
+    [ -n "$n" ] || continue
+    [ -e "$(nh_secret_file "$sdir" "$host" "$n" "$scope")" ] && continue
+    # The literal `identity` is a framework declaration, so the CLI
+    # may name it — the rule that names never carry behaviour is about
+    # operator-chosen names.
+    if [ "$required" = "true" ] || [ "$n" = "identity" ]; then
+      wanted+=("$n")
+    else
+      optional+=("$n")
+    fi
+  done < <(printf '%s' "$json" | jq -r '
+    to_entries | sort_by(.key)[]
+    | [ .key, (.value.scope // "host"), (.value.required | tostring) ] | @tsv')
+
+  if [ "${#wanted[@]}" -gt 0 ]; then
+    nh_secret_provision "$host" "$json" "$sdir" "${wanted[@]}" || rc=$?
+    # The key is only useful once it is registered where it is used;
+    # the fleet already knows which forges those are.
+    case " ${wanted[*]} " in
+      *" identity "*) nh_announce_forges ;;
+    esac
+  fi
+  for n in "${optional[@]:-}"; do
+    [ -n "$n" ] || continue
+    nh_info "optional, not provisioned: $n — provision with 'nixhold secret edit $host $n'"
+  done
+  return "$rc"
+}
+
+# nh_announce_forges — after the fleet mints its `identity` key, name
+# the forges its declared repositories reach over ssh, so the operator
+# knows where the pubkey the generator just printed has to be
+# registered. It is also what the installer ISO clones the fleet repo
+# with, so registering it is not optional on a fleet that builds one.
+# The key is fleet-scoped, so the forges are read from EVERY host's
+# `nixhold.repositories`, not just the one being added: registering it
+# once covers the fleet. Same two URL shapes the repositories module
+# derives its matchBlocks from (scp-like and ssh://); an https URL
+# authenticates some other way and is left out. Best-effort: a fleet
+# with no repositories prints nothing, and a host that does not
+# evaluate is skipped.
+nh_announce_forges() {
+  local line h platform repos forges all=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    h="${line%% *}"
+    platform="${line##* }"
+    repos="$(nh_host_eval "$h" "$platform" nixhold.repositories 2>/dev/null)" || continue
+    forges="$(printf '%s' "$repos" | jq -r '
+      .[].url
+      | (capture("^ssh://(?<u>[^@/]+@)?(?<h>[^/:]+)").h // empty)
+      // (if test("^[A-Za-z][A-Za-z0-9+.-]*://") then empty
+          else (capture("^([^@/:]+@)?(?<h>[^/:]+):").h // empty) end)' 2>/dev/null)" || continue
+    all="$all$forges"$'\n'
+  done < <(nh_hosts)
+  forges="$(printf '%s' "$all" | grep -v '^[[:space:]]*$' | sort -u | paste -sd, - | sed 's/,/, /g')"
+  [ -n "$forges" ] || return 0
+  nh_info "register the identity pubkey above on: $forges (it is the one key the fleet uses for every declared repository, and what the installer ISO clones with)"
 }

@@ -31,6 +31,7 @@ in
           nixhold.secrets.${cfg.authKeySecret} = {
             owner = "root";
             mode = "0400";
+            category = "service";
             description = "Tailscale pre-auth key (tskey-auth-…) — create at login.tailscale.com/admin/settings/keys";
           };
           services.tailscale.authKeyFile = config.age.secrets.${cfg.authKeySecret}.path;

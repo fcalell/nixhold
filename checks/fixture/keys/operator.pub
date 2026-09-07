@@ -1,1 +1,10 @@
+# The fixture's operator has BOTH routes committed, which is the
+# shape that exercises the multi-line reader: one recipient per
+# line, every line a route to the same operator.
+#
+# A FIDO2 hardware token. Syntactically a real age plugin recipient
+# (age parses it and dispatches to age-plugin-fido2-hmac); nothing
+# in the checks decrypts, so no token has to exist.
+age1fido2-hmac1qqpw6w8fxp5ntn96nn4r7uzpmt2gz8lu80cz5k08shx7tnjfj90sx0gptlxttk846kasu8sgp7wqztgmv4sp6puhgt9fs9uwrym0j44ulv5ns5st3p75wxz2wrzvxelh9k7rjrr76pr
+# The passphrase-wrapped identity committed at keys/operator.age.
 age1gvxshq45rzfh3wvj5eu603c4ctvue4ndkjjs20cwvpyzwx64rcyqwh69pt

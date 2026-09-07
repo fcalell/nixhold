@@ -16,6 +16,13 @@ pkgs.writeShellApplication {
     openssh
     age
     rage
+    # The operator's age seat may be a FIDO2 token: age spawns the
+    # plugin for an `age1fido2-hmac1…` recipient at ENCRYPT time too
+    # (the token itself is only needed to decrypt), and libfido2's
+    # `fido2-token -L` is how the CLI tells a plugged-in token from a
+    # drawer before it commits to that route.
+    age-plugin-fido2-hmac
+    libfido2
     # The framework-declared console password secret's generator.
     mkpasswd
     rsync

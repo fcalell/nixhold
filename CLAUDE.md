@@ -60,8 +60,10 @@ checks/                synthetic fleet fixture mkFleet is run against by flake c
 ## Verify
 
 `nix flake check` is the gate: it evaluates the synthetic fleet in
-`checks/` against every module and profile, and builds the CLI,
-whose `writeShellApplication` runs shellcheck over each verb.
+`checks/` against every module and profile, builds the CLI, and
+runs shellcheck over every verb, library and lint rule the CLI
+sources (the `cli-shellcheck` check; `writeShellApplication` only
+sees the two-line wrapper).
 `nixfmt` is the formatter. Behaviour a fixture cannot reach is
 verified on the dogfood fleet, which needs that repo to point at
 this checkout and `--allow-dirty-locks`.

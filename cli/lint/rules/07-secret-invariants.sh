@@ -6,26 +6,26 @@
 #   - homePath only on operator-owned secrets (owner = "user") — the
 #     HM symlink targets the operator's $HOME.
 #   - sshKey only on operator-owned secrets.
-#   - sshIdentity implies sshKey (violated only by an explicit
-#     sshKey = false; the module defaults it on).
-#   - at most one sshIdentity secret per host (it becomes the single
-#     IdentityFile for fleet-peer ssh).
+#   - `unit` never together with homePath/sshKey: systemd reads an
+#     EnvironmentFile as root, a home symlink is the operator's.
+#   - `unit` only on a NixOS host — there are no systemd units on
+#     darwin, so the option would silently do nothing there. This one
+#     has no module assertion behind it (the darwin half simply has no
+#     `unit` wiring to assert about), which is exactly why lint owns
+#     it.
 
 worst=0
-while IFS= read -r h; do
-  [ -n "$h" ] || continue
-  platform="$(nh_host_platform "$h")" || {
-    echo "ERROR: could not resolve platform for $h — secret invariants check skipped"
-    [ "$worst" -lt 2 ] && worst=2
-    continue
-  }
-  json="$(nh_host_eval "$h" "$platform" nixhold.secrets 2>/dev/null)" || {
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  h="${line%% *}"
+  platform="${line##* }"
+  json="$(nh_host_secrets "$h" "$platform" 2>/dev/null)" || {
     echo "ERROR: could not evaluate nixhold.secrets for $h — secret invariants check skipped"
     [ "$worst" -lt 2 ] && worst=2
     continue
   }
 
-  bad="$(printf '%s' "$json" | jq -r '
+  bad="$(printf '%s' "$json" | jq -r --arg p "$platform" '
     to_entries[]
     | . as $e
     | [
@@ -33,23 +33,19 @@ while IFS= read -r h; do
           | "\($e.key) — homePath set but owner is not \"user\""),
         (select($e.value.sshKey and $e.value.owner != "user")
           | "\($e.key) — sshKey set but owner is not \"user\""),
-        (select($e.value.sshIdentity and ($e.value.sshKey | not))
-          | "\($e.key) — sshIdentity with explicit sshKey = false")
+        (select($e.value.unit != null and ($e.value.homePath != null or $e.value.sshKey))
+          | "\($e.key) — unit is a systemd EnvironmentFile read as root; it cannot also be an operator file in $HOME (homePath/sshKey)"),
+        (select($e.value.unit != null and $p != "nixos")
+          | "\($e.key) — unit = \"\($e.value.unit)\" on a \($p) host (systemd units are NixOS-only)")
       ][]')"
   if [ -n "$bad" ]; then
-    while IFS= read -r line; do
-      [ -n "$line" ] || continue
-      echo "VIOLATION: $h/$line"
+    while IFS= read -r msg; do
+      [ -n "$msg" ] || continue
+      echo "VIOLATION: $h/$msg"
       worst=3
     done <<<"$bad"
   fi
-
-  idcount="$(printf '%s' "$json" | jq '[.[] | select(.sshIdentity)] | length')"
-  if [ "$idcount" -gt 1 ]; then
-    echo "VIOLATION: $h — $idcount secrets set sshIdentity = true (at most one per host)"
-    worst=3
-  fi
-done < <(nh_all_hosts)
+done < <(nh_hosts)
 
 [ "$worst" -eq 0 ] && echo "OK: secret declaration invariants hold"
 exit "$worst"

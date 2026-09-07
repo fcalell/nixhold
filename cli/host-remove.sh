@@ -1,22 +1,54 @@
 # nixhold host remove [<name>] [--yes]
-# Deletes the host entry from `hostsFile`, plus `secrets/hosts/<name>/`
-# and `keys/hosts/<name>/`, and commits the removal. Does NOT touch
-# `hosts/<name>/` (the operator's module may be kept for a successor)
-# or `~/.cache/nixhold/host-keys/<name>/` — the operator removes those
-# manually if they want a clean break.
+#
+# Deletes the host entry from `hostsFile`, plus `hosts/<name>/` (the
+# host's own modules and facter report), `secrets/<name>/` (the
+# ciphertexts only that host declared) and `keys/hosts/<name>.pub`, and
+# commits the removal.
+#
+# NOTHING is rekeyed. Every host reads the fleet's secrets with the one
+# fleet key, so removing a host from the roster does not narrow any
+# recipient set — and the machine still holds a copy of that key at
+# /etc/nixhold/fleet.key. A machine that is being wiped takes the key
+# with it; a machine that is being kept, sold or handed on is a reason
+# to run `nixhold secret rotate` (new fleet key, everything
+# re-encrypted, `nixhold deploy` puts it on the hosts that remain).
+# That is the trade the one-fleet-key model makes, and the verb says so
+# rather than pretending a shrink happened.
+#
+# `hosts/<name>/` goes too: a host that has left the roster has no
+# module, and a successor is a new `host add`. The verb asks first
+# (unless --yes), so a module worth keeping is copied out before.
 
 cmd_host_remove() {
   local name="" yes=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --yes) yes=1; shift ;;
-      -h | --help) echo "Usage: nixhold host remove [<name>] [--yes]"; return 0 ;;
-      -*) nh_err "unknown flag: $1"; return 1 ;;
-      *) if [ -z "$name" ]; then name="$1"; shift; else nh_err "extra arg: $1"; return 1; fi ;;
+      --yes)
+        yes=1
+        shift
+        ;;
+      -h | --help)
+        echo "Usage: nixhold host remove [<name>] [--yes]"
+        return 0
+        ;;
+      -*)
+        nh_err "unknown flag: $1"
+        return 1
+        ;;
+      *)
+        if [ -z "$name" ]; then
+          name="$1"
+          shift
+        else
+          nh_err "extra arg: $1"
+          return 1
+        fi
+        ;;
     esac
   done
 
-  local root; root="$(nh_fleet_root)" || return 1
+  local root
+  root="$(nh_fleet_root)" || return 1
 
   if [ -z "$name" ]; then
     if ! nh_tty; then
@@ -30,11 +62,12 @@ cmd_host_remove() {
   # probe evals the fleet, and the worktree helpers (not raw
   # nh_layout) are required because layout.* eval to read-only
   # /nix/store source paths.
-  local secrets_dir keys_dir
+  local secrets_dir keys_dir hosts_dir
   secrets_dir="$(nh_worktree_secrets_dir)" || return 1
   keys_dir="$(nh_worktree_keys_dir)" || return 1
+  hosts_dir="$(nh_worktree_hosts_dir)" || return 1
 
-  nh_info "remove $name: its entry in hosts.nix, $secrets_dir/hosts/$name, $keys_dir/hosts/$name"
+  nh_info "remove $name: its entry in hosts.nix, $hosts_dir/$name, $secrets_dir/$name, $keys_dir/hosts/$name.pub"
   if [ "$yes" -ne 1 ] && ! nh_prompt_confirm "Remove $name from the fleet?"; then
     nh_info "aborted"
     return 0
@@ -47,7 +80,8 @@ cmd_host_remove() {
   # terminate the range early.
   local hosts_file="$root/hosts.nix"
   if [ -f "$hosts_file" ]; then
-    local tmp; tmp="$(mktemp -t nixhold-hosts-remove.XXXXXX)"
+    local tmp
+    tmp="$(mktemp -t nixhold-hosts-remove.XXXXXX)"
     awk -v name="$name" '
       BEGIN { skip = 0 }
       {
@@ -69,15 +103,20 @@ cmd_host_remove() {
     nh_fleet_view_reset
   fi
 
-  if [ -d "$secrets_dir/hosts/$name" ]; then
-    rm -rf "$secrets_dir/hosts/$name"
-    nh_ok "removed $secrets_dir/hosts/$name"
+  if [ -d "$hosts_dir/$name" ]; then
+    rm -rf "${hosts_dir:?}/$name"
+    nh_ok "removed $hosts_dir/$name"
   fi
-  if [ -d "$keys_dir/hosts/$name" ]; then
-    rm -rf "$keys_dir/hosts/$name"
-    nh_ok "removed $keys_dir/hosts/$name"
+  if [ -d "$secrets_dir/$name" ]; then
+    rm -rf "${secrets_dir:?}/$name"
+    nh_ok "removed $secrets_dir/$name"
   fi
+  if [ -e "$keys_dir/hosts/$name.pub" ]; then
+    rm -f "$keys_dir/hosts/$name.pub"
+    nh_ok "removed $keys_dir/hosts/$name.pub"
+  fi
+
   nh_commit_paths "$root" "host($name): remove" \
-    "$hosts_file" "$secrets_dir/hosts/$name" "$keys_dir/hosts/$name"
-  nh_info "next: remove hosts/$name if you keep no module for it"
+    "$hosts_file" "$hosts_dir/$name" "$secrets_dir/$name" "$keys_dir/hosts/$name.pub"
+  nh_warn "$name still holds the fleet key at /etc/nixhold/fleet.key — if that machine is not being wiped, run 'nixhold secret rotate' (new fleet key, every secret re-encrypted) and then 'nixhold deploy'"
 }

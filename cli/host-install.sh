@@ -21,10 +21,14 @@
 # hosts dispatch from arch and always run locally (see
 # nh_darwin_install); the ISO is NixOS-only.
 #
-# Host key: cache first, else the committed escrow (see lib/escrow.sh)
-# — so a reformat driven from a machine that never ran `host add` for
-# this host still lands a key agenix can decrypt with. An install that
-# used a cached key with no escrow backfills the escrow.
+# Keys: the install stages two things onto the target before it boots.
+# /etc/nixhold/fleet.key (0400 root) + /etc/nixhold/fleet.pub (0444) —
+# the one age identity every host decrypts its secrets with, so agenix
+# opens them on the first activation pass. And a FRESH ed25519 SSH host
+# key, generated here so its public half is known before first boot and
+# committed as keys/hosts/<name>.pub, which is all the fleet uses it
+# for (known_hosts pinning). Host keys are random per install and are
+# recipients of nothing: a re-image mints a new one and rekeys nothing.
 #
 # Disk: the roster field `hosts.<name>.disk`, written by the picker
 # (or --disk); the framework renders its one disko shape from it. A
@@ -60,6 +64,23 @@ nh_target_sh() {
     sh -c "$script"
   else
     nh_ssh "$remote" -- "$script"
+  fi
+}
+
+# nh_target_sudo_sh <remote> <sh-snippet> — nh_target_sh for a snippet
+# that escalates: `nh_rsudo <cmd…>` is defined for it either way.
+# Locally sudo prompts on the terminal itself; remotely the password is
+# fed to `sudo -S` on the first line of stdin (lib/ssh.sh). The target
+# is normally the installer ISO, which runs as root and escalates
+# nowhere — the escalation only matters when the operator points
+# --remote at an already-installed machine.
+nh_target_sudo_sh() {
+  local remote="$1" script="$2"
+  if [ -z "$remote" ]; then
+    sh -c "$(nh_sudo_preamble_local)
+$script"
+  else
+    nh_ssh_sudo "$remote" -- "$script" </dev/null
   fi
 }
 
@@ -243,12 +264,11 @@ nh_disk_esps() {
 nh_esp_loaders() {
   local remote="$1" part="$2"
   # shellcheck disable=SC2016 # runs on the TARGET's shell
-  nh_target_sh "$remote" '
-    if [ "$(id -u)" -eq 0 ]; then S=""; else S="sudo -n"; fi
+  nh_target_sudo_sh "$remote" '
     d="$(mktemp -d)" || exit 0
-    if $S mount -o ro "/dev/'"$part"'" "$d" 2>/dev/null; then
+    if nh_rsudo mount -o ro "/dev/'"$part"'" "$d" 2>/dev/null; then
       ls "$d/EFI" 2>/dev/null
-      $S umount "$d" 2>/dev/null
+      nh_rsudo umount "$d" 2>/dev/null
     fi
     rmdir "$d" 2>/dev/null
     exit 0' 2>/dev/null || true
@@ -357,28 +377,27 @@ nh_pick_install_host() {
   fi
 }
 
-# nh_stage_host_key <name> <dir> — resolve the host's SSH key into
-# <dir> (cache, else committed escrow) and backfill the committed pair
-# (host.pub + host.key.age) from the resolved key when the cache
-# answered and nothing is escrowed yet (principle 16: every host.pub
-# has a sibling host.key.age).
+# nh_stage_host_key <name> <dir> — a fresh SSH host key for <name> in
+# <dir> (ssh_host_ed25519_key + .pub, the names sshd wants), with the
+# public half committed as keys/hosts/<name>.pub and staged so the
+# dirty-flake eval that builds the closure can see it. The private half
+# never leaves the process scratch root and the fleet never keeps a
+# copy: it identifies the machine, and nothing is encrypted to it.
 nh_stage_host_key() {
-  local name="$1" dir="$2" keys_dir
-  nh_resolve_host_key "$name" "$dir" || return 1
-  keys_dir="$(nh_worktree_keys_dir)" || return 0
-  if [ ! -f "$keys_dir/hosts/$name/host.key.age" ]; then
-    nh_escrow_host_key "$name" "$dir/ssh_host_ed25519_key" ||
-      nh_warn "host-key escrow for $name not written — 'nixhold lint' will flag it"
-  fi
+  local name="$1" dir="$2"
+  nh_generate_host_key "$name" "$dir" || return 1
+  nh_commit_host_pub "$name" "$dir/ssh_host_ed25519_key.pub" >/dev/null || return 1
+  nh_ok "generated $name's SSH host key; its pubkey is committed as keys/hosts/$name.pub"
 }
 
 # nh_local_install <name> <root> <facter> — the ISO path: the remote
 # path's phases run in place, in the remote path's order.
 #
-# Everything that can fail or prompt — key resolution (no escrow, wrong
-# passphrase) and secret bootstrap ($EDITOR) — runs BEFORE disko
-# touches the disk. Reversed, a passphrase typo left the operator with
-# a wiped machine and nothing installed on it.
+# Everything that can fail or prompt — opening the fleet key (a wrong
+# passphrase, a token that never got touched) and secret bootstrap
+# ($EDITOR) — runs BEFORE disko touches the disk. Reversed, a
+# passphrase typo left the operator with a wiped machine and nothing
+# installed on it.
 #
 # Called as `nh_local_install … || rc=$?`, so errexit is off in here:
 # every step is checked explicitly.
@@ -392,12 +411,6 @@ nh_local_install() {
     return 1
   }
 
-  # Host key before the closure build: agenix decrypts with it on the
-  # first activation pass, which nixos-install runs.
-  local keydir
-  keydir="$(nh_tmpdir hostkey)" || return 1
-  nh_stage_host_key "$name" "$keydir" || return 1
-
   # Before the disk is touched AND before the build, so a host
   # first-boots with every required secret decryptable. Fatal, as in
   # `deploy`: activation would only fail later with a worse error.
@@ -406,11 +419,27 @@ nh_local_install() {
     return 1
   }
 
+  # The fleet key has to be readable HERE before the disk is touched:
+  # it is decrypted over the operator's route (a passphrase prompt, a
+  # token touch) and staged into the new root below. Discovered now it
+  # costs a re-run; discovered after disko it costs an erased machine.
+  local keydir
+  keydir="$(nh_tmpdir hostkey)" || return 1
+  nh_fleet_key_plain >/dev/null || {
+    nh_err "the fleet key could not be opened — nothing has been erased"
+    return 1
+  }
+
   nh_info "partitioning + mounting per $name's disko.devices"
   nh_sudo disko --mode destroy,format,mount --yes-wipe-all-disks --flake "$root#$name" || {
     nh_err "disko failed — nothing was installed"
     return 1
   }
+
+  # A fresh host key, generated after the disk exists but before the
+  # closure is built: keys/hosts/<name>.pub is committed here and the
+  # known-hosts module reads it in the very build below.
+  nh_stage_host_key "$name" "$keydir" || return 1
 
   nh_sudo install -d -m 0755 /mnt/etc/ssh || {
     nh_err "could not create /mnt/etc/ssh"
@@ -425,6 +454,13 @@ nh_local_install() {
     return 1
   }
   nh_ok "staged the host key into /mnt/etc/ssh"
+
+  # agenix decrypts with /etc/nixhold/fleet.key on the first activation
+  # pass, which nixos-install runs.
+  nh_fleet_key_install --root /mnt || {
+    nh_err "could not stage the fleet key into /mnt/etc/nixhold"
+    return 1
+  }
 
   nh_info "generating the hardware report"
   nh_sudo nixos-facter -o "$facter_target" || {
@@ -452,13 +488,15 @@ nh_local_install() {
 
 # nh_bootstrap_fleet <owner/repo> <keys-dir> — the fresh-Mac path: no
 # fleet checkout exists yet, so clone one into ~/<repo> (where
-# `programs.nixhold.fleetDir` will look for it) over the repo deploy
-# key. <keys-dir> holds the two operator-encrypted ciphertexts the
-# ISO bakes for the same purpose — operator.age and repo.key.age —
-# read through the same $NIXHOLD_IDENTITY_FILE / $NIXHOLD_REPO_KEY_FILE
-# path, so the passphrase is all the operator brings.
+# `programs.nixhold.fleetDir` will look for it) over the fleet's own
+# `identity` ssh key. <keys-dir> holds the operator-encrypted
+# ciphertexts the ISO bakes for the same purpose — identity.age always,
+# operator.age only on a fleet that has a passphrase identity at all —
+# read through the same $NIXHOLD_IDENTITY_FILE / $NIXHOLD_CLONE_KEY_FILE
+# path, so the operator's seat (the passphrase, or the token in their
+# pocket) is all they bring.
 nh_bootstrap_fleet() {
-  local repo="$1" keys="$2" dir remote f
+  local repo="$1" keys="$2" dir remote
   case "$repo" in
     */*) ;;
     *)
@@ -466,15 +504,24 @@ nh_bootstrap_fleet() {
       return 1
       ;;
   esac
-  for f in operator.age repo.key.age; do
-    if [ ! -f "$keys/$f" ]; then
-      nh_err "--keys $keys holds no $f — copy keys/operator.age and keys/repo.key.age there from any checkout (or the safekeeping copy)"
-      return 1
-    fi
-  done
-  NIXHOLD_IDENTITY_FILE="$keys/operator.age"
-  NIXHOLD_REPO_KEY_FILE="$keys/repo.key.age"
-  export NIXHOLD_IDENTITY_FILE NIXHOLD_REPO_KEY_FILE
+  if [ ! -f "$keys/identity.age" ]; then
+    nh_err "--keys $keys holds no identity.age — copy it there from any checkout (it is secrets/identity.age, the fleet's own ssh key, and what clones the fleet)"
+    return 1
+  fi
+  NIXHOLD_CLONE_KEY_FILE="$keys/identity.age"
+  export NIXHOLD_CLONE_KEY_FILE
+  # A token-only fleet ships no wrapped identity: the token is the
+  # seat, and there is no checkout to read its recipient from yet, so
+  # the route falls to whatever is plugged in.
+  if [ -f "$keys/operator.age" ]; then
+    NIXHOLD_IDENTITY_FILE="$keys/operator.age"
+    export NIXHOLD_IDENTITY_FILE
+  elif nh_age_token_present; then
+    nh_info "no operator.age in $keys — decrypting with the FIDO2 token that is plugged in"
+  else
+    nh_err "--keys $keys holds no operator.age and no FIDO2 token is plugged in — nothing can decrypt the clone key; plug the token in, or copy keys/operator.age there"
+    return 1
+  fi
 
   dir="$HOME/${repo##*/}"
   dir="${dir%.git}"
@@ -483,11 +530,11 @@ nh_bootstrap_fleet() {
   else
     nh_require_cmd git || return 1
     remote="git@github.com:${repo%.git}.git"
-    nh_info "cloning $remote into $dir over the repo deploy key"
+    nh_info "cloning $remote into $dir over the fleet identity key"
     _NH_CLONING=1
     if ! nh_repo_git clone "$remote" "$dir" >&2; then
       _NH_CLONING=0
-      nh_err "clone of $remote failed — the deploy key in $keys/repo.key.age must be registered on the repo"
+      nh_err "clone of $remote failed — the key in $keys/identity.age must be registered on the forge (it is the fleet's own identity key)"
       return 1
     fi
     _NH_CLONING=0
@@ -592,7 +639,7 @@ nh_darwin_wait_secrets() {
     return 0
   fi
   nh_warn "still missing after the kickstart: $(nh_missing_paths "$paths" | paste -sd' ' -)"
-  nh_info "the usual cause is a host key that is not the committed recipient — 'nixhold host key $name' reconciles it; 'sudo launchctl print system/activate-agenix' shows the daemon"
+  nh_info "the usual cause is a stale /etc/nixhold/fleet.key — 'nixhold deploy $name' reinstalls it; 'sudo launchctl print system/activate-agenix' shows the daemon"
   return 1
 }
 
@@ -620,12 +667,10 @@ nh_missing_paths() {
 # nh_darwin_install <name> <root> — local darwin install, fresh-macOS
 # complete:
 #   0. preflight — account, Command Line Tools, vanilla Nix;
-#   1. host identity — make /etc/ssh/ssh_host_ed25519_key (agenix's
-#      darwin identityPath) BE the fleet's key for <name>: the shared
-#      reconciliation (nh_reconcile_host_key), which installs the
-#      committed key, adopts the machine's when the fleet has none,
-#      or mints one for a host that has never had one; an adoption
-#      rekeys the secrets to it;
+#   1. identity — a Mac that has never run sshd has no host key, so
+#      `ssh-keygen -A` mints one; its live pubkey is recorded as
+#      keys/hosts/<name>.pub (pinning only). Then the fleet key is put
+#      at /etc/nixhold/fleet.key, which is what agenix decrypts with;
 #   2. activate — sudo darwin-rebuild (bootstrapped from the fleet's
 #      pinned nix-darwin on a machine that has never switched), with
 #      the first-switch /etc refusal handled in place;
@@ -641,19 +686,19 @@ nh_darwin_install() {
 
   nh_darwin_preflight "$name" || return 1
 
-  # 1. Host identity. The install is the confirmation.
-  nh_reconcile_host_key "$name" "" 1 || return 1
-  if [ "$_NH_KEY_ADOPTED" -eq 1 ]; then
-    nh_info "re-encrypting secrets to include the host recipient"
-    . "$NIXHOLD_LIB_ROOT/secret-rekey.sh"
-    cmd_secret_rekey || {
-      nh_err "rekey failed — secrets are NOT decryptable by $name yet; fix and re-run install"
-      return 1
-    }
-  fi
+  # 1. Identity: the machine's own ssh key (recorded, never escrowed)
+  #    and the fleet key (installed, so agenix can decrypt).
+  nh_ensure_darwin_host_key || return 1
+  local live
+  live="$(nh_read_live_host_pub)" || return 1
+  nh_commit_host_pub "$name" "$live" >/dev/null || return 1
+  nh_fleet_key_install || {
+    nh_err "the fleet key is not on this Mac — agenix would decrypt nothing; fix the operator route and re-run install"
+    return 1
+  }
   local keys_dir
   keys_dir="$(nh_worktree_keys_dir)" || return 2
-  nh_commit_paths "$root" "host($name): key" "$keys_dir/hosts/$name"
+  nh_commit_paths "$root" "host($name): pubkey" "$keys_dir/hosts/$name.pub"
 
   # Required secrets before the build, as on NixOS: activation would
   # only fail later with a worse error.
@@ -702,8 +747,9 @@ Usage: nixhold host install [<name>] [--remote <user>@<ip>]
                    the roster; without it the picker asks, or the
                    roster's disk is reused.
   --repo, --keys   a Mac with no fleet checkout: clone owner/repo
-                   into ~/<repo> over the deploy key first. <dir>
-                   holds operator.age and repo.key.age.
+                   into ~/<repo> over the fleet's own identity key
+                   first. <dir> holds identity.age, plus operator.age
+                   unless the operator's seat is a FIDO2 token.
 EOF
         return 0
         ;;
@@ -745,6 +791,16 @@ EOF
     return 1
   }
   arch="$(nh_host_arch "$name")"
+
+  # Preflight, ahead of all three entry paths (darwin, local ISO,
+  # --remote) and therefore ahead of any disk or machine: every one of
+  # them opens keys/fleet.key.age to stage /etc/nixhold/fleet.key,
+  # which needs the operator's seat. Discovered here it costs a re-run;
+  # discovered after disko it costs an erased machine.
+  nh_age_route_check "the fleet key" || {
+    nh_err "install refused — plug in the operator's FIDO2 token, or run this from a checkout that holds keys/operator.age (nothing has been touched)"
+    return 1
+  }
 
   case "$arch" in
     *-darwin)
@@ -832,11 +888,13 @@ EOF
   if [ -z "$remote" ]; then
     nh_local_install "$name" "$root" "$facter_target" || rc=$?
   else
-    # 3. Stage the host's SSH key so agenix decrypts on the first
-    #    activation pass (placed before nixos-install runs).
-    #    nixos-anywhere is checked BEFORE key material lands in
-    #    $TMPDIR; the staging dir is under the process scratch root the
-    #    dispatcher wipes on every exit path.
+    # 3. Stage what the machine needs before its first activation:
+    #    /etc/nixhold/fleet.key (agenix decrypts with it on the first
+    #    pass) and a fresh SSH host key whose pubkey this commits as
+    #    keys/hosts/<name>.pub. nixos-anywhere is checked BEFORE key
+    #    material lands anywhere; the staging dir is under the process
+    #    scratch root the dispatcher wipes on every exit path, and
+    #    --extra-files preserves the modes set here.
     nh_require_cmd nixos-anywhere
     local extra
     extra="$(nh_tmpdir extra-files)" || return 1
@@ -845,6 +903,10 @@ EOF
       return 1
     }
     nh_stage_host_key "$name" "$extra/etc/ssh" || return 1
+    nh_fleet_key_install --stage "$extra" || {
+      nh_err "the fleet key could not be staged — $name would first-boot unable to decrypt anything"
+      return 1
+    }
 
     # Before the build, so the host first-boots with every required
     # secret decryptable. Fatal, as in `deploy`.
@@ -861,8 +923,9 @@ EOF
     # and StrictHostKeyChecking=no (its hard defaults, not ours) and the
     # host key cannot be pinned anyway: the machine answering is the
     # installer ISO, whose key is random per boot. The connection is
-    # therefore trust-on-first-use, and it carries $name's private key
-    # in --extra-files — run installs over a network you trust.
+    # therefore trust-on-first-use, and it carries the fleet key and
+    # $name's new host key in --extra-files — run installs over a
+    # network you trust.
     nixos-anywhere \
       --flake "$root#$name" \
       --generate-hardware-config nixos-facter "$facter_target" \
@@ -877,16 +940,15 @@ EOF
   fi
 
   # 5. The machine is bootable by now; the repo side is best-effort.
-  #    The roster's disk and the facter report are install-time
-  #    outputs (plus the host-key escrow when the install backfilled
-  #    it), committed on success — auto-commit never reaches beyond
-  #    them. On the installer the checkout is ephemeral, so the commit
-  #    is pushed too.
+  #    The roster's disk, the facter report and the new host's pubkey
+  #    are install-time outputs, committed on success — auto-commit
+  #    never reaches beyond them. On the installer the checkout is
+  #    ephemeral, so the commit is pushed too.
   if [ "$rc" -eq 0 ]; then
     local keys_dir
     keys_dir="$(nh_worktree_keys_dir 2>/dev/null)" || keys_dir="$root/keys"
     nh_commit_paths "$root" "host($name): install (disk + facter)" \
-      "$hosts_file" "$facter_target" "$keys_dir/hosts/$name"
+      "$hosts_file" "$facter_target" "$keys_dir/hosts/$name.pub"
     nh_push_if_installer "$root"
     nh_info "next: once $name is on the tailnet, 'nixhold deploy $name' for every change after this"
   fi

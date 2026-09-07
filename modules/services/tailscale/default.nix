@@ -28,8 +28,9 @@ in
       default = null;
       description = ''
         Name of a `nixhold.secrets.<name>` holding a Tailscale
-        pre-auth key. When set, the framework declares that secret
-        (owner root, 0400) and points
+        pre-auth key — `"tailscale"` by convention, the name of the
+        service that consumes it. When set, the framework declares
+        that secret (owner root, 0400, category `service`) and points
         `services.tailscale.authKeyFile` at it, so the host
         auto-joins the tailnet on activation. `null` (default) leaves
         joining to a manual `tailscale up`. Create the key single-use
@@ -41,7 +42,7 @@ in
         would let anyone holding the repo plus a host key join the
         tailnet — and tailnet membership is the authorization boundary.
       '';
-      example = "tailscale-authkey";
+      example = "tailscale";
     };
 
     network = lib.mkOption {

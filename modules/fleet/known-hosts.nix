@@ -1,8 +1,9 @@
 # Fleet-wide SSH host-key pinning.
 #
 # Every host's public host key is already committed at
-# `keys/hosts/<host>/host.pub` (the CLI writes it when the host is
-# added; the secrets module encrypts to it). Without this module the
+# `keys/hosts/<host>.pub` (the CLI writes it at install, before the
+# machine's first boot). It is pinning data and nothing else — no
+# secret is encrypted to it. Without this module the
 # operator's `ssh <peer>` is trust-on-first-use: a re-imaged box, or
 # anything that answers to a squatted MagicDNS name, is accepted on
 # sight. Here that same committed data becomes a system-wide
@@ -10,18 +11,27 @@
 # repo rather than at the first connection.
 #
 # Data-driven like the rest of the fleet layer: no options to enable,
-# nothing to wire per host. A host with no committed `host.pub` (added
-# but not yet keyed) is simply absent — lint flags the missing key.
+# nothing to wire per host. A host with no committed `<host>.pub`
+# (added but not yet installed) is simply absent — lint flags the
+# missing key.
 { config, lib, ... }:
 let
   inherit (lib) mkOption types;
 
   fleet = config.nixhold.fleet;
 
-  # Same reader the fleet layer uses for `loginPubkey`.
+  # An `ssh_known_hosts` entry is single-line; a second line there is
+  # an operator mistake worth failing on.
   pubkeyLine = import ../../lib/pubkey-line.nix "nixhold.fleet.hostPubkey";
 
-  hostPubPath = host: config.nixhold.layout.keysDir + "/hosts/${host}/host.pub";
+  hostPubPath = host: config.nixhold.layout.keysDir + "/hosts/${host}.pub";
+
+  # The one forge every fleet talks to over SSH — the repo clone, the
+  # fleet `identity` key's fetch/push, commit signing's remote. Its
+  # keys are published, so there is no reason for any fleet machine to
+  # learn them on first use. Shared with the installer ISO, which needs
+  # the same pin before a fleet checkout even exists.
+  githubKnownHosts = import ../../lib/github-known-hosts.nix;
 
   # Names this host answers to: every address it is reachable at on
   # any fleet network, plus the bare fleet key (which is both the
@@ -37,7 +47,7 @@ in
     readOnly = true;
     description = ''
       Per-host committed SSH host pubkey line, read from
-      `keys/hosts/<host>/host.pub`, or `null` for a host whose key
+      `keys/hosts/<host>.pub`, or `null` for a host whose key
       has not been committed yet. The single place the framework
       decides whether a fleet host's identity is pinnable: this
       module turns non-null entries into
@@ -60,9 +70,11 @@ in
       if builtins.pathExists p then pubkeyLine p else null
     ) fleet.hosts;
 
-    programs.ssh.knownHosts = lib.mapAttrs (host: key: {
-      hostNames = hostNamesOf host;
-      publicKey = key;
-    }) (lib.filterAttrs (_: key: key != null) fleet.hostPubkey);
+    programs.ssh.knownHosts =
+      githubKnownHosts
+      // lib.mapAttrs (host: key: {
+        hostNames = hostNamesOf host;
+        publicKey = key;
+      }) (lib.filterAttrs (_: key: key != null) fleet.hostPubkey);
   };
 }

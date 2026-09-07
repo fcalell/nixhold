@@ -2,13 +2,19 @@
 #
 # Builds this fleet's installer image — `packages.<arch>.installerIso`
 # — and optionally writes it to a USB stick. The image is the
-# no-other-machine install path: it carries the CLI, the operator's
-# login keys, the wrapped operator identity and the repo deploy key,
-# so a bare target reaches the fleet with nothing but the passphrase.
-#
-# The deploy key is this verb's other job: it is generated + escrowed
-# here (`nh_ensure_repo_deploy_key`) because the ISO is the only
-# artifact that needs it.
+# no-other-machine install path; it carries:
+#   - the CLI, with the age plugin and libfido2;
+#   - keys/login.pub authorized on the ISO's root, so the operator can
+#     ssh into a booted target (an empty login.pub is refused: the
+#     image would boot unreachable);
+#   - secrets/identity.age as the CLONE credential — the fleet's own
+#     ssh key is already registered on the forge, so there is no
+#     separate repo deploy key any more;
+#   - keys/operator.age WHEN THE FLEET HAS ONE — a token-only fleet
+#     bakes none, and the operator brings the token instead.
+# Either way a bare target reaches the fleet with nothing but the
+# operator's seat. This verb generates nothing: everything it bakes is
+# already in the repo.
 
 cmd_iso() {
   local device=""
@@ -40,8 +46,7 @@ EOF
   root="$(nh_fleet_root)" || return 1
 
   # `repoUrl` is the one layout field nothing can derive, and an image
-  # that doesn't know its repo can't clone anything — refuse before
-  # generating a deploy key for a repo we can't name.
+  # that doesn't know its repo can't clone anything.
   local repo
   repo="$(nh_layout repoUrl 2>/dev/null | jq -r '. // empty')" || repo=""
   if [ -z "$repo" ]; then
@@ -49,32 +54,49 @@ EOF
     return 1
   fi
 
-  # ISOs are Linux images built with Linux builders; a mac has neither.
-  # No cross-build fallback: the operator has a Linux fleet machine (the
-  # ISO only exists for fleets with Linux hosts). Checked before the
-  # deploy key: a refusal that first generates a key and asks the
-  # operator to register it on GitHub wastes the one irreversible step
-  # in this verb.
-  if [ "$(uname -s)" = "Darwin" ]; then
-    nh_err "installer ISOs build on Linux only — run 'nixhold iso' from a Linux fleet machine"
+  # An image nobody can decrypt with is not worth building: the whole
+  # point of the ISO is that the target reaches the fleet's ciphertexts
+  # (the clone key, the fleet key, every secret) from the operator's
+  # seat. A fleet with neither a token recipient nor a wrapped identity
+  # has no seat to bake or bring. Checked WITHOUT requiring the token
+  # to be plugged in right now — the operator builds the image today
+  # and carries the token to the target tomorrow — so this reads the
+  # committed recipients, not the USB bus.
+  nh_probe_recipient_inputs
+  if ! nh_age_has_token_recipient && ! nh_age_wrapped_identity >/dev/null; then
+    nh_err "this fleet has no operator seat to install with: nixhold.layout.ageRecipient names no FIDO2 token recipient (age1fido2-hmac1…) and there is no wrapped identity at nixhold.layout.ageIdentityWrapped — commit one of the two before building an installer"
+    return 1
+  fi
+  if nh_age_wrapped_identity >/dev/null; then
+    nh_info "the image will bake the wrapped operator identity (the passphrase unlocks the target)"
+  else
+    nh_info "no wrapped identity in this fleet — the image bakes none; bring the FIDO2 token to the target"
+  fi
+
+  # The clone credential. `identity` is fleet-scoped, so this is one
+  # file for the whole fleet; a fleet that has never provisioned it has
+  # nothing for the installer to clone with.
+  local sdir keys_dir
+  sdir="$(nh_worktree_secrets_dir)" || return 1
+  keys_dir="$(nh_worktree_keys_dir)" || return 1
+  if [ ! -e "$sdir/identity.age" ]; then
+    nh_err "$sdir/identity.age does not exist — the image would have no way to clone $repo; provision it with 'nixhold secret edit <host> identity' and register its pubkey on the forge"
     return 1
   fi
 
-  # Fresh-key detection: nh_ensure_repo_deploy_key is idempotent and
-  # silent on the already-escrowed path, so ask the filesystem which
-  # path it took. A brand-new key is useless until it is registered on
-  # the git host, so stop and say so rather than burning a build.
-  local keys_dir had_key=0
-  keys_dir="$(nh_worktree_keys_dir)" || return 1
-  [ -f "$keys_dir/repo.key.age" ] && had_key=1
-  nh_ensure_repo_deploy_key || return 1
-  if [ "$had_key" -eq 0 ]; then
-    nh_commit_paths "$root" "keys: repo deploy key" "$keys_dir/repo.key.age"
-    nh_warn "the image is inert until that pubkey is registered on $repo as a deploy key WITH WRITE ACCESS"
-    if ! nh_prompt_confirm "Deploy key registered — build the image now?"; then
-      nh_info "aborted — re-run 'nixhold iso' once the key is registered"
-      return 0
-    fi
+  # Login keys. The ISO authorizes exactly keys/login.pub on root, so
+  # an empty one boots a target nobody can ssh into.
+  if ! nh_pubkey_lines "$keys_dir/login.pub" >/dev/null 2>&1; then
+    nh_err "$keys_dir/login.pub is missing or holds no key — the image would boot unreachable; 'nixhold secret edit <host> identity' writes it on a fleet that has none, or add your own ssh pubkey line"
+    return 1
+  fi
+
+  # ISOs are Linux images built with Linux builders; a mac has neither.
+  # No cross-build fallback: the operator has a Linux fleet machine (the
+  # ISO only exists for fleets with Linux hosts).
+  if [ "$(uname -s)" = "Darwin" ]; then
+    nh_err "installer ISOs build on Linux only — run 'nixhold iso' from a Linux fleet machine"
+    return 1
   fi
 
   local arch
@@ -91,7 +113,7 @@ EOF
   local out
   if ! out="$(nix build --no-link --print-out-paths --no-warn-dirty \
     "$root#packages.$arch.installerIso")"; then
-    nh_err "ISO build failed — a missing keys/operator.age or keys/repo.key.age is the usual cause"
+    nh_err "ISO build failed — a missing secrets/identity.age (or a keys/operator.age the fleet still points at) is the usual cause"
     return 1
   fi
 

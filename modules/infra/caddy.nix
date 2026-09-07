@@ -110,8 +110,9 @@ let
   unauthedTailnet = lib.filter (e: e.netType == "tailscale" && !e.auth) endpoints;
 
   # Identity headers tailscale's nginx-auth daemon produces. One list,
-  # two uses: copied in on authenticated endpoints, stripped on every
-  # other one so a client can never forge them.
+  # three uses: stripped off the incoming request at every vhost's
+  # door, copied in from the daemon on authenticated endpoints, and
+  # stripped again on the way to the backend of an opted-out one.
   identityHeaders = [
     "Tailscale-User"
     "Tailscale-Login"
@@ -222,13 +223,31 @@ let
           }
         ''
       );
+      # Client-supplied identity headers die at the vhost door, before
+      # any endpoint's forward_auth runs. A backend therefore only ever
+      # sees the copies caddy makes from the auth daemon's response —
+      # on an authenticated endpoint — and never a value a client sent
+      # itself, on any endpoint.
+      #
+      # At the VHOST level, not inside each `handle`, because caddy
+      # sorts `request_header` AFTER `forward_auth` within one handle
+      # block (verified against the adapted JSON: the delete handlers
+      # land between the forward_auth and the upstream reverse_proxy).
+      # A strip written there would delete the daemon's copies instead
+      # of the client's forgeries. Sorted ahead of the whole `handle`
+      # group here, it runs once, early enough, for every endpoint the
+      # vhost carries.
+      stripIdentity = lib.concatMapStrings (h: ''
+        request_header -${h}
+      '') identityHeaders;
+
       # Tailnet vhosts use the tailscale-issued cert; internet vhosts
       # fall through to caddy's ACME.
       tlsBlock = lib.optionalString isTailscale ''
         tls ${tlsCert} ${tlsKey}
       '';
     in
-    tlsBlock + redirs + handlePrefixed + handleDefault;
+    tlsBlock + stripIdentity + redirs + handlePrefixed + handleDefault;
 
   virtualHosts = lib.mapAttrs (_fqdn: eps: { extraConfig = mkVhostExtraConfig eps; }) grouped;
 in

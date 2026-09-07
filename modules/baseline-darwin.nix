@@ -16,6 +16,10 @@
     ./services
     ./secrets
     ./secrets/darwin.nix
+    # Operator checkouts as fleet data: the env secret, the forge
+    # ssh wiring, the direnv library and the clone step all follow
+    # from one `nixhold.repositories` entry.
+    ./repositories
     ./cli
     ./home
     ./home/darwin.nix

@@ -1,6 +1,13 @@
 { config, lib, ... }:
 let
   fleet = config.nixhold.fleet;
+
+  # Every key line in the committed login file — the operator reaches
+  # their own hosts by however many keys they carry (one per hardware
+  # token, or the fleet's own key on a fleet with no token), and each
+  # line is authorized on its own.
+  pubkeyLines = import ../../lib/pubkey-lines.nix;
+  loginPubPath = config.nixhold.layout.keysDir + "/login.pub";
 in
 {
   config.nixhold.fleet.derived = {
@@ -34,8 +41,19 @@ in
       ) fleet.network
     ) fleet.hosts;
 
-    operatorAuthorizedKeys = lib.filter (k: k != null) (
-      lib.mapAttrsToList (_: h: h.loginPubkey or null) fleet.hosts
+    # One file, one answer. No login key is any host's property — the
+    # private halves live on hardware the fleet does not hold, or (on
+    # a fleet with no token) in the one `identity` secret every host
+    # already shares — so there is nothing per-host to aggregate.
+    # Absent file means an empty list, not an eval error: a fleet
+    # evaluates before its first key is committed, and lint is what
+    # says the hosts authorize nobody.
+    #
+    # Same named principle-14 exception as the other committed-pubkey
+    # readers: the path is computed off `keysDir`, and `pathExists`
+    # only answers whether that one computed path is populated.
+    operatorAuthorizedKeys = lib.unique (
+      if builtins.pathExists loginPubPath then pubkeyLines loginPubPath else [ ]
     );
   };
 }
