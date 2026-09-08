@@ -994,7 +994,7 @@ Endpoint fields:
 | `network` | required; a declared fleet network or `localhost` |
 | `protocol` | `https` (default) / `http` / `ws` / `wss`. HTTP-family only |
 | `subdomain` | internet networks: vhost = `<subdomain>.<domain>`. **Ignored on tailscale networks** (see TLS). Forbidden on localhost |
-| `backend` | required; references `network.ports.<name>` — one endpoint = one (vhost, backend) pair |
+| `backend` | required; names a listener the service declares — a key of `network.ports` or of `network.sockets`, never both — one endpoint = one (vhost, backend) pair |
 | `pathPrefix` | endpoints sharing a vhost carve paths; caddy emits one vhost with a `redir <p> <p>/` and a `handle <p>/*` per endpoint (`uri strip_prefix` inside when `stripPrefix`), so `/tv` never claims `/tvx`; prefixes on one FQDN must not be path-segment prefixes of each other (assertion) |
 | `description` | free text for status; recommended on localhost endpoints |
 | `extraConfig` | raw Caddyfile lines inside the endpoint's handle block — escape hatch; the model still owns vhost/FQDN/TLS |
@@ -1046,13 +1046,39 @@ app-level auth is that endpoint's own business. Trust boundary =
 tailnet membership: on a single-user tailnet that is exactly "a
 device the operator enrolled"; multi-user tailnets restrict with
 Tailscale ACLs, which are operator-managed like DNS. Backends keep
-binding 127.0.0.1, so the only ways in are caddy or the box itself.
+binding 127.0.0.1 or a unix socket, so the only ways in are caddy or
+the box itself.
 whois needs a live tailscaled, so the fixture check covers the
 emitted config only; the runtime proof is one request from a tailnet
 device and one from outside. Authentication, not authorization: any
 non-tagged node of the tailnet passes; which devices may reach the
 host is the Tailscale ACL's decision, per-user gating beyond that is
 the backend's (the identity headers exist for it).
+
+**Socket backends.** A backend is a loopback port or a unix
+socket: `network.sockets.<name> = <absolute path>` sits beside
+`network.ports`, `backend` names either, and caddy dials
+`unix/<path>` instead of `http://127.0.0.1:<port>`. Nothing else in
+the model — vhost, prefix, auth, firewall, `infra.url` — can tell the
+two apart. The socket is the service's own listener exactly as a
+port is: the module creates it (a `systemd.sockets` unit, or the
+daemon itself) and the framework trusts the binding side as it does
+for ports. What the module must do is make it admit the proxy and
+nobody it does not mean: owned by the service's uid, group
+`config.services.caddy.group`, mode `0660`, in a directory the
+caddy uid can traverse (a `RuntimeDirectory` at its default mode
+is one). No new group carries that flow — caddy's own primary group
+already names exactly one uid, and the socket's owner holds the
+other side. The reason a socket exists at all is what a loopback
+port cannot do: 127.0.0.1 answers every local uid, so a host
+carrying an untrusted local login (a kiosk session) can drive a
+loopback backend without passing caddy's auth, and the backend has
+only a kernel table to guess the caller from. A 0660 socket answers
+the service, caddy and nobody else, and the backend reads the
+calling uid off the connection (`SO_PEERCRED`). A service that
+wants a second door for a local peer declares a second socket with
+that peer's group — one socket per calling party, one group per
+flow — rather than widening the proxy's.
 
 **Exposure invariants.** caddy's listener is not per-interface: one
 `:443` on every address serves every vhost, and what keeps a tailnet
@@ -1078,9 +1104,10 @@ on every interface for internet-network endpoints; 443 tcp+udp
 scoped to the tailscale interface for tailnet endpoints — the LAN
 stays closed). Both read one derived list,
 `nixhold.infra.endpoints` (internal): every non-localhost endpoint
-annotated with its resolved backend port, network type and FQDN.
-Nothing is filtered silently — an unknown network, a network lacking
-the field its type needs, a backend not in the service's ports, a
+annotated with its resolved backend (port or socket path), network
+type and FQDN. Nothing is filtered silently — an unknown network, a
+network lacking the field its type needs, a backend the service does
+not declare (or declares as both a port and a socket), a
 `subdomain` where the type forbids or requires it, a malformed
 `pathPrefix` are assertions, so a typo cannot yield a service the
 operator believes exposed that is simply not served. Multi-network
@@ -1650,8 +1677,8 @@ script each under `cli/lint/rules/`:
 
 - every host's `profile` resolves (a host eval smoke test)
 - `derived.publicHosts` length ≤ 1 (single-gateway invariant)
-- every `expose.<name>.backend` references a port declared in the
-  same service's `network.ports`
+- every `expose.<name>.backend` references a listener declared in
+  the same service's `network.ports` or `network.sockets`
 - `layout.ageRecipient` is tracked and non-empty, the fleet
   holds at least one operator route (a token recipient line, or a
   wrapped identity at `layout.ageIdentityWrapped`), and
@@ -1692,7 +1719,8 @@ script each under `cli/lint/rules/`:
 
 Enforced as assertions rather than lint (they block the build):
 unknown network on an endpoint, a network missing the field its
-type needs, a backend naming no declared port, `subdomain` where
+type needs, a backend naming no declared listener or one declared
+as both a port and a socket, `subdomain` where
 the network type forbids or requires it, malformed `pathPrefix`,
 overlapping path prefixes on one FQDN, two prefix-less endpoints
 on one FQDN, one FQDN reached over two network types, `auth = true`

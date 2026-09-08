@@ -65,6 +65,14 @@
         stripPrefix = false;
         auth = false;
       };
+      # The socket-backend form: caddy dials `unix/<path>` in place
+      # of a loopback port.
+      sock = {
+        network = "tailnet";
+        protocol = "https";
+        backend = "ipc";
+        pathPrefix = "/sock";
+      };
     };
   };
 

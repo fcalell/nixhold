@@ -2,9 +2,10 @@
 let
   inherit (lib) mkOption types;
 
-  # Per-service port declarations. Service modules set
-  # `nixhold.services.<svc>.network.ports.<name> = <port>`; endpoints
-  # in `expose` reference port names symbolically via `backend`.
+  # Per-service listener declarations. Service modules set
+  # `nixhold.services.<svc>.network.ports.<name> = <port>` or
+  # `network.sockets.<name> = <path>`; endpoints in `expose` reference
+  # listener names symbolically via `backend`.
   networkType = types.submodule {
     options = {
       ports = mkOption {
@@ -17,14 +18,31 @@ let
         description = ''
           Internal ports the service listens on. Bound to
           127.0.0.1 unless an endpoint in `expose` references
-          them. Names are referenced by `expose.<x>.backend`.
+          them. Names are referenced by `expose.<x>.backend`, and
+          may not repeat in `sockets`.
+        '';
+      };
+
+      sockets = mkOption {
+        type = types.attrsOf types.path;
+        default = { };
+        example = {
+          http = "/run/assistant/http.sock";
+        };
+        description = ''
+          Unix sockets the service listens on, by absolute path.
+          The service creates the socket itself; to be proxied it
+          must admit the proxy's uid and nobody it does not mean —
+          see ARCHITECTURE "Socket backends" for the owner, group
+          and mode. Names are referenced by `expose.<x>.backend`,
+          and may not repeat in `ports`.
         '';
       };
     };
   };
 
   # Per-endpoint declarations attrset. Each named endpoint binds a
-  # backend port to a network + (subdomain | localhost) + path
+  # backend listener to a network + (subdomain | localhost) + path
   # prefix. v1 supports HTTP-family protocols only.
   endpointType = types.submodule {
     options = {
@@ -78,9 +96,10 @@ let
       backend = mkOption {
         type = types.str;
         description = ''
-          Name of the port the endpoint resolves to. References
-          `nixhold.services.<svc>.network.ports.<this-name>`; a
-          name that resolves to no declared port is an assertion
+          Name of the listener the endpoint resolves to. References
+          `nixhold.services.<svc>.network.ports.<this-name>` or
+          `network.sockets.<this-name>`; a name that resolves to no
+          declared listener, or to one of each, is an assertion
           (`modules/infra/endpoints.nix`) as well as a lint
           violation.
         '';

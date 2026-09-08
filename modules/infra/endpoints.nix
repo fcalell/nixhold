@@ -8,7 +8,7 @@
 #
 # Nothing here drops an endpoint quietly. Every reason resolution can
 # fail — an unknown network name, a network missing the field its type
-# needs, a `backend` that names no declared port, a `subdomain` the
+# needs, a `backend` that names no declared listener, a `subdomain` the
 # addressing model has no place for — is an assertion. An endpoint the
 # operator declared and nothing serves is a misconfiguration, not a
 # default. (Eval still has to produce a value while the assertion is
@@ -30,7 +30,9 @@ let
   services = config.nixhold.services or { };
 
   # Every declared endpoint, annotated with where it came from and the
-  # port its `backend` resolves to (`null` when it resolves to none).
+  # listener its `backend` resolves to: a loopback port or a unix
+  # socket path, the other one `null` (both, when it resolves to
+  # neither).
   declared = lib.flatten (
     lib.mapAttrsToList (
       svcName: svc:
@@ -42,7 +44,9 @@ let
           endpoint = epName;
           label = "${svcName}.${epName}";
           backendPort = svc.network.ports.${ep.backend} or null;
+          backendSocket = svc.network.sockets.${ep.backend} or null;
           backendPorts = lib.attrNames (svc.network.ports or { });
+          backendSockets = lib.attrNames (svc.network.sockets or { });
         }
       ) (svc.expose or { })
     ) services
@@ -81,7 +85,7 @@ let
     e:
     netOf e != null
     && netComplete e
-    && e.backendPort != null
+    && (e.backendPort != null) != (e.backendSocket != null)
     && (subdomainRequired e -> e.subdomain != null);
 
   resolved = map (
@@ -100,7 +104,8 @@ let
   knownNetwork = lib.filter (e: netOf e != null) routed;
 
   incompleteNetwork = lib.filter (e: !netComplete e) knownNetwork;
-  unknownBackend = lib.filter (e: e.backendPort == null) declared;
+  unknownBackend = lib.filter (e: e.backendPort == null && e.backendSocket == null) declared;
+  ambiguousBackend = lib.filter (e: e.backendPort != null && e.backendSocket != null) declared;
 
   subdomainOnLocalhost = lib.filter (e: e.subdomain != null) (lib.filter isLocalhost declared);
   subdomainOnTailscale = lib.filter (
@@ -145,8 +150,8 @@ in
       Resolved routable endpoints on this host: every
       `nixhold.services.<svc>.expose.<ep>` that is not on the
       built-in `localhost` network, annotated with `service`,
-      `endpoint`, `label`, `backendPort`, `netType` and the `fqdn`
-      it is reachable at. The infra modules consume this instead of
+      `endpoint`, `label`, `backendPort` or `backendSocket` (the
+      other one null), `netType` and the `fqdn` it is reachable at. The infra modules consume this instead of
       re-walking `nixhold.services` — caddy emits one vhost per
       distinct `fqdn`, the firewall opens the HTTP ports for exactly
       the endpoints caddy serves.
@@ -207,17 +212,35 @@ in
     {
       assertion = unknownBackend == [ ];
       message = ''
-        nixhold expose: unknown backend port on ${labels unknownBackend} — ${
+        nixhold expose: unknown backend on ${labels unknownBackend} — ${
           lib.concatStringsSep ", " (
             map (
               e:
               "${e.label} wants \"${e.backend}\", ${e.service} declares ${
-                if e.backendPorts == [ ] then "no ports" else lib.concatStringsSep "/" e.backendPorts
+                if e.backendPorts ++ e.backendSockets == [ ] then
+                  "no listeners"
+                else
+                  lib.concatStringsSep "/" (e.backendPorts ++ e.backendSockets)
               }"
             ) unknownBackend
           )
         }.
-        `backend` names a key of `nixhold.services.<svc>.network.ports`.
+        `backend` names a key of `nixhold.services.<svc>.network.ports` or
+        `.network.sockets`.
+      '';
+    }
+    {
+      assertion = ambiguousBackend == [ ];
+      message = ''
+        nixhold expose: ambiguous backend on ${labels ambiguousBackend} — ${
+          lib.concatStringsSep ", " (
+            lib.unique (
+              map (e: "${e.service} declares \"${e.backend}\" as both a port and a socket") ambiguousBackend
+            )
+          )
+        }.
+        A listener name is a key of `network.ports` or of `network.sockets`,
+        never both; give the two listeners different names.
       '';
     }
     {

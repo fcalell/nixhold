@@ -159,10 +159,17 @@ let
         copy_headers ${lib.concatStringsSep " " identityHeaders}
       }'';
 
+  # A socket backend is dialled in caddy's network-address form,
+  # `unix/<path>`, which takes no scheme (plain HTTP over the socket
+  # is what it means).
   reverseProxy =
     e:
     let
-      upstream = "http://127.0.0.1:${toString e.backendPort}";
+      upstream =
+        if e.backendSocket != null then
+          "unix/${e.backendSocket}"
+        else
+          "http://127.0.0.1:${toString e.backendPort}";
     in
     if isAuthed e then
       "reverse_proxy ${upstream}"

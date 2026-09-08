@@ -1,5 +1,6 @@
-# Rule 5: every expose.<name>.backend references a port in the
-# same service's network.ports.
+# Rule 5: every expose.<name>.backend references a listener in the
+# same service's network.ports or network.sockets. (One of each
+# under the same name is the eval-time assertion's to report.)
 
 root="$(nh_fleet_root)" || exit 2
 nixos_hosts="$(nix eval --json --no-warn-dirty "$root#nixosConfigurations" --apply 'builtins.attrNames' 2>/dev/null | jq -r '.[]?' || true)"
@@ -21,9 +22,9 @@ for h in $nixos_hosts; do
   while IFS=$'\t' read -r svc ep backend; do
     [ -z "$svc" ] && continue
     has="$(echo "$services" | jq -r --arg s "$svc" --arg b "$backend" \
-      '.[$s].network.ports[$b] // empty')"
+      '.[$s].network.ports[$b] // .[$s].network.sockets[$b] // empty')"
     if [ -z "$has" ]; then
-      echo "VIOLATION: $h/$svc/expose.$ep references unknown backend port '$backend'"
+      echo "VIOLATION: $h/$svc/expose.$ep references unknown backend '$backend'"
       worst=3
     fi
   done <<<"$refs"

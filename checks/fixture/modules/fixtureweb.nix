@@ -5,7 +5,7 @@
   ...
 }:
 # Fixture-only service that exercises the caddy exposure paths. It
-# declares the backend port only; each fixture host declares the
+# declares the backend listeners only; each fixture host declares the
 # endpoints it wants on it (`expose` is an ordinary option), so one
 # service can cover the tailnet branches on fixture-server and the
 # internet branch on fixture-gateway without either host violating the
@@ -29,7 +29,24 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    nixhold.services.fixtureweb.network.ports.web = 8088;
+    nixhold.services.fixtureweb.network = {
+      ports.web = 8088;
+      sockets.ipc = "/run/fixtureweb/http.sock";
+    };
+
+    # The socket listener, in the shape ARCHITECTURE "Socket backends"
+    # asks of every service that fronts one: the service's own unit
+    # creates it, and the mode admits the owner and the proxy's group
+    # and nothing else.
+    systemd.sockets.fixtureweb = {
+      description = "fixture web service socket";
+      wantedBy = [ "sockets.target" ];
+      listenStreams = [ cfg.network.sockets.ipc ];
+      socketConfig = {
+        SocketGroup = config.services.caddy.group;
+        SocketMode = "0660";
+      };
+    };
 
     # A real unit, so the `unit` secret has something to attach to.
     # It runs `true`: the check builds the closure, it never boots.
