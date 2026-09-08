@@ -8,6 +8,11 @@
 # yet. Nothing here is per-host: a repository is declared once for the
 # fleet and every host that evaluates this module carries it.
 #
+# The fleet repo itself is declared nowhere — `layout.repoUrl` names
+# it and the CLI clones it — but its forge takes the same key, so it
+# joins the forge list below: every fleet host reaches the fleet repo
+# as the fleet, repositories declared or not.
+#
 # Both baselines import this; the wiring is home-manager, so it is the
 # same on NixOS and darwin.
 {
@@ -45,8 +50,11 @@ let
     else
       null;
 
+  # The fleet repo's forge is github.com by `layout.repoUrl`'s
+  # contract (a bare slug, github.com assumed — modules/layout).
   forgeHosts = lib.unique (
     lib.filter (h: h != null) (lib.mapAttrsToList (_: r: forgeHost r.url) repos)
+    ++ lib.optional (config.nixhold.layout.repoUrl != null) "github.com"
   );
 
   # `~/.ssh/identity`, as ssh and the activation script spell it.

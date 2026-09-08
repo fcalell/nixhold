@@ -85,9 +85,10 @@ nh_fleet_root() {
 # checkout doesn't exist yet (first login after an ISO install), so
 # offer to clone $NIXHOLD_REPO_URL ("owner/repo", github.com assumed)
 # there. Runs through nh_repo_git: the installer image clones over the
-# fleet's own `identity` key, which it bakes; a fleet machine over the
-# operator's own credentials. Interactive by construction: no TTY
-# means no offer.
+# fleet's own `identity` key, which it bakes; a fleet machine over its
+# ssh config, which names that same key for the fleet repo's forge
+# (modules/repositories). Interactive by construction: no TTY means
+# no offer.
 _NH_CLONING=0
 nh_clone_fleet() {
   local dir="$1" repo="${NIXHOLD_REPO_URL:-}" remote reply=""
@@ -128,7 +129,7 @@ nh_clone_fleet() {
   _NH_CLONING=1
   if ! nh_repo_git clone "$remote" "$dir" >&2; then
     _NH_CLONING=0
-    nh_err "clone of $remote failed — check the fleet repo credentials (the fleet identity key on the installer, your own SSH key otherwise)"
+    nh_err "clone of $remote failed — check the fleet repo credentials (the fleet identity key: unwrapped on the installer, ~/.ssh/identity through the host's ssh config on a fleet machine)"
     return 1
   fi
   _NH_CLONING=0
@@ -173,7 +174,8 @@ export NIXHOLD_IDENTITY_FILE
 # encrypted. The installer ISO bakes `secrets/identity.age` and points
 # this at it; `host install --repo/--keys` sets it from the directory
 # the operator brought. Empty everywhere else — a fleet machine clones
-# and pushes on the operator's own credentials.
+# and pushes on its ssh config, which names the same key for the fleet
+# repo's forge.
 NIXHOLD_CLONE_KEY_FILE="${NIXHOLD_CLONE_KEY_FILE:-}"
 export NIXHOLD_CLONE_KEY_FILE
 
@@ -301,7 +303,7 @@ nh_sudo() {
 # pushes with, or nothing.
 #
 #   0 + path   a clone key is in hand (installer environment)
-#   1          none configured — use the operator's own credentials
+#   1          none configured — git runs on the host's ssh config
 #   2          one is configured but unusable (reported)
 #
 # The credential is the fleet's OWN `identity` ssh key: it is already
@@ -312,8 +314,8 @@ nh_sudo() {
 # or the token — is what turns it into a usable key, so the decrypt
 # happens once per CLI process into the scratch root (tmpfs on the ISO)
 # and is wiped on exit. Off the ISO nothing is configured and git runs
-# on the operator's own SSH credentials — a fleet machine has them
-# already.
+# on the host's ssh config — on a fleet machine that names this same
+# key for the fleet repo's forge (modules/repositories/default.nix).
 nh_clone_key() {
   local src="${NIXHOLD_CLONE_KEY_FILE:-}" root out
   if [ -z "$src" ] && nh_installer_env; then

@@ -318,7 +318,7 @@ all `mkDefault` unless named:
 | outbound ssh | `nixhold.secrets.identity` — the fleet's single outbound key, **fleet scope**. `IdentityFile ~/.ssh/identity` on every fleet-peer matchBlock, gated on the secret being `active`; never `IdentitiesOnly`, there or in the framework-owned `Host *` block, so an agent-held token key is offered alongside it (see "Login keys") |
 | git signing | `programs.git.signing = { format = "ssh"; key = "~/.ssh/identity.pub"; }`, gated on `identity.active` + `programs.git.enable`. Named, never automatic: `signByDefault` stays off, so `git commit -S` signs and a plain commit does not (see "Signing is opt-in") |
 | global env | `nixhold.secrets.env` (fleet scope) sourced into every login shell of the operator, both platforms, gated on `env.active` (see Repositories & env) |
-| forge ssh | one matchBlock per distinct forge host derived from `nixhold.repositories.*.url` — `IdentityFile ~/.ssh/identity`, `IdentitiesOnly`, no `User` |
+| forge ssh | one matchBlock per distinct forge host derived from `nixhold.repositories.*.url`, plus github.com for the fleet repo itself whenever `layout.repoUrl` is set — `IdentityFile ~/.ssh/identity`, `IdentitiesOnly`, no `User` |
 | sudo | nothing. `wheel` membership is the whole grant; the framework writes no `security.sudo.extraRules`, so sudo asks for the operator's password like it does on any NixOS box (see "Sudo asks") |
 | store hygiene | every shipped profile runs weekly `nix.gc` (`--delete-older-than 14d`) and `nix.optimise`; on darwin with the explicit launchd interval `nix.gc.automatic` needs |
 
@@ -374,7 +374,7 @@ consumer below reads.
 | Derived | From |
 |---|---|
 | `nixhold.secrets.<name>` | fleet scope, `category = "repository"`, owner user, `required = false`, described by name + url. Colliding with a non-repository secret of the same name is an assertion |
-| one HM `programs.ssh.settings."<forge host>"` per **distinct** forge host | the url's host, parsed from scp-like `user@host:path` and `ssh://user@host/path` (https urls get none). `IdentityFile = "~/.ssh/identity"; IdentitiesOnly = true;`, `mkDefault`, gated on `identity.active` — and **no `User`**: the url carries it |
+| one HM `programs.ssh.settings."<forge host>"` per **distinct** forge host | the url's host, parsed from scp-like `user@host:path` and `ssh://user@host/path` (https urls get none), and github.com for the fleet repo itself whenever `layout.repoUrl` is set — the checkout the CLI clones is no declared repository, but its forge takes the same key, so a host that declares nothing still reaches the fleet as the fleet. `IdentityFile = "~/.ssh/identity"; IdentitiesOnly = true;`, `mkDefault`, gated on `identity.active` — and **no `User`**: the url carries it |
 | `~/.config/direnv/lib/nixhold.sh` | an HM `xdg.configFile` direnv library, emitted only under `mkIf programs.direnv.enable` (the framework never enables direnv). For the directory being loaded it finds the declared repository path containing `$PWD` (longest prefix wins, `~` expanded) and `dotenv_if_exists`es that repository's decrypted age path |
 | an HM activation step per repository | after `writeBoundary`: clone the url to `path` when `path` is absent, then write a managed empty `.envrc` when there is none, append it to `<path>/.git/info/exclude` once, and `direnv allow` when direnv is available |
 
@@ -841,7 +841,9 @@ bakes that ciphertext and exports `$NIXHOLD_CLONE_KEY_FILE`. Every
 network-facing git call (clone, pull, push) goes through one
 helper: with the variable set it opens the ciphertext over the
 operator route into the process scratch root and runs git with it,
-otherwise it uses the operator's own credentials. The decrypted
+otherwise it runs git on the host's own ssh config — which, on
+every fleet host, names the same key for the fleet repo's forge
+(see Repositories: the `layout.repoUrl` block). The decrypted
 key is never persisted into the clone. This is what keeps the
 passphrase route a *complete* seat — a passphrase, or a touch, and
 the repo is reachable — without a second ssh credential to mint,
@@ -1367,9 +1369,9 @@ not a fleet) →
 from `layout.repoUrl`; the module bakes the value into the
 wrapped CLI). When the resolved directory doesn't exist — a
 fresh machine after an ISO install — the CLI offers to clone
-`repoUrl` there, through the `identity` key on the installer and
-the operator's normal SSH credentials everywhere else (see "The
-clone credential is the `identity` key").
+`repoUrl` there, through the `identity` key either way: unwrapped
+by the CLI on the installer, named by the host's ssh config on a
+fleet machine (see "The clone credential is the `identity` key").
 
 ```
 nixhold host add [<name>] [--install <user>@<ip>]

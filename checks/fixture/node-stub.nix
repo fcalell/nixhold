@@ -13,8 +13,16 @@
 # It serves no endpoint on purpose: the caddy/firewall endpoint
 # branches are covered by the other two hosts, and an endpoint here
 # would open 443 and blur what these assertions are about.
+#
+# It declares no repository either, which makes it the one host that
+# shows whether the fleet repo's own forge block is derived from
+# `layout.repoUrl` rather than riding on a declared repository that
+# happens to share the forge: `nixhold deploy` on a fresh machine
+# clones the fleet with that block.
 { config, lib, ... }:
 let
+  hm = config.home-manager.users.${config.nixhold.identity.username};
+  github = hm.programs.ssh.settings."github.com".data or { };
   # The same interface name modules/infra/firewall.nix and the openssh
   # module scope their rules to.
   iface = config.services.tailscale.interfaceName;
@@ -42,6 +50,13 @@ in
     {
       assertion = !config.services.fail2ban.enable;
       message = "fixture-node: fail2ban is enabled on a host with no internet-typed network — there is nothing reaching sshd for it to ban";
+    }
+    {
+      assertion =
+        config.nixhold.repositories == { }
+        && github.IdentityFile or null == "~/.ssh/identity"
+        && github.IdentitiesOnly or null == true;
+      message = "fixture-node: with no repository declared, the fleet repo's forge (github.com, from layout.repoUrl) must still get the identity-key matchBlock — got ${builtins.toJSON github}";
     }
   ];
 }
