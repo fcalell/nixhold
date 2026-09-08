@@ -140,7 +140,10 @@ let
 
   # forward_auth to the nginx-auth unix socket. `Expected-Tailnet`
   # makes the daemon reject nodes of a foreign tailnet (403) rather
-  # than trusting whatever whois returns.
+  # than trusting whatever whois returns. The daemon derives the
+  # tailnet by cutting the node's own label off `Node.Name`, a FQDN
+  # with a trailing dot, and compares the remainder literally, so the
+  # header carries the suffix with that dot.
   forwardAuth =
     e:
     let
@@ -152,7 +155,7 @@ let
         header_up Remote-Addr {remote_host}
         header_up Remote-Port {remote_port}
         header_up Original-URI {uri}
-        header_up Expected-Tailnet ${net.magicDnsSuffix}
+        header_up Expected-Tailnet ${net.magicDnsSuffix}.
         copy_headers ${lib.concatStringsSep " " identityHeaders}
       }'';
 
