@@ -35,7 +35,7 @@ while IFS= read -r line; do
   case "$disk" in
     /dev/disk/by-id/*) continue ;;
   esac
-  report "$h — disk = \"$disk\" is an enumeration-order name, which moves when another disk or a USB stick is present at boot ('nixhold host install $h' resolves it on the target and records the stable /dev/disk/by-id path, or pass --disk <by-id>)"
+  report "$h — disk = \"$disk\" is an enumeration-order name, which moves when another disk or a USB stick is present at boot ('nixhold host install $h' records the stable /dev/disk/by-id path the picker resolves, or pass --disk <by-id>)"
 done < <(nh_hosts nixos)
 
 if [ "$problems" -eq 0 ]; then

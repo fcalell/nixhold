@@ -32,9 +32,8 @@
 #
 # Disk: the roster field `hosts.<name>.disk`, written by the picker
 # (or --disk); the framework renders its one disko shape from it. A
-# roster disk that is not a `/dev/disk/by-id` path is resolved to one
-# on the target and written back before anything is asked, so a
-# hand-written `/dev/sda` never needs the picker to become stable. A
+# picker runs on every install and never reads the roster value, so a
+# stale or hand-written path cannot steer a reformat. A
 # host that declares `disko.devices` in its own module is never asked
 # — install formats what that names. The facter report lands at
 # `nixhold.hardware.facterReport` (default `<hostsDir>/<name>/facter.json`).
@@ -246,28 +245,6 @@ nh_disk_byid() {
   fi
 }
 
-# nh_roster_disk_byid <remote> <current> — the /dev/disk/by-id path of
-# the disk the roster names, resolved on the install target: the path
-# is followed to its kernel name there, then back out to an alias.
-# Prints nothing (and warns) when the path names nothing on the target
-# or the disk exposes no alias; the caller then asks the picker.
-# Read-only: it reads a symlink and lists /dev/disk/by-id.
-nh_roster_disk_byid() {
-  local remote="$1" current="$2" kname byid
-  kname="$(nh_target_sh "$remote" "readlink -f '$current'" 2>/dev/null || true)"
-  kname="${kname##*/}"
-  if [ -z "$kname" ]; then
-    nh_warn "the roster disk $current does not exist on the install target"
-    return 0
-  fi
-  byid="$(nh_disk_byid "$remote" "$kname")"
-  # nh_disk_byid falls back to /dev/<name>; that is not a stable path.
-  if [ "${byid#/dev/disk/by-id/}" = "$byid" ]; then
-    return 0
-  fi
-  printf '%s' "$byid"
-}
-
 # nh_disk_esps <disk-name> — lsblk JSON on stdin, the names of the
 # EFI system partitions on that disk (by partition type GUID, or
 # vfat when the lsblk build lacks PARTTYPE), one per line.
@@ -323,14 +300,20 @@ nh_name_os() {
 # (the firmware menu boots it regardless).
 nh_esp_guard() {
   local remote="$1" json="$2" target="$3" part entry other
-  while IFS= read -r part; do
+  local -a parts entries
+  # Collected before the prompt: gum reads its answer from stdin, and a
+  # loop fed by a process substitution hands it the pipe's EOF, which
+  # counts as No.
+  mapfile -t parts < <(printf '%s' "$json" | nh_disk_esps "$target")
+  for part in "${parts[@]}"; do
     [ -n "$part" ] || continue
-    while IFS= read -r entry; do
+    mapfile -t entries < <(nh_esp_loaders "$remote" "$part" | nh_foreign_loaders)
+    for entry in "${entries[@]}"; do
       [ -n "$entry" ] || continue
       nh_warn "the ESP /dev/$part on /dev/$target holds the boot files of $(nh_name_os "$entry") — that OS stops booting when this disk is erased; move it to an ESP on its own disk first (Windows: bcdboot from a recovery environment)"
       gum confirm --default=false "Erase /dev/$target anyway and leave $(nh_name_os "$entry") unbootable?" || return 1
-    done < <(nh_esp_loaders "$remote" "$part" | nh_foreign_loaders)
-  done < <(printf '%s' "$json" | nh_disk_esps "$target")
+    done
+  done
 
   while IFS= read -r other; do
     [ -n "$other" ] || continue
@@ -770,7 +753,7 @@ Usage: nixhold host install [<name>] [--remote <user>@<ip>]
                    installer ISO); elsewhere the address is asked for.
   --disk           the install disk (/dev/disk/by-id/…), written into
                    the roster; without it the picker asks, or the
-                   roster's disk is reused.
+                   picker asks.
   --repo, --keys   a Mac with no fleet checkout: clone owner/repo
                    into ~/<repo> over the fleet's own identity key
                    first. <dir> holds identity.age, plus operator.age
@@ -863,13 +846,11 @@ EOF
   facter_target="$(nh_facter_target "$name")" || return $?
   mkdir -p "$(dirname "$facter_target")"
 
-  # 1. Disk. The roster holds it; a host with `disko.devices` of its
-  #    own is never asked. --disk answers the picker for scripted runs.
-  #    A roster disk that is not a by-id path (a hand-written
-  #    /dev/sda) is resolved on the target first, so the only question
-  #    left is the destructive one and the write-back below records
-  #    the stable path.
-  local current reuse custom=0
+  # 1. Disk. The picker, on every install: the roster's `disk` is the
+  #    picker's output (or --disk), never its input, so a stale or
+  #    hand-written value cannot steer a reformat. A host with
+  #    `disko.devices` of its own is never asked.
+  local current custom=0
   current="$(nh_host_field "$name" disk)"
   if [ -z "$current" ] && [ -z "$disk" ] &&
     [ "$(nh_host_eval "$name" nixos disko.devices.disk | jq 'length > 0')" = "true" ]; then
@@ -877,30 +858,16 @@ EOF
     nh_info "$name declares its own disko.devices — formatting what it names"
   fi
   if [ -z "$disk" ] && [ "$custom" -ne 1 ]; then
-    reuse="$current"
-    if [ -n "$current" ] && [ "${current#/dev/disk/by-id/}" = "$current" ]; then
-      reuse="$(nh_roster_disk_byid "$remote" "$current")"
-      if [ -n "$reuse" ]; then
-        nh_info "roster disk $current resolves to $reuse on the target; recording that"
-      else
-        nh_warn "the roster disk $current cannot be resolved to a stable path; pick the disk instead"
-      fi
+    if ! nh_tty; then
+      nh_err "no disk for $name — pass --disk <by-id>, or declare disko.devices in its module"
+      return 1
     fi
-    if [ -n "$reuse" ] && { [ "$yes" -eq 1 ] || ! nh_tty ||
-      nh_prompt_confirm "Reinstall $name onto $reuse? (No: pick another disk)"; }; then
-      disk="$reuse"
-    else
-      if ! nh_tty; then
-        nh_err "no disk for $name — pass --disk <by-id>, or declare disko.devices in its module"
-        return 1
-      fi
-      nh_require_cmd gum
-      disk="$(nh_pick_disk "$remote")" || {
-        nh_info "aborted"
-        return 1
-      }
-      picked=1
-    fi
+    nh_require_cmd gum
+    disk="$(nh_pick_disk "$remote")" || {
+      nh_info "aborted"
+      return 1
+    }
+    picked=1
   fi
   if [ -n "$disk" ] && [ "$disk" != "$current" ]; then
     nh_set_host_disk "$hosts_file" "$name" "$disk" || return 1

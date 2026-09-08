@@ -596,13 +596,11 @@ content, not device names; the destructive confirmation lists the
 exact partitions about to be erased. The CLI resolves the pick to
 a stable `/dev/disk/by-id` path itself and writes it into the
 roster. `--disk <by-id>` exists only to skip the prompt in
-scripted runs. A roster disk that is not already a by-id path (a
-hand-written `/dev/sda`) is resolved on the target and written back
-before anything is asked, so the reuse prompt names the stable path
-and the only question the operator answers is the destructive one,
-never "decline the reuse to get a good path recorded". Lint reports
-a roster disk that is not a by-id path: a warning in dev, an error
-under `--strict`.
+scripted runs. The picker runs on every install: the roster `disk`
+is its output, never its input, so a stale or hand-written value
+cannot steer a reformat and there is no "reuse the roster disk"
+question to get wrong. Lint reports a roster disk that is not a by-id
+path: a warning in dev, an error under `--strict`.
 
 **Facter guard**: NixOS-only (Darwin setting it is an eval error).
 File exists → framework sets `hardware.facter.reportPath`. File
