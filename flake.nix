@@ -68,12 +68,21 @@
       # profiles (and forker-authored profiles) can compose them
       # without pulling in the whole catalogue.
       modules = {
+        # Services are keyed by platform: a service can carry an
+        # implementation on more than one, and the import path is
+        # what names the platform a profile is asking for. Infra is
+        # NixOS-only, so it stays flat.
         services = {
-          openssh = ./modules/services/openssh/nixos.nix;
-          syncthing = ./modules/services/syncthing/nixos.nix;
-          taskchampion = ./modules/services/taskchampion/nixos.nix;
-          tailscale = ./modules/services/tailscale/nixos.nix;
-          vaultwarden = ./modules/services/vaultwarden/nixos.nix;
+          nixos = {
+            openssh = ./modules/services/openssh/nixos.nix;
+            syncthing = ./modules/services/syncthing/nixos.nix;
+            taskchampion = ./modules/services/taskchampion/nixos.nix;
+            tailscale = ./modules/services/tailscale/nixos.nix;
+            vaultwarden = ./modules/services/vaultwarden/nixos.nix;
+          };
+          darwin = {
+            tailscale = ./modules/services/tailscale/darwin.nix;
+          };
         };
         infra = {
           caddy = ./modules/infra/caddy.nix;

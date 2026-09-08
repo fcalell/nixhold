@@ -58,6 +58,6 @@ in
 
   config.assertions = lib.optional (cfg.enable && cfg.implementation == null) {
     assertion = false;
-    message = "nixhold.services.vaultwarden is enabled but no implementation is attached on this host — import `nixhold.modules.services.vaultwarden` (NixOS only).";
+    message = "nixhold.services.vaultwarden is enabled but no implementation is attached on this host — import `nixhold.modules.services.nixos.vaultwarden` (NixOS only).";
   };
 }

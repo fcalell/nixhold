@@ -1,6 +1,6 @@
 # OpenSSH service — NixOS implementation of the hardened preset.
 #
-# What `nixhold.modules.services.openssh` resolves to: a profile
+# What `nixhold.modules.services.nixos.openssh` resolves to: a profile
 # importing it gets the option namespace (./default.nix, the same
 # module the services index attaches) plus the config below. Operator
 # opts in with `nixhold.services.openssh.enable = true` (the `server`

@@ -33,9 +33,9 @@
     ./repositories.nix
     # The forker idiom, which is what the fixture stands in for: a
     # host imports the implementations of the services it enables.
-    inputs.nixhold.modules.services.vaultwarden
-    inputs.nixhold.modules.services.taskchampion
-    inputs.nixhold.modules.services.syncthing
+    inputs.nixhold.modules.services.nixos.vaultwarden
+    inputs.nixhold.modules.services.nixos.taskchampion
+    inputs.nixhold.modules.services.nixos.syncthing
   ];
 
   # No machine ever ran `host install` for a fixture host, so there is

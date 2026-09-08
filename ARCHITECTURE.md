@@ -192,8 +192,8 @@ Rules:
 Framework flake outputs: `lib.mkFleet`, `nixosModules.nixhold`,
 `darwinModules.nixhold`,
 `profiles.{server,desktopLinux,workstationDarwin}`,
-`modules.services.*`, `modules.infra.*`, `apps.<sys>.nixhold`,
-`templates.default`, `formatter`, `checks`.
+`modules.services.<platform>.*`, `modules.infra.*`,
+`apps.<sys>.nixhold`, `templates.default`, `formatter`, `checks`.
 
 `templates.default` is the fork scaffold: `nix flake init -t` writes
 `flake.nix` (a placeholder `mkFleet` call), `hosts.nix`,
@@ -213,13 +213,18 @@ Concepts, not filesystem (principle 14):
   declarations only). `nixhold.services` is therefore part of every
   host's readable surface on both platforms, which is what lets
   `nixhold status` walk it without knowing which profile a host
-  drew. The platform *implementations* stay separate — the value
-  behind `modules.services.<name>` is `<service>/nixos.nix`, which
-  re-imports the same declarations and adds the NixOS config — and
-  are imported only by profiles or `hosts.<n>.modules`. Enabling a
-  service whose implementation this host never imported is an
-  assertion failure, not a silent no-op; infra modules keep the
-  older shape (no options unless imported).
+  drew. The platform *implementations* stay separate, and the export
+  table is keyed by platform: the value behind
+  `modules.services.<platform>.<name>` (`modules.services.nixos.*`,
+  `modules.services.darwin.*`) is `<service>/<platform>.nix`, which
+  re-imports the same declarations and adds that platform's config.
+  The import path is therefore what names the platform, so one
+  service can ship an implementation on both, as tailscale does.
+  Implementations are imported only by profiles or
+  `hosts.<n>.modules`. `modules.infra.*` stays flat: infra is
+  NixOS-only. Enabling a service whose implementation this host
+  never imported is an assertion failure, not a silent no-op; infra
+  modules keep the older shape (no options unless imported).
 - **Profiles (layer 2)** are opinionated host-kind bundles: import
   service/infra modules, set defaults. Shipped:
   `server`, `desktopLinux`, `workstationDarwin` (matching the
@@ -249,12 +254,17 @@ Concepts, not filesystem (principle 14):
 
 Source-tree layout inside the framework: kind-first
 (`modules/<kind>/`), with `nixos.nix`/`darwin.nix` platform
-siblings self-gated by each kind's `default.nix`
-(`lib.optional pkgs.stdenv.isLinux ./nixos.nix`). The registry is
-the explicit index + flake output table — no `readDir`, and no
-`pathExists` beyond principle 14's named path exceptions
-(`facter.json`, `/etc/nixhold/fleet.key`, `flake.nix`, the `.age`
-extension, committed pubkeys under `layout.keysDir`).
+siblings beside each kind's `default.nix`. Nothing self-gates on
+`pkgs.stdenv`: the platform baseline names the sibling it wants
+(`modules/baseline-darwin.nix` imports `identity/darwin.nix` and its
+peers, `baseline-nixos.nix` the `nixos.nix` ones), and a service's
+sibling is named by the profile that imports it through the
+platform-keyed export table. A module that ends up on a host is one
+some module list asked for by path, never one a conditional selected.
+The registry is the explicit index + flake output table — no
+`readDir`, and no `pathExists` beyond principle 14's named path
+exceptions (`facter.json`, `/etc/nixhold/fleet.key`, `flake.nix`,
+the `.age` extension, committed pubkeys under `layout.keysDir`).
 
 **Infra activates from data, no `enable` knob.** Every infra
 module is in the server-side bundle and guards on the data it
@@ -1075,14 +1085,15 @@ exposure works by declaring endpoints on different networks.
 **Shipped HTTP services.** `vaultwarden` (Bitwarden backend, sqlite,
 `/vault`), `taskchampion` (taskwarrior 3.x replication, `/task`) and
 `syncthing` (GUI at `/sync`, sync protocol on the tailscale
-interface) ship as `nixhold.modules.services.*` beside openssh and
-tailscale, NixOS-only, imported by the host that enables them. Each
-one declares its endpoint **whole except for `network`**: the
-backend port, the path prefix, whether the prefix is stripped and
-the encoding are facts about the application and belong to the
-module — vaultwarden 404s under a stripped prefix, and that is not
-knowledge to hand an operator — while the network is fleet data, so
-the host names it:
+interface) ship as `nixhold.modules.services.nixos.*` beside openssh
+and tailscale, imported by the host that enables them. The three of
+them and openssh are NixOS-only; tailscale is the one shipped service
+with both platform implementations. Each one declares its endpoint
+**whole except for `network`**: the backend port, the path prefix,
+whether the prefix is stripped and the encoding are facts about the
+application and belong to the module — vaultwarden 404s under a
+stripped prefix, and that is not knowledge to hand an operator —
+while the network is fleet data, so the host names it:
 
 ```nix
 nixhold.services.vaultwarden = {
@@ -1111,6 +1122,19 @@ not internal, and its scope is narrow by construction: a module
 reads back the URL of an endpoint it declared. Endpoints on
 `localhost`, and any that fail to resolve, are absent — those are
 assertions, not empty strings.
+
+**Tailnet membership on the Mac is declarative too.**
+`nixhold.services.tailscale` has a darwin implementation beside the
+NixOS one, and `workstationDarwin` enables it by default, so a Mac
+joins the fleet through the framework rather than through the
+Tailscale app. It sets nix-darwin's `services.tailscale`, which runs
+the open-source tailscaled as a root launchd daemon and writes
+`/etc/resolver/ts.net` so MagicDNS names resolve; the Mac's own DNS
+is left alone (`overrideLocalDns` stays false). That variant has no
+GUI and no auth-key file, so joining is a one-time
+`sudo tailscale up` and `authKeySecret` is asserted null on darwin.
+No firewall knob either: the option the NixOS side sets is a NixOS
+option, and macOS opens nothing for a client.
 
 **sshd exposure follows the topology.**
 `nixhold.services.openssh` (the hardened preset: key-only,

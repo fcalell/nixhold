@@ -1,16 +1,23 @@
 # nixhold.profiles.workstationDarwin — macOS workstation defaults.
 #
-# Hostkind shape: operator's daily-driver Mac. No NixOS infra
-# modules apply (Darwin has its own service surface). The
-# framework's baseline already wires home-manager via
+# Hostkind shape: operator's daily-driver Mac. It pulls in tailscale
+# so the Mac is a fleet member on the same terms as the Linux hosts;
+# no NixOS infra module applies (a workstation terminates no fleet
+# HTTP, and Darwin has its own service surface). The framework's
+# baseline already wires home-manager via
 # `darwinModules.home-manager`.
 {
   config,
+  inputs,
   lib,
   pkgs,
   ...
 }:
 {
+  imports = [ inputs.nixhold.modules.services.darwin.tailscale ];
+
+  nixhold.services.tailscale.enable = lib.mkDefault true;
+
   # Store hygiene: weekly gc + optimise, as on the NixOS profiles.
   # launchd needs an explicit interval or the timers silently no-op;
   # both follow `nix.enable`, which nix-darwin asserts they require.

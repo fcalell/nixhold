@@ -71,7 +71,6 @@ through):
 
 | Item | Trigger | Intended shape |
 |---|---|---|
-| Darwin implementation of `nixhold.services.tailscale` | the Mac's tailnet join is still an app install | `modules/services/tailscale/darwin.nix` over nix-darwin's `services.tailscale`; `workstationDarwin` enables it like the Linux profiles do |
 | `nixhold.deploy.network` option | operator wants a fleet-wide deploy path other than the tailnet | today the address is the tailnet entry of `derived.address.<host>` when it resolves, else the first non-null one; `--target` overrides |
 | `host rename` verb | the manual flow (L8) becomes a real pain | `git mv secrets/<old> secrets/<new>` + `git mv keys/hosts/<old>.pub …` + hostsFile edit + reinstall, in one verb. No rekey: recipients do not know the host's name |
 | Framework-managed remote builders | a consumer informs the design | `fleet.builders.<system>` — reserved, unclaimed |

@@ -18,8 +18,8 @@
 }:
 {
   imports = [
-    inputs.nixhold.modules.services.openssh
-    inputs.nixhold.modules.services.tailscale
+    inputs.nixhold.modules.services.nixos.openssh
+    inputs.nixhold.modules.services.nixos.tailscale
   ];
 
   nixhold.services.openssh.enable = lib.mkDefault true;

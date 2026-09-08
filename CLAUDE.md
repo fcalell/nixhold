@@ -45,7 +45,7 @@ modules/               kind-organized module bundles, exposed via flake outputs
   ├─ types/            baseline: shared option types (expose, network, …)
   ├─ layout/           baseline: nixhold.layout
   ├─ home/             baseline: home-manager wiring
-  ├─ services/         service modules, exposed as nixhold.modules.services.*
+  ├─ services/         service modules, exposed as nixhold.modules.services.<platform>.*
   └─ infra/            infra modules, exposed as nixhold.modules.infra.*
 profiles/              shipped profiles (server, workstationDarwin, desktopLinux)
                        exposed as nixhold.profiles.*

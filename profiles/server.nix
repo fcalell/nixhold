@@ -12,8 +12,8 @@
 }:
 {
   imports = [
-    inputs.nixhold.modules.services.openssh
-    inputs.nixhold.modules.services.tailscale
+    inputs.nixhold.modules.services.nixos.openssh
+    inputs.nixhold.modules.services.nixos.tailscale
     inputs.nixhold.modules.infra.caddy
     inputs.nixhold.modules.infra.firewall
   ];

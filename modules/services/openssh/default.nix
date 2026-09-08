@@ -43,6 +43,6 @@ in
 
   config.assertions = lib.optional (cfg.enable && cfg.implementation == null) {
     assertion = false;
-    message = "nixhold.services.openssh is enabled but no implementation is attached on this host — import `nixhold.modules.services.openssh` (NixOS only).";
+    message = "nixhold.services.openssh is enabled but no implementation is attached on this host — import `nixhold.modules.services.nixos.openssh` (NixOS only).";
   };
 }

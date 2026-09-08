@@ -55,6 +55,6 @@ in
 
   config.assertions = lib.optional (cfg.enable && cfg.implementation == null) {
     assertion = false;
-    message = "nixhold.services.taskchampion is enabled but no implementation is attached on this host — import `nixhold.modules.services.taskchampion` (NixOS only).";
+    message = "nixhold.services.taskchampion is enabled but no implementation is attached on this host — import `nixhold.modules.services.nixos.taskchampion` (NixOS only).";
   };
 }
