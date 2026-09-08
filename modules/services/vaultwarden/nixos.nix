@@ -110,9 +110,24 @@ in
           # bits), so group access is granted afterwards, explicitly
           # and nothing more — the copy holds the vault's RSA keys.
           # Symbolic chmod leaves the directory's setgid bit alone.
-          systemd.tmpfiles.settings."10-vaultwarden".${cfg.backupDir}.d = {
-            group = lib.mkForce "backups";
-            mode = lib.mkForce "2750";
+          systemd.tmpfiles.settings."10-vaultwarden" = {
+            ${cfg.backupDir}.d = {
+              group = lib.mkForce "backups";
+              mode = lib.mkForce "2750";
+            };
+            # The backup runs as vaultwarden (nixpkgs' unit: no
+            # supplementary groups), so the parent has to be
+            # traversable by that uid. The consumer owns the parent
+            # and typically closes it to a group the writer is not in
+            # (`backups` is the readers' group, not the writers'), so
+            # the module adds the one bit the writer needs as an ACL:
+            # execute only, on the immediate parent, appended to
+            # whatever the consumer's own rule set. tmpfiles lets a
+            # `+` type share a path with another file's `d` line and
+            # runs the two in file order, so the parent's rule must
+            # sort before `10-vaultwarden`. The parent must exist:
+            # this line never creates it.
+            ${dirOf cfg.backupDir}."a+".argument = "u:vaultwarden:x";
           };
           systemd.services.backup-vaultwarden.serviceConfig = {
             UMask = "0027";

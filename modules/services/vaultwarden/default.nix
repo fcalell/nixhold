@@ -33,8 +33,12 @@ in
         database plus the attachments and RSA keys. The directory is
         group `backups` (setgid) and the files group-readable, so a
         sync service above it can carry the backup off the box.
-        `backups` is the group for that one data flow. Null: no
-        backup timer.
+        `backups` is the group for that one data flow. The parent
+        directory is the consumer's; it must exist (its tmpfiles rule
+        sorting before `10-vaultwarden`) and it gets an execute-only
+        ACL for user `vaultwarden`, the backup's uid, so the consumer
+        can close the parent to any group without locking the writer
+        out. Null: no backup timer.
       '';
     };
 

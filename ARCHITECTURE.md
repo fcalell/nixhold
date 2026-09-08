@@ -1112,6 +1112,23 @@ used but not defined", which is the honest failure: `network` is
 required on the endpoint type, and auto-picking a shared network was
 rejected (see Rejected, "addressOf").
 
+**`backupDir` splits ownership at one directory.** The module owns
+the directory itself: it creates it, hands it to group `backups`
+(setgid, 2750) and makes every copy group-readable, so the one
+service that carries backups off the box reads them by group
+membership and nothing else on the box can. The consumer owns the
+parent — the shared root several services write under, typically
+closed to that same group — and the module does not assume it can
+be entered: nixpkgs' backup unit runs as the service's own uid with
+no supplementary groups, so the module appends an execute-only ACL
+for that uid on the immediate parent (a tmpfiles `a+` line, which
+may share a path with the consumer's `d` line and runs after it in
+file order; the consumer's rule sorts before `10-<service>`). The
+alternative, putting the writer in `backups`, was rejected: group
+membership is per user, so the network-facing daemon would gain read
+on every other service's copies for a bit only the oneshot needs on
+one directory.
+
 **An app that has to know its own origin** reads
 `nixhold.infra.url.<service>.<endpoint>` — the resolved
 `https://<fqdn><pathPrefix>` of one endpoint, derived in
