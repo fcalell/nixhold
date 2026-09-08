@@ -299,11 +299,12 @@ nh_name_os() {
 # alone and gets the one line that lists it in systemd-boot's menu
 # (the firmware menu boots it regardless).
 nh_esp_guard() {
-  local remote="$1" json="$2" target="$3" part entry other
+  local remote="$1" json="$2" target="$3" part entry other names=""
   local -a parts entries
   # Collected before the prompt: gum reads its answer from stdin, and a
   # loop fed by a process substitution hands it the pipe's EOF, which
-  # counts as No.
+  # counts as No. One decision per disk, so every foreign loader is
+  # named first and the question comes once.
   mapfile -t parts < <(printf '%s' "$json" | nh_disk_esps "$target")
   for part in "${parts[@]}"; do
     [ -n "$part" ] || continue
@@ -311,9 +312,12 @@ nh_esp_guard() {
     for entry in "${entries[@]}"; do
       [ -n "$entry" ] || continue
       nh_warn "the ESP /dev/$part on /dev/$target holds the boot files of $(nh_name_os "$entry") — that OS stops booting when this disk is erased; move it to an ESP on its own disk first (Windows: bcdboot from a recovery environment)"
-      gum confirm --default=false "Erase /dev/$target anyway and leave $(nh_name_os "$entry") unbootable?" || return 1
+      names="${names:+$names, }$(nh_name_os "$entry")"
     done
   done
+  if [ -n "$names" ]; then
+    gum confirm --default=false "Erase /dev/$target anyway and leave $names unbootable?" || return 1
+  fi
 
   while IFS= read -r other; do
     [ -n "$other" ] || continue
