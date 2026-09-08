@@ -51,7 +51,16 @@ in
               protocol = "https";
               backend = "gui";
               pathPrefix = "/sync";
-              extraConfig = "encode zstd gzip";
+              # A loopback-bound GUI refuses any Host that is not
+              # loopback ("Host check error", 403) unless the check is
+              # switched off, and caddy forwards the browser's Host as
+              # is. Rewriting it keeps the check on: it is what stands
+              # between the GUI and a DNS-rebinding page in a local
+              # browser.
+              extraConfig = ''
+                encode zstd gzip
+                request_header Host 127.0.0.1:${toString cfg.network.ports.gui}
+              '';
             };
           };
 
