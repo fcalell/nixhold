@@ -155,9 +155,12 @@ in
 
         # Git author from identity, only where git is enabled: the
         # username (commit attribution stays stable across fleets and
-        # forges) and the email. Commits are signed with the same key
-        # that reaches the forge — one key for the fleet, registered
-        # once as both an authentication and a signing key.
+        # forges) and the email. The signing key is named but never
+        # made automatic: `signByDefault` would gate every commit on
+        # a `.pub` that exists only after a deploy has decrypted the
+        # secret, so a fresh host and every verb between `secret
+        # rekey` and its deploy could not commit at all. A fleet that
+        # wants signed history sets signByDefault itself.
         programs.git = lib.mkIf hmArgs.config.programs.git.enable {
           settings.user = {
             name = lib.mkDefault username;
@@ -166,7 +169,6 @@ in
           signing = lib.mkIf (identityKey != null) {
             format = lib.mkDefault "ssh";
             key = lib.mkDefault "${identityKey}.pub";
-            signByDefault = lib.mkDefault true;
           };
         };
 

@@ -202,11 +202,17 @@ in
       message = "fixture: layout.ageIdentityWrapped did not default to the committed keys/operator.age, got ${toString config.nixhold.layout.ageIdentityWrapped}";
     }
 
-    # --- git signing off the identity key ---
+    # --- git signing off the identity key, opt-in ---
     {
       assertion =
         hm.programs.git.signing.format == "ssh" && hm.programs.git.signing.key == "~/.ssh/identity.pub";
       message = "fixture: git commit signing is not wired to the identity key";
+    }
+    {
+      # signByDefault would gate every commit on a `.pub` that only a
+      # deploy writes, so the framework names the key and stops there.
+      assertion = hm.programs.git.signing.signByDefault != true;
+      message = "fixture: git signing is on by default; it must be opt-in";
     }
   ];
 }

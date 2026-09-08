@@ -306,7 +306,7 @@ all `mkDefault` unless named:
 | home-manager | the user's HM module; `home.stateVersion` tied to the system's on NixOS; git author `name = username`, `email = email`, gated on `programs.git.enable` |
 | console password | `nixhold.secrets.password` declared by the NixOS identity module, `required = true` there (it is the way in when ssh is not), **fleet scope** — one password for every NixOS host (see Secrets) |
 | outbound ssh | `nixhold.secrets.identity` — the fleet's single outbound key, **fleet scope**. `IdentityFile ~/.ssh/identity` on every fleet-peer matchBlock, gated on the secret being `active`; never `IdentitiesOnly`, there or in the framework-owned `Host *` block, so an agent-held token key is offered alongside it (see "Login keys") |
-| git signing | `programs.git.signing = { format = "ssh"; key = "~/.ssh/identity.pub"; signByDefault = true; }`, gated on `identity.active` + `programs.git.enable` |
+| git signing | `programs.git.signing = { format = "ssh"; key = "~/.ssh/identity.pub"; }`, gated on `identity.active` + `programs.git.enable`. Named, never automatic: `signByDefault` stays off, so `git commit -S` signs and a plain commit does not (see "Signing is opt-in") |
 | global env | `nixhold.secrets.env` (fleet scope) sourced into every login shell of the operator, both platforms, gated on `env.active` (see Repositories & env) |
 | forge ssh | one matchBlock per distinct forge host derived from `nixhold.repositories.*.url` — `IdentityFile ~/.ssh/identity`, `IdentitiesOnly`, no `User` |
 | sudo | nothing. `wheel` membership is the whole grant; the framework writes no `security.sudo.extraRules`, so sudo asks for the operator's password like it does on any NixOS box (see "Sudo asks") |
@@ -394,6 +394,31 @@ pubkey on each forge — **once**, for both auth and signing, and
 never again when a machine joins. The CLI prints that line when it
 mints the key, and on a fleet with no login keys of its own it is
 also the line `keys/login.pub` is seeded with (see "Login keys").
+
+**Signing is opt-in.** `signByDefault` stays off, so a plain
+`git commit` writes an unsigned commit and `git commit -S` signs
+with the identity key. The framework still names `format` and
+`key`, so the opt-in needs no further configuration.
+
+Signing every commit by default cost more than it proved. The
+signature is made with the key that already authorized the push:
+one key does auth and signing (see "No forge keys"), so possession
+of it is what the transport established before the commit object
+was written. What it detects is a forge-account compromise that
+does not include the ssh key — a stolen token, a session, a commit
+authored in a web UI — and that detection only pays out on a fleet
+whose branch protection requires signed commits.
+
+Against that, `signByDefault` gates every commit on a file that
+only exists after a deploy. `identity.active` means the ciphertext
+is committed, not that this machine has decrypted it, so a fresh
+host, a fresh checkout, and every verb running between `secret
+rekey` and the deploy that follows it have signing on and no key.
+A CLI verb that commits its own generated files dies mid-way
+there, which is the worst moment to fail: the files are written
+and the commit is not. An opt-in has no such window, and a fleet
+that wants signed history turns it on in its own HM config
+alongside the branch protection that makes it mean something.
 
 **Env is opaque.** Neither the global `env` secret nor a
 repository's is a Nix-declared list of variable names: they are
