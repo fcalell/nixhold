@@ -32,6 +32,9 @@
 #
 # Disk: the roster field `hosts.<name>.disk`, written by the picker
 # (or --disk); the framework renders its one disko shape from it. A
+# roster disk that is not a `/dev/disk/by-id` path is resolved to one
+# on the target and written back before anything is asked, so a
+# hand-written `/dev/sda` never needs the picker to become stable. A
 # host that declares `disko.devices` in its own module is never asked
 # — install formats what that names. The facter report lands at
 # `nixhold.hardware.facterReport` (default `<hostsDir>/<name>/facter.json`).
@@ -241,6 +244,28 @@ nh_disk_byid() {
     nh_warn "no /dev/disk/by-id alias for $name; using /dev/$name (less stable)"
     printf '/dev/%s' "$name"
   fi
+}
+
+# nh_roster_disk_byid <remote> <current> — the /dev/disk/by-id path of
+# the disk the roster names, resolved on the install target: the path
+# is followed to its kernel name there, then back out to an alias.
+# Prints nothing (and warns) when the path names nothing on the target
+# or the disk exposes no alias; the caller then asks the picker.
+# Read-only: it reads a symlink and lists /dev/disk/by-id.
+nh_roster_disk_byid() {
+  local remote="$1" current="$2" kname byid
+  kname="$(nh_target_sh "$remote" "readlink -f '$current'" 2>/dev/null || true)"
+  kname="${kname##*/}"
+  if [ -z "$kname" ]; then
+    nh_warn "the roster disk $current does not exist on the install target"
+    return 0
+  fi
+  byid="$(nh_disk_byid "$remote" "$kname")"
+  # nh_disk_byid falls back to /dev/<name>; that is not a stable path.
+  if [ "${byid#/dev/disk/by-id/}" = "$byid" ]; then
+    return 0
+  fi
+  printf '%s' "$byid"
 }
 
 # nh_disk_esps <disk-name> — lsblk JSON on stdin, the names of the
@@ -840,7 +865,11 @@ EOF
 
   # 1. Disk. The roster holds it; a host with `disko.devices` of its
   #    own is never asked. --disk answers the picker for scripted runs.
-  local current custom=0
+  #    A roster disk that is not a by-id path (a hand-written
+  #    /dev/sda) is resolved on the target first, so the only question
+  #    left is the destructive one and the write-back below records
+  #    the stable path.
+  local current reuse custom=0
   current="$(nh_host_field "$name" disk)"
   if [ -z "$current" ] && [ -z "$disk" ] &&
     [ "$(nh_host_eval "$name" nixos disko.devices.disk | jq 'length > 0')" = "true" ]; then
@@ -848,9 +877,18 @@ EOF
     nh_info "$name declares its own disko.devices — formatting what it names"
   fi
   if [ -z "$disk" ] && [ "$custom" -ne 1 ]; then
-    if [ -n "$current" ] && { [ "$yes" -eq 1 ] || ! nh_tty ||
-      nh_prompt_confirm "Reinstall $name onto its roster disk $current? (No: pick another)"; }; then
-      disk="$current"
+    reuse="$current"
+    if [ -n "$current" ] && [ "${current#/dev/disk/by-id/}" = "$current" ]; then
+      reuse="$(nh_roster_disk_byid "$remote" "$current")"
+      if [ -n "$reuse" ]; then
+        nh_info "roster disk $current resolves to $reuse on the target; recording that"
+      else
+        nh_warn "the roster disk $current cannot be resolved to a stable path; pick the disk instead"
+      fi
+    fi
+    if [ -n "$reuse" ] && { [ "$yes" -eq 1 ] || ! nh_tty ||
+      nh_prompt_confirm "Reinstall $name onto $reuse? (No: pick another disk)"; }; then
+      disk="$reuse"
     else
       if ! nh_tty; then
         nh_err "no disk for $name — pass --disk <by-id>, or declare disko.devices in its module"
