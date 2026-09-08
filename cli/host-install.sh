@@ -752,8 +752,7 @@ Usage: nixhold host install [<name>] [--remote <user>@<ip>]
                    Without it the install targets THIS machine (the
                    installer ISO); elsewhere the address is asked for.
   --disk           the install disk (/dev/disk/by-id/…), written into
-                   the roster; without it the picker asks, or the
-                   picker asks.
+                   the roster; without it the picker asks.
   --repo, --keys   a Mac with no fleet checkout: clone owner/repo
                    into ~/<repo> over the fleet's own identity key
                    first. <dir> holds identity.age, plus operator.age
