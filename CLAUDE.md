@@ -27,9 +27,6 @@ ROADMAP.
   arguments, and invokes an underlying tool.
 - One operator, 1 to 10 hosts target scale. No multi-operator, no
   per-secret ACLs, no observability stack, no LUKS.
-- A commit the CLI writes obeys the fleet's commit contract:
-  Conventional Commits, header at most 60 characters. A hook
-  rejects the rest, mid-verb.
 - Architectural changes go through ARCHITECTURE first. Draft the
   section, surface 2 to 4 decisions for the user, then edit
   ARCHITECTURE. Implementation follows the agreed design. A

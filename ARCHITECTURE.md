@@ -1366,11 +1366,10 @@ Notable shapes:
   it wrote, never a blanket commit, and hand-edited files stay the
   operator's. A generated header is a Conventional Commit of at
   most 60 characters (`host(<name>): pubkey`, `keys: fleet key`,
-  `secrets: rekey to fleet key`), so it survives a fleet that holds its
-  checkout to that contract with a hook; a batch whose names
-  overflow the ceiling commits as a count. Pushing is the ISO's
-  alone, since its checkout is ephemeral; everywhere else the push
-  is the operator's. The
+  `secrets: rekey to fleet key`); a batch whose names overflow the
+  ceiling commits as a count. Pushing is the ISO's alone, since its
+  checkout is ephemeral; everywhere else the push is the
+  operator's. The
   scaffolded NixOS host module is the `stateVersion` line alone:
   hostname, platform, disko and the facter pointer are all
   framework-set.
