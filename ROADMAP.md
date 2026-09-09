@@ -17,6 +17,7 @@ to choose first.
 | Identity on `internet` endpoints | first internet endpoint that wants framework auth rather than app auth | `forward_auth` against an IdP / OIDC, the internet counterpart of tailnet identity auth; until then `auth = false` stays required-explicit there |
 | Per-interface caddy listeners | first host serving both internet and tailnet endpoints | `bind` to the tailnet address so a mixed-posture host no longer depends on the firewall rule; plus port 80 on the tailnet interface for the redirect vhost. Lifts the mixed-posture assertion |
 | Cross-host routing (service on A, gateway on B) | real consumer | the single-gateway rule holds the door open |
+| Node identity header | the first backend that must tell one operator node from another (the dogfood fleet's assistant, at the first second identity on its tailnet) | nginx-auth emits user-level headers only, so on a solo tailnet every node carries the same identity. caddy adds `Tailscale-Node-Addr` from `{remote_host}` to the stripped-and-copied identity set: on `tailscale0` the peer address is bound to the node key, so it is node identity, not an address to guess. The backend decides what a node may do; the framework stays authentication-only, no allow-list on `expose` (see Rejected). Tagged nodes stay 403 until the auth daemon is replaced by one that admits tags as principals, which is the appliances item's trigger |
 
 **DNS declaration contract** (declare-only; trigger: first consumer
 that wants records out of the fleet). Sources: `hosts.<n>.publicFqdn`
@@ -112,10 +113,19 @@ forker who is not the author.
 
 ---
 
+## Services
+
+| Item | Trigger | Intended shape |
+|---|---|---|
+| `navidrome` service module | the fleet's music phase (its ROADMAP, AI assistant phase 2) | the shipped-service pattern: `nixhold.services.navidrome` with `network.ports` + `expose`, a `backupDir`, and the decision whether its web and Subsonic surfaces take identity from `Tailscale-User` (Navidrome's reverse-proxy user header, whitelisted to caddy's socket) or stay on Navidrome's own auth; the Subsonic API does not read the header, so a player page needs one of the two spelled out |
+
+---
+
 ## Foundations
 
 | Item | Trigger | Intended shape |
 |---|---|---|
+| Appliances: a declared device that is not a host | the second non-NixOS device a fleet drives (the first, an Android TV box, lives fleet-local in the dogfood fleet as `hosts/homelab/tv/`) | a typed `nixhold.appliances.<name>` (address on a declared network, the tool that provisions it, the artifacts it holds by hash, its secrets) and one verb, `nixhold appliance provision <name>`: thin glue that reads the declaration and invokes the tool (`adb` for Android). No eval, no deploy, no drift reconciliation beyond re-running the verb; `status` lists it |
 | Plugin architecture (third-party modules / CLI verbs) | external forks, or "how do I add my service" issues | the seams are already open: the services namespace, the flake-output tables, the secrets manifest |
 | Build + VM test layers beyond lint; a test-helper API | first external PR, or a regression lint missed | the fixture fleet is the only check today |
 | Additional shared option types (`data`, `health`, `metrics`, `logs`, `schedule`) | designed alongside their first consumer module | siblings of `nixhold.types.network` / `.expose` |
