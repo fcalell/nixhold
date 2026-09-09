@@ -125,7 +125,7 @@ forker who is not the author.
 
 | Item | Trigger | Intended shape |
 |---|---|---|
-| Appliances: a declared device that is not a host | the second non-NixOS device a fleet drives (the first, an Android TV box, lives fleet-local in the dogfood fleet as `hosts/homelab/tv/`) | a typed `nixhold.appliances.<name>` (address on a declared network, the tool that provisions it, the artifacts it holds by hash, its secrets) and one verb, `nixhold appliance provision <name>`: thin glue that reads the declaration and invokes the tool (`adb` for Android). No eval, no deploy, no drift reconciliation beyond re-running the verb; `status` lists it |
+| Appliances: a declared device that is not a host | a second kind of non-NixOS device a fleet drives (the first kind, Android TV boxes, lives fleet-local in the dogfood fleet as `hosts/homelab/tv/`, keyed by TV) | a typed `nixhold.appliances.<name>` (address on a declared network, the tool that provisions it, the artifacts it holds by hash, its secrets) and one verb, `nixhold appliance provision <name>`: thin glue that reads the declaration and invokes the tool (`adb` for Android). No eval, no deploy, no drift reconciliation beyond re-running the verb; `status` lists it |
 | Plugin architecture (third-party modules / CLI verbs) | external forks, or "how do I add my service" issues | the seams are already open: the services namespace, the flake-output tables, the secrets manifest |
 | Build + VM test layers beyond lint; a test-helper API | first external PR, or a regression lint missed | the fixture fleet is the only check today |
 | Additional shared option types (`data`, `health`, `metrics`, `logs`, `schedule`) | designed alongside their first consumer module | siblings of `nixhold.types.network` / `.expose` |
