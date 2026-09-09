@@ -194,6 +194,15 @@ let
   };
 
   exposeType = types.attrsOf endpointType;
+
+  # The algorithms the fleet mints outbound ssh keys in. ed25519 is
+  # `identity`; rsa exists for the forge that cannot take it (AWS
+  # CodeCommit). Named here because two modules agree on it: a
+  # secret's `sshKeyType` and a repository's `key`.
+  sshKeyTypeType = types.enum [
+    "ed25519"
+    "rsa"
+  ];
 in
 {
   # `nixhold.types` is a read-only attrset of submodule types.
@@ -212,12 +221,12 @@ in
     default = {
       expose = exposeType;
       network = networkType;
+      sshKeyType = sshKeyTypeType;
     };
     description = ''
-      Shared submodule types for service-module option
-      declarations. v1 surface: `expose`, `network`. Additional
-      types land alongside the consumer infra module that needs
-      them.
+      Shared option types for framework and service-module option
+      declarations: `expose`, `network`, `sshKeyType`. Additional
+      types land alongside the consumer module that needs them.
     '';
   };
 }

@@ -361,22 +361,25 @@ file and its direnv loading all follow (principle 3, the same
 auto-wiring shape as identity).
 
 ```nix
-nixhold.repositories.<name> = "<url>";        # or { url; path?; }
+nixhold.repositories.<name> = "<url>";        # or { url; path?; key?; }
 nixhold.home.repositoriesDir = "~/projects";  # default; sits next to
                                               # nixhold.home.extraModules
 ```
 
 A bare string is the url; the submodule adds `path`, defaulting to
-`<repositoriesDir>/<name>`. Both are normalised into a readOnly
-derived `{ url, path }` per repository — the one shape every
-consumer below reads.
+`<repositoriesDir>/<name>`, and `key`, the algorithm of the outbound
+key the forge takes (`ed25519`, the default, or `rsa`; see "One
+outbound key, and a named exception"). Both are normalised into a
+readOnly derived `{ url, path, key }` per repository — the one shape
+every consumer below reads.
 
 | Derived | From |
 |---|---|
 | `nixhold.secrets.<name>` | fleet scope, `category = "repository"`, owner user, `required = false`, described by name + url. Colliding with a non-repository secret of the same name is an assertion |
-| one HM `programs.ssh.settings."<forge host>"` per **distinct** forge host | the url's host, parsed from scp-like `user@host:path` and `ssh://user@host/path` (https urls get none), and github.com for the fleet repo itself whenever `layout.repoUrl` is set — the checkout the CLI clones is no declared repository, but its forge takes the same key, so a host that declares nothing still reaches the fleet as the fleet. `IdentityFile = "~/.ssh/identity"; IdentitiesOnly = true;`, `mkDefault`, gated on `identity.active` — and **no `User`**: the url carries it |
+| one HM `programs.ssh.settings."<forge host>"` per **distinct** forge host | the url's host, parsed from scp-like `user@host:path` and `ssh://user@host/path` (https urls get none), and github.com for the fleet repo itself whenever `layout.repoUrl` is set — the checkout the CLI clones is no declared repository, but its forge takes the same key, so a host that declares nothing still reaches the fleet as the fleet. `IdentityFile = "~/.ssh/<key secret>"; IdentitiesOnly = true;`, `mkDefault`, gated on that secret's `active` — and **no `User`**: the url carries it. Every repository on one forge host names the same `key` (assertion) |
+| `nixhold.secrets.identity-<key>` | for every `key` a repository names other than `ed25519`: `sshKey = true`, `sshKeyType = <key>`, and `mkDefault` fleet scope, `category = "framework"`, owner user, `required = false` — the same posture as `identity` |
 | `~/.config/direnv/lib/nixhold.sh` | an HM `xdg.configFile` direnv library, emitted only under `mkIf programs.direnv.enable` (the framework never enables direnv). For the directory being loaded it finds the declared repository path containing `$PWD` (longest prefix wins, `~` expanded) and `dotenv_if_exists`es that repository's decrypted age path |
-| an HM activation step per repository | after `writeBoundary`: clone the url to `path` when `path` is absent, then write a managed empty `.envrc` when there is none, append it to `<path>/.git/info/exclude` once, and `direnv allow` when direnv is available |
+| an HM activation step per repository | after `writeBoundary`: clone the url to `path` when `path` is absent and the repository's key file is readable, then write a managed empty `.envrc` when there is none, append it to `<path>/.git/info/exclude` once, and `direnv allow` when direnv is available |
 
 **The first clone is not TOFU.** Both baselines pin github.com's
 published SSH host keys in `programs.ssh.knownHosts` (see Host-key
@@ -394,16 +397,34 @@ comment pointing at the direnv library, and the exclude entry
 keeps it out of a repo whose other contributors never asked for
 it.
 
-**No forge keys, no `nixhold.forges`.** The fleet has one outbound
-key and registers it everywhere. Per-forge keys would exist to
-carry per-forge *users*, and forges that need one already put it
-in the url (CodeCommit's grant-specific user is the ssh username);
-that is why the derived matchBlock deliberately omits `User`. The
-only manual step in the whole chain is registering the `identity`
+**One outbound key, and a named exception.** The fleet has one
+outbound key, `identity`, and registers it everywhere. Per-forge
+*users* never justify a second key: forges that need one already
+put it in the url (CodeCommit's grant-specific user is the ssh
+username); that is why the derived matchBlock deliberately omits
+`User`, and why there is no `nixhold.forges`. What does justify one
+is a forge that cannot take the identity's **algorithm**: AWS
+CodeCommit accepts only ssh-rsa (2048 to 16384 bits), so no
+registration of an ed25519 key ever works there. For that case a
+repository names the algorithm, `key = "rsa"`, and the rest
+follows: the framework declares `identity-rsa` — fleet-scoped,
+framework-owned, `sshKeyType = "rsa"`, not required — the forge's
+block names it instead of `identity` once it is provisioned, and
+the clone waits for it. The key is per *algorithm*, not per
+repository or forge: two forges that both need rsa share
+`identity-rsa`, exactly as every ed25519 forge shares `identity`.
+The manual step is the same one: `nixhold secret edit identity-rsa`
+mints the key and prints the pubkey to register on that forge,
+**once** (CodeCommit mints an ssh key ID on upload; that ID is the
+url's user). `keys/login.pub`, commit signing and the fleet repo's
+own clone stay on `identity`.
+
+The only manual step in the whole chain is registering an outbound
 pubkey on each forge — **once**, for both auth and signing, and
 never again when a machine joins. The CLI prints that line when it
-mints the key, and on a fleet with no login keys of its own it is
-also the line `keys/login.pub` is seeded with (see "Login keys").
+mints the key, and on a fleet with no login keys of its own the
+`identity` line is also what `keys/login.pub` is seeded with (see
+"Login keys").
 
 **Signing is opt-in.** `signByDefault` stays off, so a plain
 `git commit` writes an unsigned commit and `git commit -S` signs
@@ -692,9 +713,10 @@ Fields:
 | `description`, `template`, `required` | CLI-facing metadata driving `secret edit`/`secret list` and lint | — |
 | `required` | false means *optional*: the walk lists it, never prompts for it unless named | true for service declarations and for `password`, false for the other framework ones |
 | `category` | enum `framework` \| `service` \| `repository` \| `operator`; set by the declarer, groups the CLI's output | `operator`; `service` (mkDefault) when `unit` is set |
-| `generator` | shell command whose stdout is the initial content; runs instead of an editor when the ciphertext is missing | ed25519 keygen when `sshKey` (pubkey printed for registration), else null |
+| `generator` | shell command whose stdout is the initial content; runs instead of an editor when the ciphertext is missing | a keygen of `sshKeyType` when `sshKey` (pubkey printed for registration), else null |
 | `homePath` | HM symlink `~/<homePath>` → decrypted path (only with `owner = "user"`) | `.ssh/<name>` when `sshKey`, else null |
 | `sshKey` | marks an SSH private key: generated at provisioning unless the operator chooses to paste one, `.pub` derived at HM activation via `ssh-keygen -y` (failure is loud) | false |
+| `sshKeyType` | the algorithm the default generator mints: `ed25519`, or `rsa` (4096 bits) for a forge that cannot take ed25519. Read only with `sshKey` | `ed25519` |
 | `unit` | NixOS only: `systemd.services.<unit>.serviceConfig.EnvironmentFile += [ <age path> ]`, gated on `active`. Mutually exclusive with `homePath`/`sshKey` (assertion) — systemd reads the file as root, a home symlink is the operator's | null |
 
 The framework derives per-entry: the ciphertext's checkout location
@@ -728,7 +750,7 @@ are declared by the framework, so a forker never writes them:
 | Secret | Declared by | Shape |
 |---|---|---|
 | `password` | NixOS identity module | **fleet scope**, owner root, **`required = true`**, generator `mkpasswd -m yescrypt` (prompts on the TTY, emits the hash); wired to the operator's `hashedPasswordFile`. Declared by the NixOS half only, so a Darwin-only fleet never provisions it. Required because it is the way in when ssh is not: a box with no console password is unreachable the moment the network is (unjoined tailnet, broken interface, a reformat at its own keyboard), with a locked account and nothing to log in as. It costs nothing past the first host — the first `host add` mints the one ciphertext before any host is installed, and every later host reads that same file |
-| `identity` | secrets baseline, both platforms | **fleet scope**, `sshKey = true`, `required = false`. The fleet's single outbound ssh key: `IdentityFile` on every fleet-peer and forge matchBlock, git signing key, the credential the installer ISO clones the fleet repo with, and — on a fleet that lists nothing else — the line `keys/login.pub` is seeded with when the CLI mints it. One per fleet, by construction rather than by assertion: there is no option that mints a second one |
+| `identity` | secrets baseline, both platforms | **fleet scope**, `sshKey = true`, `required = false`. The fleet's single outbound ssh key: `IdentityFile` on every fleet-peer and forge matchBlock, git signing key, the credential the installer ISO clones the fleet repo with, and — on a fleet that lists nothing else — the line `keys/login.pub` is seeded with when the CLI mints it. One ed25519 key per fleet, by construction rather than by assertion; the one second outbound key the framework mints is `identity-rsa`, declared by a repository whose forge cannot take ed25519 (see "One outbound key, and a named exception") |
 | `env` | secrets baseline, both platforms | fleet scope, owner user (0600), `required = false`. Sourced into every operator shell by system-level shell init on both platforms (`set -a; . <path>; set +a`, guarded on readability), gated on `active`. Its blast radius is every process the operator starts from a login shell — editor, browser, build, assistant — so it holds what genuinely belongs to the whole seat; anything narrower goes in a repository's own env, which direnv loads only inside that checkout |
 | `<authKeySecret>` | tailscale service when the option is set | host scope, owner root, 0400, `category = "service"`; the join unit retries on failure every 30 s, so a late network or a slow control plane converges and only a spent key stays failed |
 

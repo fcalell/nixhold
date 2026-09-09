@@ -3,6 +3,7 @@ let
   inherit (lib) mkOption types;
 
   layoutSecrets = config.nixhold.layout.secrets;
+  sharedTypes = config.nixhold.types;
   # The fleet attribute key, NOT `config.networking.hostName`: the OS
   # hostname is only mkDefault'ed to it, so a host renamed by an MDM
   # policy (or by the operator) would otherwise silently re-point its
@@ -42,21 +43,28 @@ let
   # lint flags a missing one.
   fleetPubPath = layout.keysDir + "/fleet.pub";
 
-  # The default generator of an `sshKey` secret: a fresh ed25519 key
-  # on stdout (what gets encrypted), its pubkey on stderr (what the
-  # operator registers wherever the key is used). ssh-keygen insists
+  # The default generator of an `sshKey` secret: a fresh key of the
+  # secret's `sshKeyType` on stdout (what gets encrypted), its pubkey
+  # on stderr (what the operator registers wherever the key is used).
+  # rsa is 4096 bits: CodeCommit, the forge that forces rsa at all,
+  # takes 2048 to 16384, and there is no reason to sit at the floor.
+  # ssh-keygen insists
   # on writing to disk, so the pair is made in a private dir the trap
   # removes on every exit path. The key's comment — which outlives
   # the mint, in `authorized_keys` and on every forge — names the
   # thing that owns it: a fleet secret is the fleet's, so stamping
   # the host that happened to run the generator would misdescribe it
   # on every OTHER host from then on.
-  keygen = scope: name: ''
+  keygenFlags = {
+    ed25519 = "-t ed25519";
+    rsa = "-t rsa -b 4096";
+  };
+  keygen = scope: name: type: ''
     (
       umask 077
       d="$(mktemp -d)" || exit 1
       trap 'rm -rf "$d"' EXIT INT TERM
-      ssh-keygen -q -t ed25519 -N "" -C "${scopeLabel scope}-${name}" -f "$d/key" || exit 1
+      ssh-keygen -q ${keygenFlags.${type}} -N "" -C "${scopeLabel scope}-${name}" -f "$d/key" || exit 1
       cat "$d/key" || exit 1
       { echo "pubkey of ${scopeLabel scope}/${name} (register it where this key is used):"; cat "$d/key.pub"; } >&2
     )
@@ -93,10 +101,21 @@ let
             Marks the secret as an SSH private key: the home module
             derives `~/<homePath>.pub` via `ssh-keygen -y` at HM
             activation, `homePath` defaults to `".ssh/<name>"`, and
-            `generator` defaults to an ed25519 keygen (on a terminal
-            `nixhold secret edit` offers to paste an existing key
-            instead). Only meaningful with `owner = "user"`. Behavior
-            is triggered by this option, never by the secret's name.
+            `generator` defaults to a keygen of `sshKeyType` (on a
+            terminal `nixhold secret edit` offers to paste an
+            existing key instead). Only meaningful with
+            `owner = "user"`. Behavior is triggered by this option,
+            never by the secret's name.
+          '';
+        };
+
+        sshKeyType = mkOption {
+          type = sharedTypes.sshKeyType;
+          default = "ed25519";
+          description = ''
+            Algorithm of an `sshKey` secret's default generator:
+            ed25519, or rsa (4096 bits) for a forge that cannot take
+            ed25519. Read only when `sshKey = true`.
           '';
         };
 
@@ -192,7 +211,7 @@ let
 
         generator = mkOption {
           type = types.nullOr types.str;
-          defaultText = lib.literalMD "an ed25519 keygen when `sshKey`, else `null`";
+          defaultText = lib.literalMD "a keygen of `sshKeyType` when `sshKey`, else `null`";
           description = ''
             Shell command `nixhold secret edit` runs to generate
             the initial secret content when the encrypted file
@@ -326,7 +345,9 @@ let
 
       config = {
         homePath = lib.mkDefault (if config.sshKey then ".ssh/${name}" else null);
-        generator = lib.mkDefault (if config.sshKey then keygen config.scope name else null);
+        generator = lib.mkDefault (
+          if config.sshKey then keygen config.scope name config.sshKeyType else null
+        );
         # Defaults that depend on another option are stated at
         # option-default priority (mkOptionDefault), not mkDefault:
         # a service module writing `owner = lib.mkDefault "caddy"`

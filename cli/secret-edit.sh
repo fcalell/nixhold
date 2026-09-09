@@ -235,13 +235,14 @@ nh_secret_provision() {
     template="$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].template // ""')"
     desc="$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].description // ""')"
     sshkey="$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].sshKey // false')"
+    sshkeytype="$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].sshKeyType // "ed25519"')"
     nh_info "[$idx/$total] $name${desc:+ — $desc}"
     # An SSH key may already exist and be registered elsewhere:
     # offer to adopt it rather than mint a replacement. Pasting is
     # the editor path; Esc skips the secret.
     if [ -n "$generator" ] && [ "$sshkey" = "true" ] && nh_tty; then
       choice="$(nh_prompt_choose "$host/$name is an SSH key:" \
-        "generate a new ed25519 key" "paste an existing private key")" || choice=""
+        "generate a new $sshkeytype key" "paste an existing private key")" || choice=""
       case "$choice" in
         generate*) ;;
         paste*) generator="" ;;

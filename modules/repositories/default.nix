@@ -2,10 +2,11 @@
 #
 # One declaration ("I work on this repo") produces everything a
 # checkout needs on every host: a fleet-scoped env secret named after
-# it, the ssh client wiring that reaches its forge with the host's
-# `identity` key, a direnv library that exports that env inside the
-# checkout, and a clone at activation if the directory is not there
-# yet. Nothing here is per-host: a repository is declared once for the
+# it, the ssh client wiring that reaches its forge with the fleet's
+# outbound key (`identity`, or `identity-<type>` for a forge that
+# cannot take ed25519 — declared here the moment a repository names
+# it), a direnv library that exports that env inside the checkout,
+# and a clone at activation if the directory is not there yet. Nothing here is per-host: a repository is declared once for the
 # fleet and every host that evaluates this module carries it.
 #
 # The fleet repo itself is declared nowhere — `layout.repoUrl` names
@@ -26,7 +27,16 @@ let
 
   username = config.nixhold.identity.username;
   repos = config.nixhold.repositories;
-  identitySecret = config.nixhold.secrets.identity;
+  secrets = config.nixhold.secrets;
+
+  # The fleet's outbound key of one algorithm: `identity` is ed25519
+  # (modules/home/common.nix declares it); any other algorithm is a
+  # second framework key named after it, declared below the first
+  # time a repository asks for it.
+  keySecretName = type: if type == "ed25519" then "identity" else "identity-${type}";
+  overrideTypes = lib.unique (
+    lib.filter (t: t != "ed25519") (lib.mapAttrsToList (_: r: r.key) repos)
+  );
 
   # The forge a URL reaches over ssh, or null when it does not use
   # ssh at all. Two shapes carry a host:
@@ -50,15 +60,27 @@ let
     else
       null;
 
-  # The fleet repo's forge is github.com by `layout.repoUrl`'s
-  # contract (a bare slug, github.com assumed — modules/layout).
-  forgeHosts = lib.unique (
-    lib.filter (h: h != null) (lib.mapAttrsToList (_: r: forgeHost r.url) repos)
-    ++ lib.optional (config.nixhold.layout.repoUrl != null) "github.com"
+  # Every forge reached over ssh, with the repositories reaching it
+  # and the key each names. The fleet repo's forge is github.com by
+  # `layout.repoUrl`'s contract (a bare slug, github.com assumed —
+  # modules/layout), on the identity key.
+  forges = lib.groupBy (e: e.host) (
+    lib.filter (e: e.host != null) (
+      lib.mapAttrsToList (name: r: {
+        inherit name;
+        host = forgeHost r.url;
+        key = r.key;
+      }) repos
+    )
+    ++ lib.optional (config.nixhold.layout.repoUrl != null) {
+      name = "the fleet repo (layout.repoUrl)";
+      host = "github.com";
+      key = "ed25519";
+    }
   );
-
-  # `~/.ssh/identity`, as ssh and the activation script spell it.
-  identityFile = "~/${identitySecret.homePath}";
+  # The one key a forge's block names; the assertion below makes
+  # every entry of a host agree, so the head is the answer.
+  forgeSecret = entries: secrets.${keySecretName (lib.head entries).key};
 
   repositoriesDir = config.nixhold.home.repositoriesDir;
 
@@ -71,10 +93,25 @@ let
           description = ''
             Clone URL. An ssh URL (scp-like `git@host:owner/repo.git`
             or `ssh://git@host/owner/repo.git`) additionally wires the
-            host's `identity` key as the `IdentityFile` for that
-            forge; an https URL is cloned as-is.
+            fleet's outbound key (`key`) as the `IdentityFile` for
+            that forge; an https URL is cloned as-is.
           '';
           example = "git@github.com:alice/notes.git";
+        };
+
+        key = mkOption {
+          type = config.nixhold.types.sshKeyType;
+          default = "ed25519";
+          description = ''
+            Algorithm of the outbound key the forge takes. `ed25519`
+            is the fleet's `identity`. `rsa` is for a forge that
+            cannot take ed25519 (AWS CodeCommit): it names the
+            fleet's second outbound key, the framework secret
+            `identity-rsa`, declared and minted the moment a
+            repository asks for it and registered on that forge
+            like `identity` is on every other. Every repository on
+            one forge host names the same key.
+          '';
         };
 
         path = mkOption {
@@ -100,7 +137,7 @@ in
     description = ''
       The operator's git checkouts. A bare string is the URL
       (`{ notes = "git@github.com:alice/notes.git"; }`); the attrset
-      form adds `path`. The attribute name is the repository's name
+      form adds `path` and `key`. The attribute name is the repository's name
       throughout: the directory under
       `nixhold.home.repositoriesDir`, and the
       `nixhold.secrets.<name>` holding its env file — one fleet-wide
@@ -114,6 +151,10 @@ in
         monorepo = {
           url = "git@github.com:acme/monorepo.git";
           path = "~/work/monorepo";
+        };
+        legacy = {
+          url = "ssh://APKAEXAMPLE@git-codecommit.eu-central-1.amazonaws.com/v1/repos/legacy";
+          key = "rsa";
         };
       }
     '';
@@ -138,15 +179,50 @@ in
       # A repository's secret is the repository's; a service (or the
       # framework) that already owns that name would otherwise have
       # its declaration quietly merged with this one.
-      assertions = lib.mapAttrsToList (name: _: {
-        assertion = config.nixhold.secrets.${name}.category == "repository";
-        message = ''
-          nixhold.repositories.${name}: a secret named "${name}" is
-          already declared by something else (category
-          "${config.nixhold.secrets.${name}.category}"). Rename the
-          repository entry, or the other declaration.
-        '';
-      }) repos;
+      assertions =
+        lib.mapAttrsToList (name: _: {
+          assertion = config.nixhold.secrets.${name}.category == "repository";
+          message = ''
+            nixhold.repositories.${name}: a secret named "${name}" is
+            already declared by something else (category
+            "${config.nixhold.secrets.${name}.category}"). Rename the
+            repository entry, or the other declaration.
+          '';
+        }) repos
+        # The ssh block is per forge host and names one key.
+        ++ lib.mapAttrsToList (host: entries: {
+          assertion = lib.length (lib.unique (map (e: e.key) entries)) == 1;
+          message = ''
+            nixhold.repositories: the forge ${host} is reached with
+            more than one key (${
+              lib.concatMapStringsSep ", " (e: "${e.name}: ${e.key}") entries
+            }). The ssh block is per forge host, so every repository
+            on it must name the same `key`.
+          '';
+        }) forges;
+    }
+
+    {
+      # The fleet's second outbound key, one per algorithm a
+      # repository names besides identity's ed25519. Fleet-scoped and
+      # framework-owned like `identity` (modules/home/common.nix):
+      # registered on its forge once, revoked with the fleet. Not
+      # required: minted by `nixhold secret edit`, which prints the
+      # pubkey to register.
+      nixhold.secrets = lib.listToAttrs (
+        map (type: {
+          name = keySecretName type;
+          value = {
+            sshKey = true;
+            sshKeyType = type;
+            scope = lib.mkDefault "fleet";
+            required = lib.mkDefault false;
+            category = lib.mkDefault "framework";
+            owner = lib.mkDefault "user";
+            description = lib.mkDefault "the fleet's outbound ${type} SSH key, for forges that cannot take identity's ed25519";
+          };
+        }) overrideTypes
+      );
     }
 
     {
@@ -218,14 +294,15 @@ in
               # Only an ssh URL needs the key; an https clone must not
               # be skipped waiting for one.
               needsKey = forgeHost r.url != null;
+              keySecret = secrets.${keySecretName r.key};
             in
             hmArgs.lib.hm.dag.entryAfter [ "writeBoundary" ] ''
               repo=${lib.escapeShellArg dir}
               clone=1
               ${lib.optionalString needsKey ''
-                if [ ! -r "$HOME/${identitySecret.homePath}" ]; then
+                if [ ! -r "$HOME/${keySecret.homePath}" ]; then
                   clone=0
-                  warnEcho "nixhold: ${name} not cloned — ${identityFile} is not readable yet (agenix decrypts asynchronously on darwin; re-run activation once it is there)"
+                  warnEcho "nixhold: ${name} not cloned — ~/${keySecret.homePath} is not readable yet (agenix decrypts asynchronously on darwin, and a key nobody has minted is not there at all; re-run activation once it is there)"
                 fi
               ''}
               if [ ! -e "$repo" ] && [ "$clone" = 1 ]; then
@@ -258,18 +335,26 @@ in
           # user. mkDefault so an operator's own block wins.
           #
           # Unconditional in the key: a forge authenticates the
-          # fleet's OUTBOUND key, the `identity` secret every host
-          # holds and every forge has registered. How the operator
-          # logs in to their own hosts (`keys/login.pub`, typically a
-          # hardware token) is a different key on a different
-          # journey, and does not reach github.
+          # fleet's OUTBOUND key of the algorithm it takes, a
+          # framework secret every host holds and that forge has
+          # registered. How the operator logs in to their own hosts
+          # (`keys/login.pub`, typically a hardware token) is a
+          # different key on a different journey, and does not reach
+          # a forge. A block waits for its key to be provisioned:
+          # naming a file that never lands would pin ssh to nothing.
 
-          programs.ssh.settings = lib.optionalAttrs identitySecret.active (
-            lib.genAttrs forgeHosts (_: {
-              IdentityFile = lib.mkDefault identityFile;
-              IdentitiesOnly = lib.mkDefault true;
-            })
-          );
+          programs.ssh.settings = lib.concatMapAttrs (
+            host: entries:
+            let
+              secret = forgeSecret entries;
+            in
+            lib.optionalAttrs secret.active {
+              ${host} = {
+                IdentityFile = lib.mkDefault "~/${secret.homePath}";
+                IdentitiesOnly = lib.mkDefault true;
+              };
+            }
+          ) forges;
 
           # Never enables direnv — it wires into the one the operator
           # already runs.

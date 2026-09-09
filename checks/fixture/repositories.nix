@@ -27,10 +27,12 @@ let
   committedFleetPub = lib.removeSuffix "\n" (builtins.readFile ./keys/fleet.pub);
 in
 {
-  # Four repositories, chosen for what they distinguish:
+  # Five repositories, chosen for what they distinguish:
   #   notes/scratch  two repos on ONE forge host → one matchBlock
   #   infra          ssh:// form on another forge → its own block
   #   docs           https + explicit path → no matchBlock at all
+  #   legacy         key = "rsa" → declares identity-rsa; its forge
+  #                  block waits for that key to be provisioned
   # Only `notes` has a committed ciphertext, so the direnv library
   # must carry exactly one entry.
   nixhold.repositories = {
@@ -40,6 +42,10 @@ in
     docs = {
       url = "https://example.invalid/fixture/docs.git";
       path = "~/work/docs";
+    };
+    legacy = {
+      url = "ssh://APKAFIXTURE@git-codecommit.fixture.invalid/v1/repos/legacy";
+      key = "rsa";
     };
   };
 
@@ -70,6 +76,39 @@ in
     {
       assertion = secrets.identity.homePath == ".ssh/identity";
       message = "fixture: the identity secret must land at ~/.ssh/identity";
+    }
+    {
+      assertion =
+        secrets.identity.sshKeyType == "ed25519" && lib.hasInfix "-t ed25519" secrets.identity.generator;
+      message = "fixture: identity is minted as ed25519";
+    }
+
+    # --- the second outbound key, declared by `key = "rsa"` ---
+    {
+      assertion =
+        secrets ? identity-rsa
+        && secrets.identity-rsa.sshKey
+        && secrets.identity-rsa.sshKeyType == "rsa"
+        && secrets.identity-rsa.scope == "fleet"
+        && secrets.identity-rsa.category == "framework"
+        && !secrets.identity-rsa.required
+        && secrets.identity-rsa.homePath == ".ssh/identity-rsa";
+      message = "fixture: a repository with key = \"rsa\" must declare the fleet-scoped framework sshKey secret identity-rsa at ~/.ssh/identity-rsa";
+    }
+    {
+      assertion = lib.hasInfix "-t rsa -b 4096" secrets.identity-rsa.generator;
+      message = "fixture: identity-rsa's generator must mint rsa-4096, got: ${secrets.identity-rsa.generator}";
+    }
+    {
+      # No ciphertext is committed for it, so it is inactive and the
+      # forge that needs it gets no block yet: naming a file that
+      # never lands would pin ssh to nothing.
+      assertion = !secrets.identity-rsa.active && !(sshBlocks ? "git-codecommit.fixture.invalid");
+      message = "fixture: an unprovisioned identity-rsa must not produce a forge block (got ${builtins.toJSON (lib.attrNames sshBlocks)})";
+    }
+    {
+      assertion = hm.home.activation ? nixhold-repo-legacy;
+      message = "fixture: no clone activation step was emitted for the legacy repository";
     }
     {
       assertion = secrets.env.scope == "fleet" && secrets.env.category == "framework";
