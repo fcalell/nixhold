@@ -48,6 +48,11 @@ nh_status_host() {
   esac
   sdir="$(nh_worktree_secrets_dir)" || return 2
 
+  if [ "$platform" = "android" ]; then
+    nh_status_android "$host"
+    return $?
+  fi
+
   if ! services_json="$(nh_host_eval "$host" "$platform" nixhold.services)"; then
     nh_err "host '$host' ($platform) does not evaluate — see the error above"
     return 1
@@ -93,18 +98,66 @@ nh_status_host() {
   done
 }
 
+# nh_status_android <host> — an Android host has no services: what it
+# declares is its plan, shown eval-side (no APK is fetched).
+nh_status_android() {
+  local host="$1" summary secrets_json sdir
+  sdir="$(nh_worktree_secrets_dir)" || return 2
+  if ! summary="$(nh_host_eval "$host" android android.summary)" \
+    || ! secrets_json="$(nh_host_secrets "$host" android)"; then
+    nh_err "host '$host' (android) does not evaluate — see the error above"
+    return 1
+  fi
+  echo "HOST: $host (android, $(nh_host_arch "$host"))"
+  printf '  networks: %s\n' "$(nh_host_field "$host" networks | jq -r 'join(", ")')"
+  printf '  device_name: %s\n' "$(printf '%s' "$summary" | jq -r '.hostName')"
+  local serial
+  serial="$(nh_host_field "$host" serial)"
+  printf '  reach: %s\n' "${serial:+usb serial $serial}${serial:-$(nh_deploy_addr "$host" || true)}"
+  echo
+  printf '  packages:\n'
+  printf '%s' "$summary" | jq -r '.apks[] | "    \(.)"'
+  printf '  removed:\n'
+  printf '%s' "$summary" | jq -r '.removedPackages[] | "    \(.)"'
+  printf '  settings:\n'
+  printf '%s' "$summary" | jq -r '.settings | to_entries[] | .key as $ns | .value | to_entries[] | "    \($ns) \(.key) = \(.value)"'
+  printf '  launcher: %s\n' "$(printf '%s' "$summary" | jq -r '.launcher // "-"')"
+  printf '  device owner: %s\n' "$(printf '%s' "$summary" | jq -r '.deviceOwner // "-"')"
+  echo
+  printf '  secrets:\n'
+  printf '%s' "$secrets_json" | jq -r '
+    to_entries[]
+    | [ .key, (.value.category // "operator"), (.value.scope // "host"),
+        (if .value.required then "required" else "optional" end),
+        (.value.description // "") ]
+    | @tsv
+  ' | while IFS=$'\t' read -r name category scope req desc; do
+    local state="missing"
+    [ -e "$(nh_secret_file "$sdir" "$host" "$name" "$scope")" ] && state="present"
+    printf '    %-24s %-12s %-6s %-8s %-8s %s\n' "$name" "$category" "$scope" "$state" "$req" "$desc"
+  done
+}
+
 # One table row. A host that fails to evaluate is marked and the walk
 # continues — one broken host must not hide the rest of the fleet —
-# but the verb's exit status remembers it.
+# but the verb's exit status remembers it. An Android host has no
+# services column: its plan is `nixhold status <name>`.
 nh_status_row() {
   local host="$1" platform="$2" services_json secrets_json services secrets missing sdir name
   sdir="$(nh_worktree_secrets_dir)" || return 1
-  if ! services_json="$(nh_host_eval "$host" "$platform" nixhold.services 2>/dev/null)" \
-    || ! secrets_json="$(nh_host_secrets "$host" "$platform" 2>/dev/null)"; then
+  if [ "$platform" = "android" ]; then
+    services_json="{}"
+    services="-"
+  elif ! services_json="$(nh_host_eval "$host" "$platform" nixhold.services 2>/dev/null)"; then
     printf '%-16s %-8s %-9s %-8s %s\n' "$host" "$platform" eval-err eval-err ""
     return 1
+  else
+    services="$(printf '%s' "$services_json" | jq '[.[] | select(.enable // false)] | length')"
   fi
-  services="$(printf '%s' "$services_json" | jq '[.[] | select(.enable // false)] | length')"
+  if ! secrets_json="$(nh_host_secrets "$host" "$platform" 2>/dev/null)"; then
+    printf '%-16s %-8s %-9s %-8s %s\n' "$host" "$platform" "$services" eval-err ""
+    return 1
+  fi
   secrets="$(printf '%s' "$secrets_json" | jq 'length')"
   missing=0
   local scope

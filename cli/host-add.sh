@@ -5,7 +5,8 @@
 #      publicIp, stateVersion — every abort happens here, before the
 #      first write. Prompts default from what is known: the machine's
 #      arch when it is the target (ISO, Mac), the profile from the
-#      arch, stateVersion from the pinned nixpkgs / nix-darwin.
+#      arch, stateVersion from the pinned nixpkgs / nix-darwin (an
+#      Android host has none).
 #      Networks are asked only when the fleet declares more than the
 #      tailscale default, a public address only for a host on an
 #      internet network; publicFqdn defaults in the roster.
@@ -22,7 +23,9 @@
 #      (both are fleet-scoped) and every host reads them with the one
 #      fleet key, so nothing is minted and nothing is rekeyed.
 #   5. Ask "install now?": this machine (on the ISO, or a Mac), over
-#      ssh to an address, or later. --install <addr> answers it.
+#      ssh to an address, or later. --install <addr> answers it. An
+#      Android host is never installed: `nixhold deploy` is its
+#      first contact.
 # What this verb wrote is committed before the install starts; on the
 # installer ISO, whose checkout is ephemeral, it is pushed too.
 
@@ -81,7 +84,7 @@ EOF
   local arch
   # shellcheck disable=SC2046 # nh_first emits one space-free option per line
   arch="$(nh_prompt_choose "Arch for $name:" \
-    $(nh_first "$(nh_here_arch)" "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin"))" || arch=""
+    $(nh_first "$(nh_here_arch)" "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" "aarch64-android"))" || arch=""
   if [ -z "$arch" ]; then
     nh_err "aborted — no arch chosen; nothing was written"
     return 1
@@ -90,13 +93,18 @@ EOF
   # Profile list: framework-shipped (the one matching the arch first)
   # + a free-text escape for forker-authored profiles.
   local profile prof_default="nixhold.profiles.server"
-  case "$arch" in *-darwin) prof_default="nixhold.profiles.workstationDarwin" ;; esac
+  case "$arch" in
+    *-darwin) prof_default="nixhold.profiles.workstationDarwin" ;;
+    *-android) prof_default="nixhold.profiles.kiosk" ;;
+  esac
   # shellcheck disable=SC2046 # nh_first emits one space-free option per line
   profile="$(nh_prompt_choose "Profile for $name:" \
     $(nh_first "$prof_default" \
       "nixhold.profiles.server" \
       "nixhold.profiles.workstationDarwin" \
-      "nixhold.profiles.desktopLinux") \
+      "nixhold.profiles.desktopLinux" \
+      "nixhold.profiles.kiosk" \
+      "nixhold.profiles.mobile") \
     "(forker-authored — type custom name)")" || profile=""
   if [ -z "$profile" ]; then
     nh_err "aborted — no profile chosen; nothing was written"
@@ -146,7 +154,8 @@ EOF
   # stateVersion belongs with the other prompts: asking it after the
   # keypair exists would put a cancel on the far side of a write. The
   # default is the pinned release (nixpkgs' `lib.trivial.release`,
-  # nix-darwin's `system.maxStateVersion`).
+  # nix-darwin's `system.maxStateVersion`). An Android host has no
+  # system of its own to version.
   local statever=""
   case "$arch" in
     *-linux)
@@ -154,6 +163,9 @@ EOF
       ;;
     *-darwin)
       statever="$(nh_prompt_input "system.stateVersion (nix-darwin integer)" "$(nh_default_state_version "$root" darwin)")" || statever=""
+      ;;
+    *-android)
+      statever="-"
       ;;
   esac
   if [ -z "$statever" ]; then
@@ -231,6 +243,12 @@ EOF
 nh_add_install_question() {
   local name="$1" arch="$2" addr="${3:-}" root choice
   root="$(nh_fleet_root)" || return 1
+  case "$arch" in
+    *-android)
+      nh_info "next: nixhold deploy $name  (with network debugging on and the device on this LAN, or attached over USB)"
+      return 0
+      ;;
+  esac
   . "$NIXHOLD_LIB_ROOT/host-install.sh"
   if [ -n "$addr" ]; then
     cmd_host_install "$name" --remote "$addr"
@@ -406,6 +424,13 @@ nh_scaffold_host_files() {
 { ... }:
 {
   system.stateVersion = $statever;
+}
+EOF
+      ;;
+    *-android)
+      cat >"$dir/default.nix" <<'EOF'
+{ ... }:
+{
 }
 EOF
       ;;

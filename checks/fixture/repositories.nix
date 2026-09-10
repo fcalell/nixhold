@@ -169,6 +169,16 @@ in
       message = "fixture: no clone activation step was emitted for the notes repository";
     }
 
+    # --- the fleet checkout sits with the declared repositories ---
+    {
+      # One directory holds every checkout the operator works in,
+      # the fleet included, and `repositoriesDir` moves all of them.
+      assertion =
+        config.nixhold.home.repositoriesPath == "${hm.home.homeDirectory}/projects"
+        && config.programs.nixhold.fleetDir == "${config.nixhold.home.repositoriesPath}/fleet";
+      message = "fixture: the fleet checkout must default under repositoriesPath, got ${toString config.programs.nixhold.fleetDir}";
+    }
+
     # --- operator login keys: one file, verbatim ---
     {
       # `keys/login.pub` is the only login mechanism: every line of

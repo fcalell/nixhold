@@ -130,7 +130,23 @@ self.lib.mkFleet {
       modules = [
         ./known-hosts-assertions.nix
         ./repositories.nix
+        ./claude-profile.nix
       ];
+    };
+
+    # The Android hosts, one per shipped profile. `networks` left to
+    # its default, so each gets a tailnet address like any host; the
+    # `adb` key they declare (fleet scope, required) is the throwaway
+    # ciphertext at ./secrets/adb.age.
+    fixture-kiosk = {
+      arch = "aarch64-android";
+      profile = self.profiles.kiosk;
+      modules = [ ./kiosk-stub.nix ];
+    };
+    fixture-mobile = {
+      arch = "aarch64-android";
+      profile = self.profiles.mobile;
+      modules = [ ./mobile-stub.nix ];
     };
   };
 }

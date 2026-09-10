@@ -4,12 +4,15 @@
 # Daily verb. Builds + activates each host's current config.
 #   - No name: this machine (nh_deploy_self); a usage error when it
 #     is not a fleet host. --all: every host this machine can
-#     activate (every NixOS host; a darwin host only when this Mac
-#     is it). Naming is the confirmation: no picker, no prompt.
+#     activate (every NixOS host, every Android host; a darwin host
+#     only when this Mac is it). Naming is the confirmation: no
+#     picker, no prompt.
 #   - Local mode iff <name> is this machine: nixos-rebuild / darwin-rebuild.
 #   - Remote NixOS: nixos-rebuild --target-host <addr> --build-host <addr>
 #     (the target builds itself; we orchestrate).
 #   - Remote darwin: refused (deploy Macs locally).
+#   - Android: the plan is built here and the device converged onto
+#     it over adb (deploy-android.sh); --mode does not apply.
 # Several hosts deploy in order; a failure on one does not abandon
 # the rest, and the verb reports the failed set at the end.
 #
@@ -24,12 +27,14 @@
 # The required-secret walk lives in the sibling verb.
 # shellcheck source=secret-edit.sh
 . "$NIXHOLD_LIB_ROOT/secret-edit.sh"
+# shellcheck source=deploy-android.sh
+. "$NIXHOLD_LIB_ROOT/deploy-android.sh"
 
 cmd_deploy() {
-  local names=() mode="switch" dry_run=0 target="" all=0
+  local names=() mode="switch" mode_given=0 dry_run=0 target="" all=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --mode) mode="$2"; shift 2 ;;
+      --mode) mode="$2"; mode_given=1; shift 2 ;;
       --dry-run) dry_run=1; shift ;;
       --target) target="$2"; shift 2 ;;
       --all) all=1; shift ;;
@@ -75,6 +80,15 @@ EOF
     nh_err "--target applies to exactly one host"
     return 1
   fi
+  if [ "$mode_given" -eq 1 ]; then
+    local n
+    for n in "${names[@]}"; do
+      if [ "$(nh_host_platform "$n" 2>/dev/null || true)" = "android" ]; then
+        nh_err "--mode does not apply to $n: an Android host is converged, not switched"
+        return 1
+      fi
+    done
+  fi
 
   nh_info "deploy: ${names[*]} — mode=$mode$([ "$dry_run" -eq 1 ] && printf ' dry-run')"
 
@@ -110,7 +124,8 @@ nh_deploy_self() {
 }
 
 # nh_deploy_eligible — the hosts this machine can activate, one per
-# line: every NixOS host (the target builds its own closure) plus a
+# line: every NixOS host (the target builds its own closure), every
+# Android host (this machine builds the plan and drives adb), plus a
 # darwin host only when this Mac is it.
 nh_deploy_eligible() {
   local self line name platform
@@ -118,7 +133,7 @@ nh_deploy_eligible() {
   while IFS= read -r line; do
     name="${line%% *}"
     platform="${line##* }"
-    if [ "$platform" = "nixos" ] || [ "$name" = "$self" ]; then
+    if [ "$platform" = "nixos" ] || [ "$platform" = "android" ] || [ "$name" = "$self" ]; then
       printf '%s\n' "$name"
     fi
   done < <(nh_hosts)
@@ -146,6 +161,13 @@ nh_deploy_host() {
     nh_err "secret provisioning failed — fix the secrets above, then re-run deploy"
     return 1
   }
+
+  # An Android host holds no fleet key and takes no ssh: nothing
+  # below applies. Its plan is built here and applied over adb.
+  if [ "$platform" = "android" ]; then
+    nh_android_deploy "$name" "$dry_run" "$target"
+    return $?
+  fi
 
   # The address is resolved here rather than in the nixos branch below:
   # the fleet-key check travels over the same connection, and a host

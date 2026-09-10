@@ -133,7 +133,7 @@ read from disk. A minimal fork passes only `inputs`, `identity`,
 | `identity` | `{ username, fullName, email }` |
 | `layout` (optional) | CLI filesystem contract; every field defaults from `inputs.self`: `secrets` → `/secrets`, `hostsFile` → `/hosts.nix`, `modulesDir` → `/modules`, `profilesDir` → `/profiles`, `hostsDir` → `/hosts`, `keysDir` → `/keys`, `ageRecipient` → `/keys/operator.pub` (the operator recipient *list*, one age recipient per line), `ageIdentityWrapped` → `/keys/operator.age` when that file exists and `null` when it does not (`nullOr path`; see "Operator routes"). `repoUrl` is the one non-derivable field — a bare `owner/repo` slug (github.com assumed, cloned over SSH with the fleet's `identity` key), typed to reject URL schemes and a `.git` suffix since both the remote and `programs.nixhold.fleetDir` are built out of it; required to build the installer ISO, unused otherwise. Defaulting is computed values off `self`, not filesystem discovery (principle 14 intact) |
 | `networks` | `{ <name> = { type, magicDnsSuffix?, domain? }; }` |
-| `hosts` | `{ <name> = { arch, profile, modules, networks?, disk?, publicIp?, publicFqdn? }; }` |
+| `hosts` | `{ <name> = { arch, profile, modules, networks?, disk?, serial?, publicIp?, publicFqdn? }; }`; `arch` names the family the builder dispatches on, `aarch64-android` included (see "Android hosts") |
 
 Rules:
 
@@ -150,10 +150,13 @@ Rules:
   `host.profile` → framework baseline (hostname, platform,
   `nixhold.{identity,layout,fleet}`) → `host.modules`.
   `specialArgs` = `{ inputs, identity, fleet, hostname }`.
-- Dispatch is per arch family: separate NixOS and Darwin builders,
-  no `isDarwin` branching inside one builder. A third family (WSL,
-  BSD) would be a third builder + output namespace.
-- Outputs: `nixosConfigurations`, `darwinConfigurations`, plus
+- Dispatch is per arch family: separate NixOS, Darwin and Android
+  builders, no `isDarwin` branching inside one builder. Android is
+  the third family (see "Android hosts"); a fourth (WSL, BSD) is
+  one more builder + output namespace.
+- Outputs: `nixosConfigurations`, `darwinConfigurations`,
+  `androidConfigurations.<system>` (keyed by the seat that builds
+  the plan, see "Android hosts"), plus
   re-exported `packages`/`apps` (the `nixhold` CLI), `formatter`
   (nixfmt), and `packages.<arch>.installerIso` per Linux arch with
   ≥1 host — emitted only once the image is actually buildable:
@@ -171,7 +174,8 @@ Rules:
   invariants are module assertions instead; the framework's own
   `checks` are the synthetic fixture fleet (`fixture-server`,
   `fixture-gateway`, `fixture-node`, `fixture-desktop`,
-  `fixture-iso`, `fixture-mac`), which is what catches contract
+  `fixture-iso`, `fixture-mac`, `fixture-kiosk`, `fixture-mobile`),
+  which is what catches contract
   drift per commit. Every shipped profile is drawn by a host there:
   a profile nothing builds is a profile nothing checks.
 - `profile` is a Nix value (attr reference), never a string. Typos
@@ -195,8 +199,8 @@ Rules:
   `inputs.nixhold` like any forker.
 
 Framework flake outputs: `lib.mkFleet`, `nixosModules.nixhold`,
-`darwinModules.nixhold`,
-`profiles.{server,desktopLinux,workstationDarwin}`,
+`darwinModules.nixhold`, `androidModules.nixhold`,
+`profiles.{server,desktopLinux,workstationDarwin,kiosk,mobile}`,
 `modules.services.<platform>.*`, `modules.infra.*`,
 `apps.<sys>.nixhold`, `templates.default`, `formatter`, `checks`.
 
@@ -232,8 +236,9 @@ Concepts, not filesystem (principle 14):
   modules keep the older shape (no options unless imported).
 - **Profiles (layer 2)** are opinionated host-kind bundles: import
   service/infra modules, set defaults. Shipped:
-  `server`, `desktopLinux`, `workstationDarwin` (matching the
-  author's host kinds). Forkers compose their own by importing
+  `server`, `desktopLinux`, `workstationDarwin`, and for Android
+  hosts `kiosk` and `mobile` (matching the author's host kinds; see
+  "Android hosts"). Forkers compose their own by importing
   module values; multiple profiles compose via
   `{ imports = [ ... ]; }`. Everything profile-set is overridable
   in the host file. A profile owns the whole shape of its host
@@ -255,7 +260,7 @@ Concepts, not filesystem (principle 14):
   at its default path (see Hardware).
 - **Fleet manifest** — the `mkFleet` args attach a profile to each
   host; the manifest reads as "I have a server, a desktop, a
-  workstation."
+  workstation, a screen, a phone."
 
 Source-tree layout inside the framework: kind-first
 (`modules/<kind>/`), with `nixos.nix`/`darwin.nix` platform
@@ -309,6 +314,30 @@ vendor publishes no checksum for the script, so this is a trusted
 than implying a supply-chain guarantee it does not have. A failed
 fetch warns and the next activation retries; it never aborts
 activation.
+
+**A Claude Code profile is a launcher.**
+`programs.claude-code-native.profiles.<name>` declares one persona:
+`prompt`, a list of markdown files the framework joins with blank
+lines into the session's whole system prompt (`--system-prompt-file`;
+never the CLI's coding prompt with a paragraph appended, which is
+thousands of tokens about being a software engineer in a terminal);
+`tools`, the built-in set the session may load (`--tools`); `memory`,
+a directory whose `CLAUDE.md` and unconditional `.claude/rules/*.md`
+load at start through `--add-dir` (a path-scoped rule in an added
+directory never fires, measured on 2.1.265, so those stay in
+`~/.claude/rules/`, keyed on file type and so persona-neutral);
+`mcp`, the `mcpServers` map the session alone may reach
+(`--strict-mcp-config --mcp-config`, so the operator's own servers and
+connectors stay out; null inherits them); `model` and `effort`,
+overriding the operator's settings for that persona alone; `chrome`,
+off by default. Each profile renders to one wrapper on PATH,
+`claude-<name>`, that execs the binary with those flags,
+`--system-prompt-snapshot off` so a deployed prompt reaches a resumed
+conversation, and the caller's arguments before them. `--chrome` at
+the call turns the bridge on; a caller with its own `--system-prompt*`
+or `--tools` gets the bare binary. Headless launchers with a runtime
+prompt or tool set (the dogfood fleet's assistant daemon) keep their
+own flags.
 
 **Identity auto-wiring (principle 3).** What one `identity` sets,
 all `mkDefault` unless named:
@@ -376,11 +405,24 @@ nixhold.home.repositoriesDir = "~/projects";  # default; sits next to
 ```
 
 A bare string is the url; the submodule adds `path`, defaulting to
-`<repositoriesDir>/<name>`, and `key`, the algorithm of the outbound
+`<repositoriesPath>/<name>`, and `key`, the algorithm of the outbound
 key the forge takes (`ed25519`, the default, or `rsa`; see "One
 outbound key, and a named exception"). Both are normalised into a
 readOnly derived `{ url, path, key }` per repository — the one shape
 every consumer below reads.
+
+**One directory holds every checkout, the fleet included.**
+`nixhold.home.repositoriesDir` is written the way a prompt shows it,
+with a leading `~`; `nixhold.home.repositoriesPath` is the readOnly
+derived absolute form (`lib/expand-home.nix` against
+`users.users.<operator>.home`), and it is what a repository's `path`
+default and `programs.nixhold.fleetDir` both read. The fleet
+checkout is no declared repository — the CLI clones it, and
+declaring it would give it an env secret and a forge block it
+already has — but it is a checkout the operator works in, so it
+lands beside the others rather than loose at the top of the home.
+Moving `repositoriesDir` moves all of them. An operator-set `path`
+keeps its own `~` expansion, against the same home.
 
 | Derived | From |
 |---|---|
@@ -482,7 +524,9 @@ Host fields: `arch`, `profile` (deferredModule), `networks`
 (default: every tailscale-typed network the fleet declares — the
 name `tailnet` is the forker's, never the framework's), `disk?`
 (the install target as a `/dev/disk/by-id` path, written by `host
-install`; see Hardware), `publicIp?`, `publicFqdn?` (the name an
+install`; see Hardware), `serial?` (an Android host's USB serial,
+written by `deploy`'s device picker; see "Android hosts"),
+`publicIp?`, `publicFqdn?` (the name an
 A record exists for — DNS is operator-managed; defaults to
 `<host>.<domain>` when the host is on exactly one internet-typed
 network that declares a `domain`, which is also the record the
@@ -639,6 +683,111 @@ blocked by an assertion pointing at `nixhold host install`. This
 is what lets nixos-anywhere evaluate the disko script, kexec,
 generate the report, then build.
 
+## Android hosts
+
+An Android device is a host: a fleet entry with `arch =
+"aarch64-android"`, a profile, modules and a place on the tailnet,
+the same manifest line as a server or a Mac. What differs is what a
+build produces and where it runs. A NixOS or Darwin host builds its
+own closure and activates it; an Android device runs a stock system
+nobody reflashes, so its "system" is a **plan**: what adb puts on
+the device, built on the operator's seat and applied over adb by
+`nixhold deploy`. Android is the third arch family the mkFleet
+contract dispatches on: its own builder, its own output namespace,
+no branching in the other two. `aarch64-android` is not a Nix
+system; it is the family tag, and nothing is ever built for the
+device itself.
+
+**The eval.** `androidConfigurations.<system>.<name>` is
+`lib.evalModules` over the android baseline
+(`androidModules.nixhold`), the profile, the framework baseline
+every host gets (`networking.hostName`,
+`nixhold.{identity,layout,fleet}`, the `nixhold.secrets`
+declarations) and `hosts.<name>.modules`, in the order the other
+two families use, with the same four `specialArgs`. The namespace
+is keyed by system where the other two are not: everything an
+android host is built from (its APKs, the plan file) is fetched
+and written by the machine running deploy, so `pkgs` is that
+machine's nixpkgs and a fleet with an android host carries one
+eval per system the CLI is packaged for. The CLI knows its own
+system at build time and evaluates that one.
+
+**The option surface.** The android module tree stands where
+nixpkgs' NixOS modules stand for the other platforms, and its names
+follow one rule: a NixOS name where the concept is the same, an
+`android.*` name where Android has no NixOS counterpart.
+
+| Option | On the device | Read (what deploy converges against) |
+|---|---|---|
+| `networking.hostName` (defaults to the fleet name, like every host) | `settings put global device_name` | `settings get global device_name` |
+| `environment.systemPackages` — a list of APK derivations, `pkgs.fetchurl` from a release URL by hash | `adb install -r <store path>` | `pm path <id>` and `sha256sum` on the device against the store file. The package id and `versionName` are read out of the APK at build time (a pure-Python manifest parser, so every seat system), never typed a second time |
+| `android.removedPackages` — package ids | `pm uninstall -k --user 0` | `pm list packages` |
+| `android.settings.{global,secure,system}.<key>` — strings | `settings put` | `settings get` |
+| `android.launcher` — an activity | `cmd package set-home-activity` | the resolved `HOME` activity |
+| `android.deviceOwner` — an admin receiver; needs a device with no account | `dpm set-device-owner` | `dumpsys device_policy` |
+
+`system.build.plan` is one derivation: the JSON of all of it, with
+the APK store paths, so building it fetches the APKs. Nothing
+else: no `nixhold.services`, no `home`, no ssh matchBlock, no login
+keys, no secret placed on the device. `disk`, `publicIp` and
+`publicFqdn` are `null` on an android host by assertion.
+
+**Reaching the device.** Address is fleet data like any host's: an
+android host is on every tailscale network by default, the
+Tailscale app is on it (the `kiosk` profile installs it; a phone
+has it from Play), and `derived.address.<name>.<tailnet>` is what
+deploy connects to (`adb connect <addr>:5555`, network debugging
+on). A device adb reaches over USB carries `serial` instead, a host
+field the CLI writes on first contact the way `host install` writes
+`disk`: the picker's output, never the operator's input. When
+neither answers, or the host has neither yet (a Shield before
+Tailscale is on it, Tailscale being one of the APKs deploy
+installs), deploy lists what adb sees right now (`adb devices -l`
+for USB, `adb mdns services` for the LAN, which a device with
+network debugging on advertises) and the operator picks by model
+and serial. A USB pick is written back as `serial`; a network pick
+is not, an `ip:port` being a lease rather than an identity.
+
+**One key.** The `adb` secret is fleet scope, declared by the
+android baseline on every android host: RSA-2048 as PKCS#8, the
+shape adbd pairs with, minted by its generator. Deploy decrypts it
+over one operator route into the scratch root and hands it to adb
+as `ADB_VENDOR_KEYS`; a NixOS host that drives a device itself
+imports the same declaration (`modules.infra.adbKey`) and reads
+the placed file.
+One consent per device covers every driver, and the consent is the
+first connection: adbd puts the key's fingerprint on the screen,
+`adb devices` says `unauthorized`, and deploy waits and says so.
+
+**Converge, not switch.** Deploy on an android host reads each
+surface before writing it and applies only the difference, one
+line per change; a run with nothing to change prints nothing and
+touches nothing. `--dry-run` prints the difference and stops;
+`--mode` is a usage error. It is N adb calls, not an atomic
+activation: a failure midway leaves the device between two plans
+and the next run continues from there, nothing rolls back. No
+daemon, no timer, no drift watch: the device is what the last
+deploy left, until the next.
+
+**Profiles are by use, not by device.** `kiosk` is a screen nobody
+logs into and the fleet owns end to end: Webview Kiosk as the
+launcher and the device owner, Tailscale, network debugging assumed
+on. `mobile` is a person's phone or tablet: accounts stay, no
+owner, no launcher, nothing installed by default (Play keeps the
+apps); it declares nothing past the baseline and exists so the
+manifest names the kind. What a screen shows or plays is the host
+module's (the dogfood puts Jellyfin for Android TV on its Shields).
+
+**Out of adb's reach**, so never declared: accounts, the Play
+Store, in-app sign-ins (Tailscale, a media server), the consent
+itself. They are the device's manual steps. An APK version moves by
+editing its URL and hash, as any pinned artifact does; `nixhold
+update` moves inputs and an APK is not one.
+
+Checks: `fixture-kiosk` and `fixture-mobile` build the plan of each
+android profile on every system the CLI is packaged for; building
+fetches the profile's APKs once per builder.
+
 ---
 
 ## Secrets
@@ -761,6 +910,7 @@ are declared by the framework, so a forker never writes them:
 | `password` | NixOS identity module | **fleet scope**, owner root, **`required = true`**, generator `mkpasswd -m yescrypt` (prompts on the TTY, emits the hash); wired to the operator's `hashedPasswordFile`. Declared by the NixOS half only, so a Darwin-only fleet never provisions it. Required because it is the way in when ssh is not: a box with no console password is unreachable the moment the network is (unjoined tailnet, broken interface, a reformat at its own keyboard), with a locked account and nothing to log in as. It costs nothing past the first host — the first `host add` mints the one ciphertext before any host is installed, and every later host reads that same file |
 | `identity` | secrets baseline, both platforms | **fleet scope**, `sshKey = true`, `required = false`. The fleet's single outbound ssh key: `IdentityFile` on every fleet-peer and forge matchBlock, git signing key, the credential the installer ISO clones the fleet repo with, and — on a fleet that lists nothing else — the line `keys/login.pub` is seeded with when the CLI mints it. One ed25519 key per fleet, by construction rather than by assertion; the one second outbound key the framework mints is `identity-rsa`, declared by a repository whose forge cannot take ed25519 (see "One outbound key, and a named exception") |
 | `env` | secrets baseline, both platforms | fleet scope, owner user (0600), `required = false`. Sourced into every operator shell by system-level shell init on both platforms (`set -a; . <path>; set +a`, guarded on readability), gated on `active`. Its blast radius is every process the operator starts from a login shell — editor, browser, build, assistant — so it holds what genuinely belongs to the whole seat; anything narrower goes in a repository's own env, which direnv loads only inside that checkout |
+| `adb` | android baseline, every Android host | **fleet scope**, owner root, `required = true`, generator `ssh-keygen -t rsa -b 2048 -m PKCS8`: the one key every Android device is paired with. Deploy hands it to adb as `ADB_VENDOR_KEYS`; a NixOS host that drives a device itself imports the same declaration as `modules.infra.adbKey` to have it placed (see "Android hosts") |
 | `<authKeySecret>` | tailscale service when the option is set | host scope, owner root, 0400, `category = "service"`; the join unit retries on failure every 30 s, so a late network or a slow control plane converges and only a spent key stays failed |
 
 The framework knowing the literal names `identity` and `env` does
@@ -1426,8 +1576,9 @@ context resolves as: `$NIXHOLD_FLEET` → upward walk from `$PWD` to
 the nearest `flake.nix` that calls `mkFleet` (wins inside any fleet
 checkout, e.g. a second worktree; the framework checkout is a flake,
 not a fleet) →
-`programs.nixhold.fleetDir` (default `~/<repo-basename>` derived
-from `layout.repoUrl`; the module bakes the value into the
+`programs.nixhold.fleetDir` (default
+`<nixhold.home.repositoriesPath>/<repo-basename>`, the basename
+derived from `layout.repoUrl`; the module bakes the value into the
 wrapped CLI). When the resolved directory doesn't exist — a
 fresh machine after an ISO install — the CLI offers to clone
 `repoUrl` there, through the `identity` key either way: unwrapped
@@ -1557,10 +1708,16 @@ Notable shapes:
   no fleet checkout, `--repo
   <owner/repo> --keys <dir>` — the directory holding
   `identity.age`, and `operator.age` when the fleet keeps one —
-  clones with the `identity` key into `~/<repo>`
-  before any of that, the same ciphertexts the ISO bakes, read
-  through the same `$NIXHOLD_IDENTITY_FILE` / `$NIXHOLD_CLONE_KEY_FILE`
-  path.
+  clones with the `identity` key before any of that, the same
+  ciphertexts the ISO bakes, read through the same
+  `$NIXHOLD_IDENTITY_FILE` / `$NIXHOLD_CLONE_KEY_FILE` path. The
+  clone lands in the framework's checkout directory
+  (`lib/defaults.nix`, baked into the CLI package as
+  `$NIXHOLD_REPOSITORIES_DIR` beside `$NIXHOLD_LOCK`), because a Mac
+  with no fleet has nothing to evaluate. `programs.nixhold.fleetDir`
+  is readable the moment the checkout exists, so the verb then moves
+  it there — a fleet that overrides `nixhold.home.repositoriesDir`
+  ends with one checkout rather than two.
 - The CLI reads config via `nix eval --json
   .#<platform>Configurations.<host>.config.nixhold.<path>`; data
   is shaped in Nix, rendered by the CLI. Per-option docs =
@@ -1582,7 +1739,8 @@ a TTY exists.
 Declaration-side only (works with hosts down): enabled services,
 their expose endpoints, and each declared secret with its category,
 scope, and ciphertext present or missing; `--fleet` = one line per
-host.
+host. An Android host shows its plan: packages with versions,
+removals, settings, launcher, owner.
 Anything richer is `nix eval` / `nixos-option`. Never a
 dashboard; never live systemctl.
 
@@ -1603,14 +1761,17 @@ on the operator's terminal and feeds the target's `sudo --stdin`
 (see "Sudo asks"). One prompt per host — deploying several hosts
 prompts once each, and a deploy with no terminal is a usage error
 rather than a hang. Remote darwin:
-refused (deploy Macs locally). The address comes from
+refused (deploy Macs locally). Android: a converge over adb from
+whichever machine runs the verb (see "Android hosts"). The address
+comes from
 `derived.address.<name>`: the tailnet entry when it resolves,
 otherwise the first non-null address of any other network;
 `--target <addr>` overrides (single host only). Modes: switch
-(default) / boot / test. Zero, one or several hosts: none means this
+(default) / boot / test, a usage error on an Android host. Zero, one or several hosts: none means this
 machine (a usage error on a machine that is not a fleet host);
 `--all` means every host this machine can activate (every NixOS
-host; a darwin host only when this Mac is it); explicit names deploy
+host and every Android host; a darwin host only when this Mac is
+it); explicit names deploy
 exactly those. No picker and no confirmation: the name, or `--all`,
 is the intent, and the verb prints its plan line before the first
 host. Several deploy in order, continuing past a failure and
@@ -1922,6 +2083,11 @@ Architecture:
   UX; the CI fixture covers contract drift.
 - **Host `kind`/`type`/`primary` fields** — profile is the kind;
   VPS-ness derives from declarations; no primary (principle 16).
+- **Appliances as a second roster** (`nixhold.fleet.appliances`, an
+  `appliance provision` verb) — a device that is not a host
+  duplicates the roster, deploy, status and address derivation, and
+  reads no fleet data back. An Android device is a host of the
+  third arch family ("Android hosts").
 - **`fleet.defaults.{timezone,locale}`** — hosts set options
   directly.
 - **`identity.autoConfigure = false`** — opinionated by design.

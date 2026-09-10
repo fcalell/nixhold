@@ -47,9 +47,13 @@ for entry in "$keys_dir"/hosts/*/; do
 done
 
 roster=""
-while IFS= read -r h; do
+while IFS= read -r line; do
+  h="${line%% *}"
+  platform="${line##* }"
   [ -n "$h" ] || continue
   roster="$roster $h"
+  # An Android host runs no sshd: nothing to pin, nothing to record.
+  [ "$platform" = "android" ] && continue
   pub="$keys_dir/hosts/$h.pub"
   if [ ! -e "$pub" ]; then
     report "$h — no keys/hosts/$h.pub, so every connection to it is trust-on-first-use ('nixhold host key $h' records the key the machine runs; 'nixhold host install' writes one for a machine it images)"
@@ -58,7 +62,7 @@ while IFS= read -r h; do
   if ! is_tracked "$pub"; then
     report "$h — ${pub#"$root"/} exists but is not tracked by git ('git add' it: an untracked pubkey is invisible to eval, so the fleet's known_hosts never sees it)"
   fi
-done < <(nh_all_hosts)
+done < <(nh_hosts)
 
 for f in "$keys_dir"/hosts/*.pub; do
   [ -e "$f" ] || continue

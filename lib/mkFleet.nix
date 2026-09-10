@@ -4,7 +4,7 @@
 #   { inputs, identity, networks, hosts, layout ? { } }
 #
 # Reads no files from disk (principle 14). Dispatches per arch
-# family — separate builders for NixOS and Darwin, no
+# family — separate builders for NixOS, Darwin and Android, no
 # `isDarwin` branching inside one builder. Per-host module list:
 #
 #   1. inputs.nixhold.<platform>Modules.nixhold  -- baseline bundle
@@ -58,9 +58,11 @@ let
 
   isLinux = arch: lib.hasSuffix "-linux" arch;
   isDarwin = arch: lib.hasSuffix "-darwin" arch;
+  isAndroid = arch: lib.hasSuffix "-android" arch;
 
   linuxHosts = lib.filterAttrs (_: h: isLinux h.arch) hosts;
   darwinHosts = lib.filterAttrs (_: h: isDarwin h.arch) hosts;
+  androidHosts = lib.filterAttrs (_: h: isAndroid h.arch) hosts;
 
   baseline = name: host: [
     (
@@ -72,7 +74,6 @@ let
         # that identity, so secrets, recipients and `derived.self`
         # stay put when the OS name moves.
         networking.hostName = lib.mkDefault name;
-        nixpkgs.hostPlatform = lib.mkDefault host.arch;
         nixhold = {
           inherit identity;
           layout = resolvedLayout;
@@ -83,6 +84,11 @@ let
       }
     )
   ];
+
+  # The system the host builds for: a nixpkgs concern, so it sits
+  # beside the two builders that have one and not in the baseline an
+  # Android host shares.
+  hostPlatform = host: { lib, ... }: { nixpkgs.hostPlatform = lib.mkDefault host.arch; };
 
   mkNixosHost =
     name: host:
@@ -95,6 +101,7 @@ let
       };
       modules = [
         inputs.nixhold.nixosModules.nixhold
+        (hostPlatform host)
       ]
       ++ [ host.profile ]
       ++ baseline name host
@@ -203,6 +210,33 @@ let
       };
       modules = [
         inputs.nixhold.darwinModules.nixhold
+        (hostPlatform host)
+      ]
+      ++ [ host.profile ]
+      ++ baseline name host
+      ++ host.modules;
+    };
+
+  # An Android host builds nothing for itself: its product is a plan
+  # (APKs and one JSON) the seat running `nixhold deploy` builds and
+  # applies over adb. So the eval is keyed by that seat's system —
+  # `pkgs` is the seat's, and there is one eval per system the CLI is
+  # packaged for — where the other two families are keyed by nothing.
+  # Same module order as theirs; `lib.evalModules`, since neither
+  # nixpkgs nor nix-darwin has a module tree for the device.
+  seatSystems = builtins.attrNames inputs.nixhold.packages;
+
+  mkAndroidHost =
+    system: name: host:
+    lib.evalModules {
+      specialArgs = {
+        inherit inputs identity;
+        fleet = fleetView;
+        hostname = name;
+        pkgs = nixpkgs.legacyPackages.${system};
+      };
+      modules = [
+        inputs.nixhold.androidModules.nixhold
       ]
       ++ [ host.profile ]
       ++ baseline name host
@@ -212,6 +246,9 @@ in
 {
   inherit nixosConfigurations;
   darwinConfigurations = lib.mapAttrs mkDarwinHost darwinHosts;
+  androidConfigurations = lib.genAttrs seatSystems (
+    system: lib.mapAttrs (mkAndroidHost system) androidHosts
+  );
 
   # Re-export the framework's per-system CLI surface so a forker's
   # flake can `nix run .#nixhold -- <verb>` and `nix fmt` from the

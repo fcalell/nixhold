@@ -140,24 +140,41 @@ nh_clone_fleet() {
   nh_ok "cloned fleet to $dir"
 }
 
+# nh_system — the system double this CLI runs on: baked in by the
+# package (cli/default.nix), asked of nix when running in-tree.
+nh_system() {
+  if [ -z "${NIXHOLD_SYSTEM:-}" ]; then
+    NIXHOLD_SYSTEM="$(nix eval --raw --impure --expr builtins.currentSystem)" || return 1
+    export NIXHOLD_SYSTEM
+  fi
+  printf '%s' "$NIXHOLD_SYSTEM"
+}
+
+# nh_config_set <platform> — the flake attribute a platform's hosts
+# live under. Android hosts are keyed by the seat that builds their
+# plan, which is this machine.
+nh_config_set() {
+  case "$1" in
+    nixos) printf 'nixosConfigurations' ;;
+    darwin) printf 'darwinConfigurations' ;;
+    android) printf 'androidConfigurations.%s' "$(nh_system)" ;;
+    *)
+      nh_err "unknown platform: $1"
+      return 1
+      ;;
+  esac
+}
+
 # Evaluate an attr under the framework view of a host's config.
 # Usage: nh_host_eval <host> <platform> <attrPath>
-#   <platform>  = nixos | darwin
+#   <platform>  = nixos | darwin | android
 #   <attrPath>  = e.g. "nixhold.services" or "nixhold.fleet.derived.address"
 # Returns JSON on stdout, exits non-zero on eval failure.
 nh_host_eval() {
   local host="$1" platform="$2" path="$3"
-  local root
+  local root set
   root="$(nh_fleet_root)" || return 1
-  local set
-  case "$platform" in
-    nixos) set="nixosConfigurations" ;;
-    darwin) set="darwinConfigurations" ;;
-    *)
-      nh_err "unknown platform: $platform"
-      return 1
-      ;;
-  esac
+  set="$(nh_config_set "$platform")" || return 1
   nix eval --json --no-warn-dirty "$root#$set.$host.config.$path"
 }
 

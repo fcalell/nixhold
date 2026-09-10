@@ -21,12 +21,12 @@ let
   cfg = config.programs.nixhold;
   layout = config.nixhold.layout;
 
-  # `<owner>/<repo>` → `<repo>`. The operator's home comes from
-  # `users.users.<operator>.home`, which the platform identity
-  # module (co-present in both baseline bundles) always sets — no
-  # platform branching here.
+  # `<owner>/<repo>` → `<repo>`. The directory it lands in is
+  # `nixhold.home.repositoriesPath`, the same absolute path every
+  # declared repository defaults under: the fleet is a checkout the
+  # operator works in, so it belongs beside the others rather than
+  # loose at the top of their home.
   repoBasename = lib.last (lib.splitString "/" layout.repoUrl);
-  operatorHome = config.users.users.${config.nixhold.identity.username}.home;
 
   # Baked-in defaults for the CLI's fleet-root resolution
   # (`$NIXHOLD_FLEET` → upward walk from `$PWD` → this). Assigned
@@ -68,8 +68,9 @@ in
       # it as a path would copy the fleet checkout into the store
       # and hand the CLI a read-only copy.
       type = lib.types.nullOr lib.types.str;
-      default = if layout.repoUrl == null then null else "${operatorHome}/${repoBasename}";
-      defaultText = lib.literalExpression ''"''${operator home}/''${basename of nixhold.layout.repoUrl}"'';
+      default =
+        if layout.repoUrl == null then null else "${config.nixhold.home.repositoriesPath}/${repoBasename}";
+      defaultText = lib.literalExpression ''"''${nixhold.home.repositoriesPath}/''${basename of nixhold.layout.repoUrl}"'';
       description = ''
         Where the operator's fleet checkout lives on this machine.
         Last resort in the CLI's fleet-root resolution: baked into

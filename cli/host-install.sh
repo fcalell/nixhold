@@ -86,49 +86,6 @@ $script"
   fi
 }
 
-# nh_set_host_disk <hosts-file> <name> <by-id> — write `disk = "…";`
-# into <name>'s roster entry: in place when the entry already has one,
-# else as its last field. The entry is found the way `host remove`
-# finds it (opening line to the closing `};` at the same indentation).
-nh_set_host_disk() {
-  local file="$1" name="$2" disk="$3" tmp
-  if ! grep -qE "^[[:space:]]+${name}[[:space:]]*=[[:space:]]*\{" "$file"; then
-    nh_err "no entry for $name in $file — the roster is not in the shape 'host add' writes"
-    return 1
-  fi
-  tmp="$(mktemp -t nixhold-hosts.XXXXXX)" || {
-    nh_err "could not create a temp file to rewrite $file"
-    return 1
-  }
-  if ! name="$name" disk="$disk" awk '
-    BEGIN { inside = 0; done = 0; replaced = 0 }
-    {
-      if (!inside && !done && $0 ~ ("^[[:space:]]+" ENVIRON["name"] "[[:space:]]*=[[:space:]]*\\{")) {
-        inside = 1
-        indent = $0
-        sub(/[^ \t].*$/, "", indent)
-        close_re = "^" indent "\\};[[:space:]]*$"
-        print
-        next
-      }
-      if (inside) {
-        line = indent "  disk = \"" ENVIRON["disk"] "\";"
-        if ($0 ~ /^[[:space:]]+disk[[:space:]]*=/) { print line; replaced = 1; next }
-        if ($0 ~ close_re) {
-          if (!replaced) print line
-          inside = 0
-          done = 1
-        }
-      }
-      print
-    }
-  ' "$file" >"$tmp" || ! mv "$tmp" "$file"; then
-    rm -f "$tmp"
-    nh_err "could not write the disk into $file"
-    return 1
-  fi
-}
-
 # nh_facter_target <name> — where this install writes the hardware
 # report: `nixhold.hardware.facterReport` as the host evaluates it,
 # re-rooted from the store copy to the operator's working tree.
@@ -499,16 +456,20 @@ nh_local_install() {
 }
 
 # nh_bootstrap_fleet <owner/repo> <keys-dir> — the fresh-Mac path: no
-# fleet checkout exists yet, so clone one into ~/<repo> (where
-# `programs.nixhold.fleetDir` will look for it) over the fleet's own
-# `identity` ssh key. <keys-dir> holds the operator-encrypted
+# fleet checkout exists yet, so clone one into the framework's
+# checkout directory (lib/defaults.nix, where every declared
+# repository lives too) over the fleet's own `identity` ssh key.
+# nh_fleet_relocate then moves it to whatever this fleet's own
+# `programs.nixhold.fleetDir` names, once there is a checkout to read
+# that from. <keys-dir> holds the operator-encrypted
 # ciphertexts the ISO bakes for the same purpose — identity.age always,
 # operator.age only on a fleet that has a passphrase identity at all —
 # read through the same $NIXHOLD_IDENTITY_FILE / $NIXHOLD_CLONE_KEY_FILE
 # path, so the operator's seat (the passphrase, or the token in their
 # pocket) is all they bring.
+_NH_BOOTSTRAPPED=0
 nh_bootstrap_fleet() {
-  local repo="$1" keys="$2" dir remote
+  local repo="$1" keys="$2" dir parent remote
   case "$repo" in
     */*) ;;
     *)
@@ -535,7 +496,17 @@ nh_bootstrap_fleet() {
     return 1
   fi
 
-  dir="$HOME/${repo##*/}"
+  # The framework's checkout directory, baked into the CLI package
+  # from lib/defaults.nix: nothing here can be evaluated yet, and
+  # this is the clone that makes evaluation possible. A fleet that
+  # overrides `nixhold.home.repositoriesDir` is honoured by
+  # nh_fleet_relocate, which runs once the option is readable.
+  parent="${NIXHOLD_REPOSITORIES_DIR:-}"
+  if [ -z "$parent" ]; then
+    nh_err "\$NIXHOLD_REPOSITORIES_DIR is unset — the packaged 'nixhold' bakes it in; run that rather than these sources"
+    return 1
+  fi
+  dir="$parent/${repo##*/}"
   dir="${dir%.git}"
   if [ -f "$dir/flake.nix" ]; then
     nh_info "fleet checkout already at $dir"
@@ -550,9 +521,39 @@ nh_bootstrap_fleet() {
       return 1
     fi
     _NH_CLONING=0
+    _NH_BOOTSTRAPPED=1
     nh_ok "cloned fleet to $dir"
   fi
   _NH_FLEET_ROOT="$dir"
+}
+
+# nh_fleet_relocate <name> <platform> — put the checkout this
+# invocation just cloned where the host will look for it.
+#
+# The clone lands at the framework's default directory because that
+# is all a Mac with no fleet can know. `programs.nixhold.fleetDir` is
+# the answer, and it becomes readable the moment the checkout exists,
+# so the move happens here rather than leaving the machine with the
+# checkout in one place and its baked default pointing at another —
+# which is how an operator ends up with two.
+nh_fleet_relocate() {
+  local name="$1" platform="$2" want
+  want="$(nh_host_eval "$name" "$platform" programs.nixhold.fleetDir | jq -r '. // empty')" || {
+    nh_warn "could not read $name's programs.nixhold.fleetDir — the checkout stays at $_NH_FLEET_ROOT"
+    return 0
+  }
+  [ -n "$want" ] && [ "$want" != "$_NH_FLEET_ROOT" ] || return 0
+  if [ -e "$want" ]; then
+    nh_warn "$name expects its fleet checkout at $want, where something already sits — leaving this one at $_NH_FLEET_ROOT"
+    return 0
+  fi
+  nh_info "moving the checkout to $want, where $name looks for it"
+  if ! mkdir -p "$(dirname "$want")" || ! mv "$_NH_FLEET_ROOT" "$want"; then
+    nh_err "could not move the checkout to $want — it is still at $_NH_FLEET_ROOT"
+    return 1
+  fi
+  _NH_FLEET_ROOT="$want"
+  nh_ok "fleet checkout at $want"
 }
 
 # nh_darwin_preflight <name> — what a fresh Mac must already be
@@ -758,9 +759,10 @@ Usage: nixhold host install [<name>] [--remote <user>@<ip>]
   --disk           the install disk (/dev/disk/by-id/…), written into
                    the roster; without it the picker asks.
   --repo, --keys   a Mac with no fleet checkout: clone owner/repo
-                   into ~/<repo> over the fleet's own identity key
-                   first. <dir> holds identity.age, plus operator.age
-                   unless the operator's seat is a FIDO2 token.
+                   over the fleet's identity key first, into the
+                   directory its own fleetDir names. <dir> holds
+                   identity.age, plus operator.age unless the
+                   operator's seat is a FIDO2 token.
 EOF
         return 0
         ;;
@@ -802,6 +804,14 @@ EOF
     return 1
   }
   arch="$(nh_host_arch "$name")"
+  if [ "$_NH_BOOTSTRAPPED" = 1 ]; then
+    nh_fleet_relocate "$name" "$platform" || return 1
+    root="$_NH_FLEET_ROOT"
+  fi
+  if [ "$platform" = "android" ]; then
+    nh_err "$name is an Android host — nothing is installed on a device; 'nixhold deploy $name' converges it over adb"
+    return 1
+  fi
 
   # Preflight, ahead of all three entry paths (darwin, local ISO,
   # --remote) and therefore ahead of any disk or machine: every one of
@@ -873,7 +883,7 @@ EOF
     picked=1
   fi
   if [ -n "$disk" ] && [ "$disk" != "$current" ]; then
-    nh_set_host_disk "$hosts_file" "$name" "$disk" || return 1
+    nh_set_host_field "$hosts_file" "$name" disk "$disk" || return 1
     nh_stage_for_eval "$root" "$hosts_file"
     nh_fleet_view_reset
     nh_ok "wrote disk = \"$disk\" for $name into $hosts_file"

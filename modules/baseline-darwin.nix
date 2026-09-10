@@ -2,6 +2,7 @@
 {
   imports = [
     ./identity
+    ./identity/nix.nix
     ./identity/darwin.nix
     ./layout
     ./types
@@ -15,6 +16,7 @@
     # happened to import a service module is not a contract.
     ./services
     ./secrets
+    ./secrets/env.nix
     ./secrets/darwin.nix
     # Operator checkouts as fleet data: the env secret, the forge
     # ssh wiring, the direnv library and the clone step all follow

@@ -82,7 +82,8 @@ let
   # every entry of a host agree, so the head is the answer.
   forgeSecret = entries: secrets.${keySecretName (lib.head entries).key};
 
-  repositoriesDir = config.nixhold.home.repositoriesDir;
+  expandHome = import ../../lib/expand-home.nix;
+  repositoriesPath = config.nixhold.home.repositoriesPath;
 
   repoSubmodule = types.submodule (
     { name, ... }:
@@ -116,7 +117,7 @@ let
 
         path = mkOption {
           type = types.str;
-          defaultText = lib.literalMD "`<nixhold.home.repositoriesDir>/<name>`";
+          defaultText = lib.literalMD "`<nixhold.home.repositoriesPath>/<name>`";
           description = ''
             Where the checkout lives. A leading `~` is the operator's
             home. Set it only for a repository that does not belong
@@ -126,7 +127,7 @@ let
         };
       };
 
-      config.path = lib.mkDefault "${repositoriesDir}/${name}";
+      config.path = lib.mkDefault "${repositoriesPath}/${name}";
     }
   );
 in
@@ -229,15 +230,9 @@ in
       home-manager.users.${username} =
         hmArgs:
         let
-          home = hmArgs.config.home.homeDirectory;
-          expand =
-            p:
-            if p == "~" then
-              home
-            else if lib.hasPrefix "~/" p then
-              home + lib.removePrefix "~" p
-            else
-              p;
+          # Only an operator-set `path` still carries a `~`; the
+          # default arrives absolute from `repositoriesPath`.
+          expand = expandHome hmArgs.config.home.homeDirectory;
 
           direnvEnabled = hmArgs.config.programs.direnv.enable;
 

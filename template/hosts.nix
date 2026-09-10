@@ -12,4 +12,14 @@
   #   modules = [ ./hosts/myhost/default.nix ];
   #   disk = "/dev/disk/by-id/…";
   # };
+  #
+  # An Android device is a host of the third arch family: no disk,
+  # its plan applied over adb by `nixhold deploy` (`serial` is what
+  # deploy's device picker writes for one reached over USB):
+  #
+  # living-room = {
+  #   arch = "aarch64-android";
+  #   profile = nixhold.profiles.kiosk;
+  #   modules = [ ./hosts/living-room/default.nix ];
+  # };
 }

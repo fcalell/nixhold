@@ -9,6 +9,7 @@ root="$(nh_fleet_root)" || exit 2
 
 nixos_hosts="$(nix eval --json --no-warn-dirty "$root#nixosConfigurations" --apply 'builtins.attrNames' 2>/dev/null | jq -r '.[]?' || true)"
 darwin_hosts="$(nix eval --json --no-warn-dirty "$root#darwinConfigurations" --apply 'builtins.attrNames' 2>/dev/null | jq -r '.[]?' || true)"
+android_hosts="$(nix eval --json --no-warn-dirty "$root#androidConfigurations.$(nh_system)" --apply 'builtins.attrNames' 2>/dev/null | jq -r '.[]?' || true)"
 
 worst=0
 for h in $nixos_hosts; do
@@ -21,6 +22,14 @@ for h in $nixos_hosts; do
 done
 for h in $darwin_hosts; do
   if nh_host_eval "$h" darwin nixhold.fleet.derived.self.arch >/dev/null 2>&1; then
+    echo "OK: profile resolves for $h"
+  else
+    echo "VIOLATION: profile fails to resolve for $h"
+    worst=3
+  fi
+done
+for h in $android_hosts; do
+  if nh_host_eval "$h" android nixhold.fleet.derived.self.arch >/dev/null 2>&1; then
     echo "OK: profile resolves for $h"
   else
     echo "VIOLATION: profile fails to resolve for $h"

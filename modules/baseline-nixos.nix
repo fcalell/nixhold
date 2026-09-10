@@ -2,6 +2,7 @@
 {
   imports = [
     ./identity
+    ./identity/nix.nix
     ./identity/nixos.nix
     ./layout
     ./types
@@ -14,6 +15,7 @@
     # whatever its profile imports.
     ./services
     ./secrets
+    ./secrets/env.nix
     ./secrets/nixos.nix
     # Operator checkouts as fleet data: the env secret, the forge
     # ssh wiring, the direnv library and the clone step all follow

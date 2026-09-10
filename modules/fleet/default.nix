@@ -5,11 +5,15 @@ let
   networks = config.nixhold.fleet.network;
   tailscaleNetworks = lib.attrNames (lib.filterAttrs (_: n: n.type == "tailscale") networks);
 
+  # The suffix is the family mkFleet dispatches on. `aarch64-android`
+  # is not a Nix system: an Android host builds nothing for itself,
+  # its plan is built on the seat (see "Android hosts").
   archEnum = types.enum [
     "x86_64-linux"
     "aarch64-linux"
     "x86_64-darwin"
     "aarch64-darwin"
+    "aarch64-android"
   ];
 
   networkSubmodule = types.submodule {
@@ -122,6 +126,19 @@ let
             an install-time error. NixOS hosts only.
           '';
           example = "/dev/disk/by-id/nvme-Samsung_SSD_980_1TB_S649NX0R123456A";
+        };
+
+        serial = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          description = ''
+            An Android host reached over USB: its adb serial, written
+            by `nixhold deploy`'s device picker on first contact (the
+            picker's output, never the operator's input). `null` for
+            a device deploy reaches over the network by its derived
+            address. Android hosts only.
+          '';
+          example = "R5CT12ABCDE";
         };
 
         publicIp = mkOption {

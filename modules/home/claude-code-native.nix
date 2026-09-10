@@ -38,6 +38,95 @@ let
   # old "bootstrap only when the binary is missing" behaviour rather
   # than reinstalling on every activation.
   pinned = lib.match "[0-9]+\\.[0-9]+\\.[0-9]+.*" cfg.version != null;
+
+  # A profile's prompt: its files joined by a blank line, so a
+  # paragraph shared between personas lives in one file.
+  promptFile =
+    name: files:
+    pkgs.writeText "claude-${name}-prompt.md" (
+      lib.concatMapStringsSep "\n\n" (f: lib.removeSuffix "\n" (builtins.readFile f)) files + "\n"
+    );
+  mcpFile =
+    name: servers: pkgs.writeText "claude-${name}-mcp.json" (builtins.toJSON { mcpServers = servers; });
+
+  # The wrapper: the caller's arguments first, the profile's flags
+  # after. `--tools` is variadic and swallows every following
+  # argument, so it goes last.
+  wrapper =
+    name: p:
+    pkgs.writeShellApplication {
+      name = "claude-${name}";
+      text = ''
+        # A caller with its own prompt or tool set gets the bare binary.
+        for a in "$@"; do
+          case "$a" in
+            --system-prompt* | --append-system-prompt* | --tools) exec claude "$@" ;;
+          esac
+        done
+        chrome=(--no-chrome)
+        for a in "$@"; do
+          if [ "$a" = --chrome ]; then chrome=(); fi
+        done
+        ${lib.optionalString (p.memory != null) "export CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1"}
+        exec claude "$@" ${
+          lib.concatStringsSep " " (
+            [
+              "--system-prompt-file ${promptFile name p.prompt}"
+              "--system-prompt-snapshot off"
+            ]
+            ++ lib.optional (p.memory != null) "--add-dir ${p.memory}"
+            ++ lib.optional (p.mcp != null) "--strict-mcp-config --mcp-config ${mcpFile name p.mcp}"
+            ++ lib.optional (p.model != null) "--model ${lib.escapeShellArg p.model}"
+            ++ lib.optional (p.effort != null) "--effort ${lib.escapeShellArg p.effort}"
+          )
+        } "''${chrome[@]}" --tools ${lib.escapeShellArgs p.tools}
+      '';
+    };
+
+  profile = lib.types.submodule {
+    options = {
+      prompt = lib.mkOption {
+        type = lib.types.listOf lib.types.path;
+        description = "Markdown files joined into the whole system prompt, in order.";
+      };
+      tools = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        description = "The built-in tools the session may load (`--tools`).";
+      };
+      memory = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = ''
+          A directory whose `CLAUDE.md` and unconditional
+          `.claude/rules/*.md` load at start. A path-scoped rule here
+          never fires; those belong in `~/.claude/rules/`.
+        '';
+      };
+      mcp = lib.mkOption {
+        type = lib.types.nullOr lib.types.attrs;
+        default = null;
+        description = ''
+          The `mcpServers` map the session alone may reach. Null
+          inherits the operator's own servers and connectors.
+        '';
+      };
+      model = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Overrides the operator's model for this persona.";
+      };
+      effort = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Overrides the operator's effort level for this persona.";
+      };
+      chrome = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Whether the Chrome bridge is on; `--chrome` at the call turns it on.";
+      };
+    };
+  };
 in
 {
   options.programs.claude-code-native = {
@@ -59,9 +148,21 @@ in
       '';
       example = "2.1.236";
     };
+
+    profiles = lib.mkOption {
+      type = lib.types.attrsOf profile;
+      default = { };
+      description = ''
+        Personas, one wrapper on PATH each (`claude-<name>`): its own
+        system prompt, tool set, memory and MCP set over the same
+        binary. Bare `claude` stays the binary as shipped.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
+    home.packages = lib.mapAttrsToList wrapper cfg.profiles;
+
     # The installer also tries to append a PATH export to the
     # shell rc; on a nix-managed (read-only) rc that edit fails
     # harmlessly — this is the durable PATH wiring.

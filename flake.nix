@@ -53,6 +53,7 @@
       # recommended path is `mkFleet`.
       nixosBaseline = import ./modules/baseline-nixos.nix;
       darwinBaseline = import ./modules/baseline-darwin.nix;
+      androidBaseline = import ./modules/baseline-android.nix;
     in
     {
       lib.mkFleet = import ./lib/mkFleet.nix;
@@ -63,6 +64,7 @@
       # home-manager is not a shape this framework serves.
       nixosModules.nixhold = nixosBaseline;
       darwinModules.nixhold = darwinBaseline;
+      androidModules.nixhold = androidBaseline;
 
       # Per-service / per-infra modules surfaced individually so
       # profiles (and forker-authored profiles) can compose them
@@ -88,6 +90,9 @@
         infra = {
           caddy = ./modules/infra/caddy.nix;
           firewall = ./modules/infra/firewall.nix;
+          # The adb key's declaration, for a NixOS host that drives an
+          # Android device itself (every Android host has it already).
+          adbKey = ./modules/android/adb-key.nix;
         };
       };
 
@@ -96,6 +101,10 @@
         server = ./profiles/server.nix;
         workstationDarwin = ./profiles/workstationDarwin.nix;
         desktopLinux = ./profiles/desktopLinux.nix;
+        # Android hosts, by use rather than by device: a screen the
+        # fleet owns, and a person's phone or tablet.
+        kiosk = ./profiles/kiosk.nix;
+        mobile = ./profiles/mobile.nix;
       };
 
       # `nix flake init -t github:fcalell/nixhold` scaffolds a
@@ -149,6 +158,14 @@
               shellcheck -x -s bash -e SC1090 ./*.sh lib/*.sh lint/rules/*.sh
               touch $out
             '';
+
+          # The two Android profiles. An Android host's build product
+          # is its plan, built on the seat that deploys it, so the
+          # eval is keyed by this system and checked on every one the
+          # CLI is packaged for. Building the kiosk plan fetches the
+          # profile's APKs once per builder.
+          fixture-kiosk = fixture.androidConfigurations.${system}.fixture-kiosk.config.system.build.plan;
+          fixture-mobile = fixture.androidConfigurations.${system}.fixture-mobile.config.system.build.plan;
         }
         // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
           fixture-server = fixture.nixosConfigurations.fixture-server.config.system.build.toplevel;

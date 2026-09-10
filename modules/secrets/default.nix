@@ -413,23 +413,6 @@ in
     '';
   };
 
-  # Framework declaration, every host, both platforms: the
-  # operator's global environment. One fleet-wide ciphertext of
-  # KEY=value lines, sourced into every shell by the platform
-  # halves — the escape hatch for the values that are not
-  # NixOS-shaped (API tokens read by ad-hoc tooling). Not
-  # required: a fleet that never provisions it never notices it.
-  config.nixhold.secrets.env = {
-    scope = "fleet";
-    required = false;
-    category = "framework";
-    owner = "user";
-    description = "global env (KEY=value lines) sourced into every shell of the operator";
-    template = ''
-      # KEY=value, one per line. Sourced by every shell.
-    '';
-  };
-
   # A required secret with no committed ciphertext would otherwise
   # surface as agenix's raw "path does not exist" at build time;
   # fail with the fix spelled out instead. `required = false`

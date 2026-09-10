@@ -30,6 +30,9 @@ NH_SPINE_DARWIN='{
   openssh = h.pkgs.openssh.version;
   nix = h.config.nix.package.version;
 }'
+# An Android host's plan holds APKs pinned by hash, which no input
+# moves: nothing to report, but the plan must still evaluate.
+NH_SPINE_ANDROID='{ }'
 # A NixOS host whose hardware report is declared and not yet written
 # is pre-install: the framework's own guard (modules/hardware) blocks
 # its build everywhere, so its toplevel cannot instantiate on any
@@ -143,14 +146,16 @@ nh_update_rollback() {
 # a linux host probes fine from a Mac. Non-zero with nix's error on
 # stderr.
 nh_update_probe() {
-  local root="$1" host="$2" platform="$3" out="$4" set spine pre
+  local root="$1" host="$2" platform="$3" out="$4" set spine pre product
+  set="$(nh_config_set "$platform")" || return 1
+  product="toplevel"
   case "$platform" in
-    nixos) set="nixosConfigurations"; spine="$NH_SPINE_NIXOS"; pre="$NH_PREINSTALL_NIXOS" ;;
-    darwin) set="darwinConfigurations"; spine="$NH_SPINE_DARWIN"; pre="$NH_PREINSTALL_DARWIN" ;;
-    *) nh_err "unknown platform: $platform"; return 1 ;;
+    nixos) spine="$NH_SPINE_NIXOS"; pre="$NH_PREINSTALL_NIXOS" ;;
+    darwin) spine="$NH_SPINE_DARWIN"; pre="$NH_PREINSTALL_DARWIN" ;;
+    android) spine="$NH_SPINE_ANDROID"; pre="false"; product="plan" ;;
   esac
   nix eval --json --no-warn-dirty "$root#$set.$host" --apply "h: {
-    drv = if $pre then null else h.config.system.build.toplevel.drvPath;
+    drv = if $pre then null else h.config.system.build.$product.drvPath;
     warnings = h.config.warnings;
     spine = $spine;
   }" >"$out"

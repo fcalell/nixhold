@@ -10,7 +10,7 @@
 # sees the new roster.
 
 # nh_fleet_view — the view as JSON on stdout:
-#   { hosts:   { <name>: { arch, platform, networks, disk, publicIp, publicFqdn } },
+#   { hosts:   { <name>: { arch, platform, networks, disk, serial, publicIp, publicFqdn } },
 #     network: { <name>: { type, magicDnsSuffix, domain } },
 #     address: { <host>: { <network>: <addr|null> } } }
 # Non-zero when the fleet has no host to read it from, or the eval
@@ -34,8 +34,11 @@ nh_fleet_view() {
       let f = (builtins.head (builtins.attrValues cs)).config.nixhold.fleet;
       in if cs == { } then null else {
         hosts = builtins.mapAttrs (n: h: {
-          inherit (h) arch networks disk publicIp publicFqdn;
-          platform = if builtins.match ".*-darwin" h.arch != null then "darwin" else "nixos";
+          inherit (h) arch networks disk serial publicIp publicFqdn;
+          platform =
+            if builtins.match ".*-darwin" h.arch != null then "darwin"
+            else if builtins.match ".*-android" h.arch != null then "android"
+            else "nixos";
         }) f.hosts;
         inherit (f) network;
         address = f.derived.address;
@@ -60,8 +63,8 @@ nh_fleet_view_reset() {
   rm -f "$root/fleet.json" "$root"/secrets.*.json
 }
 
-# nh_hosts [platform] — "<name> <platform>" per line, nixos first,
-# optionally only one platform.
+# nh_hosts [platform] — "<name> <platform>" per line, nixos first
+# (then android, then darwin), optionally only one platform.
 nh_hosts() {
   local only="${1:-}"
   nh_fleet_view | jq -r --arg p "$only" '
@@ -94,6 +97,51 @@ nh_host_arch() {
 # (empty when null).
 nh_host_field() {
   nh_fleet_view | jq -r --arg h "$1" --arg f "$2" '.hosts[$h][$f] // empty'
+}
+
+# nh_set_host_field <hosts-file> <name> <field> <value> — write
+# `<field> = "<value>";` into <name>'s roster entry: in place when the
+# entry already has one, else as its last field. The fields the CLI
+# writes are its own outputs — `disk` from the install picker, `serial`
+# from deploy's device picker. The entry is found the way `host remove`
+# finds it (opening line to the closing `};` at the same indentation).
+nh_set_host_field() {
+  local file="$1" name="$2" field="$3" value="$4" tmp
+  if ! grep -qE "^[[:space:]]+${name}[[:space:]]*=[[:space:]]*\{" "$file"; then
+    nh_err "no entry for $name in $file — the roster is not in the shape 'host add' writes"
+    return 1
+  fi
+  tmp="$(mktemp -t nixhold-hosts.XXXXXX)" || {
+    nh_err "could not create a temp file to rewrite $file"
+    return 1
+  }
+  if ! name="$name" field="$field" value="$value" awk '
+    BEGIN { inside = 0; done = 0; replaced = 0 }
+    {
+      if (!inside && !done && $0 ~ ("^[[:space:]]+" ENVIRON["name"] "[[:space:]]*=[[:space:]]*\\{")) {
+        inside = 1
+        indent = $0
+        sub(/[^ \t].*$/, "", indent)
+        close_re = "^" indent "\\};[[:space:]]*$"
+        print
+        next
+      }
+      if (inside) {
+        line = indent "  " ENVIRON["field"] " = \"" ENVIRON["value"] "\";"
+        if ($0 ~ ("^[[:space:]]+" ENVIRON["field"] "[[:space:]]*=")) { print line; replaced = 1; next }
+        if ($0 ~ close_re) {
+          if (!replaced) print line
+          inside = 0
+          done = 1
+        }
+      }
+      print
+    }
+  ' "$file" >"$tmp" || ! mv "$tmp" "$file"; then
+    rm -f "$tmp"
+    nh_err "could not write $field into $file"
+    return 1
+  fi
 }
 
 # nh_deploy_addr <host> — how the CLI reaches <host>: its address on

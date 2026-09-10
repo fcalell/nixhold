@@ -63,10 +63,15 @@ EOF
   fi
   nh_require_cmd ssh-keygen age jq nix || return 1
 
-  nh_host_platform "$name" >/dev/null || {
+  local platform
+  platform="$(nh_host_platform "$name")" || {
     nh_err "host '$name' is not in this fleet — 'nixhold status --fleet' lists the roster"
     return 1
   }
+  if [ "$platform" = "android" ]; then
+    nh_err "$name is an Android host — it runs no sshd and has no host key to record"
+    return 1
+  fi
 
   local target
   target="$(nh_key_target "$name" "$remote")" || {
