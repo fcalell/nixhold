@@ -14,6 +14,7 @@
 { ... }:
 {
   imports = [
+    ./navidrome/default.nix
     ./openssh/default.nix
     ./syncthing/default.nix
     ./taskchampion/default.nix

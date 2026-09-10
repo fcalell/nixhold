@@ -1142,11 +1142,12 @@ operator believes exposed that is simply not served. Multi-network
 exposure works by declaring endpoints on different networks.
 
 **Shipped HTTP services.** `vaultwarden` (Bitwarden backend, sqlite,
-`/vault`), `taskchampion` (taskwarrior 3.x replication, `/task`) and
+`/vault`), `taskchampion` (taskwarrior 3.x replication, `/task`),
 `syncthing` (GUI at `/sync`, sync protocol on the tailscale
-interface) ship as `nixhold.modules.services.nixos.*` beside openssh
-and tailscale, imported by the host that enables them. The three of
-them and openssh are NixOS-only; tailscale is the one shipped service
+interface) and `navidrome` (music server and Subsonic API, `/music`)
+ship as `nixhold.modules.services.nixos.*` beside openssh and
+tailscale, imported by the host that enables them. The four of them
+and openssh are NixOS-only; tailscale is the one shipped service
 with both platform implementations. Each one declares its endpoint
 **whole except for `network`**: the backend port, the path prefix,
 whether the prefix is stripped and the encoding are facts about the
@@ -1198,6 +1199,35 @@ not internal, and its scope is narrow by construction: a module
 reads back the URL of an endpoint it declared. Endpoints on
 `localhost`, and any that fail to resolve, are absent — those are
 assertions, not empty strings.
+
+**Navidrome takes its users from the tailnet.** It is the first
+shipped service whose identity is the network's rather than its own:
+caddy's copied `Tailscale-Login` (the login without its domain) is
+Navidrome's user header, users are created from it on first visit
+and the first one is admin, so the web UI has no login page and no
+password to keep. That trust is only sound if nothing but caddy can
+reach the listener, which is what the socket-backend shape is for:
+Navidrome binds a unix socket in a directory owned by its uid, group
+caddy, setgid and traverse-only (`2710`), so the socket inherits
+caddy's group from the directory and Navidrome's own chmod opens it
+`0660`; its trusted-source list is `@`, its name for the socket's
+peer. A loopback port would have made the header forgeable by any
+local uid. The directory is bound into nixpkgs' private root for the
+unit by path, since that root is `/run/navidrome` itself and is
+recreated on every start. `BaseUrl` is the endpoint's own
+`pathPrefix`, read back rather than restated, and the prefix passes
+through unstripped. The Subsonic API at `<prefix>/rest` ignores the
+header by design — Subsonic clients carry a Navidrome user's
+credentials, which an admin sets in the UI on a user the header
+created — and stays behind the same node-identity gate as every
+tailnet endpoint. `musicDir` is the consumer's directory, read-only
+to the service; `backupDir` uses Navidrome's own scheduler (23:00,
+seven kept) and publishes the copies the way the other two do —
+setgid `backups` directory, an execute-only ACL on the parent for the
+writer's uid — with one more line, a default ACL granting the group
+read, because the copies are written by the daemon itself under
+nixpkgs' `0066` umask and a default ACL is what replaces a umask for
+files created in a directory.
 
 **Tailnet membership on the Mac is declarative too.**
 `nixhold.services.tailscale` has a darwin implementation beside the

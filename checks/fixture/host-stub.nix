@@ -14,12 +14,14 @@
 # firewall scoping keys off — lives on fixture-node.
 #
 # It is also where the shipped HTTP services are built: vaultwarden,
-# taskchampion and syncthing are imported and enabled below, so the
-# check covers each one's endpoint declaration, its backup wiring and
-# — for vaultwarden — the `nixhold.infra.url` read-back its DOMAIN
-# depends on. `syncthing`'s GUI password is `required`, so its
-# ciphertext is committed under ./secrets/fixture-server/ like every
-# other fixture secret: a throwaway nothing decrypts.
+# taskchampion, syncthing and navidrome are imported and enabled
+# below, so the check covers each one's endpoint declaration, its
+# backup wiring, — for vaultwarden — the `nixhold.infra.url` read-back
+# its DOMAIN depends on, and — for navidrome — the socket backend its
+# tailnet identity rests on. `syncthing`'s GUI password is
+# `required`, so its ciphertext is committed under
+# ./secrets/fixture-server/ like every other fixture secret: a
+# throwaway nothing decrypts.
 {
   config,
   lib,
@@ -36,6 +38,7 @@
     inputs.nixhold.modules.services.nixos.vaultwarden
     inputs.nixhold.modules.services.nixos.taskchampion
     inputs.nixhold.modules.services.nixos.syncthing
+    inputs.nixhold.modules.services.nixos.navidrome
   ];
 
   # No machine ever ran `host install` for a fixture host, so there is
@@ -95,6 +98,12 @@
       enable = true;
       expose.gui.network = "tailnet";
     };
+    navidrome = {
+      enable = true;
+      expose.web.network = "tailnet";
+      musicDir = "/srv/music";
+      backupDir = "/var/lib/backups/navidrome";
+    };
   };
 
   # The `unit` path, NixOS-only: the secret is the fixtureweb unit's
@@ -130,6 +139,26 @@
         assertion =
           config.nixhold.infra.url.taskchampion.sync == "https://fixture-server.fixture.ts.net/task";
         message = "fixture: taskchampion's endpoint does not resolve to the node FQDN at /task";
+      }
+      {
+        # Navidrome trusts the identity header from whoever reaches
+        # its listener, so the listener must be the socket caddy
+        # dials and no loopback port: the address it binds is the
+        # backend the endpoint names, and the socket's directory
+        # carries caddy's group.
+        assertion =
+          let
+            nd = config.services.navidrome.settings;
+            sock = config.nixhold.services.navidrome.network.sockets.web;
+          in
+          nd.Address == "unix:${sock}"
+          && nd.ExtAuth.TrustedSources == "@"
+          && nd.BaseUrl == "/music"
+          && config.nixhold.infra.url.navidrome.web == "https://fixture-server.fixture.ts.net/music"
+          &&
+            config.systemd.tmpfiles.settings."10-navidrome".${dirOf sock}.d.group
+            == config.services.caddy.group;
+        message = "fixture: navidrome's listener, trusted source, base URL or socket group is not the endpoint's";
       }
       {
         # The sync protocol is not HTTP and gets no endpoint: its

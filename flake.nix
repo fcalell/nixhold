@@ -74,6 +74,7 @@
         # NixOS-only, so it stays flat.
         services = {
           nixos = {
+            navidrome = ./modules/services/navidrome/nixos.nix;
             openssh = ./modules/services/openssh/nixos.nix;
             syncthing = ./modules/services/syncthing/nixos.nix;
             taskchampion = ./modules/services/taskchampion/nixos.nix;
