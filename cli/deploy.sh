@@ -1,11 +1,12 @@
-# nixhold deploy [<name>…] [--mode {switch|boot|test}] [--dry-run]
-#                          [--target <addr>] [--yes]
+# nixhold deploy [<name>…|--all] [--mode {switch|boot|test}] [--dry-run]
+#                                [--target <addr>]
 #
 # Daily verb. Builds + activates each host's current config.
-#   - No name: a multi-select of the hosts this machine can activate
-#     (every NixOS host; a darwin host only on that Mac). Picking is
-#     the confirmation. --yes with no name = all of them.
-#   - Local mode iff `hostname` == <name>: nixos-rebuild / darwin-rebuild.
+#   - No name: this machine (nh_deploy_self); a usage error when it
+#     is not a fleet host. --all: every host this machine can
+#     activate (every NixOS host; a darwin host only when this Mac
+#     is it). Naming is the confirmation: no picker, no prompt.
+#   - Local mode iff <name> is this machine: nixos-rebuild / darwin-rebuild.
 #   - Remote NixOS: nixos-rebuild --target-host <addr> --build-host <addr>
 #     (the target builds itself; we orchestrate).
 #   - Remote darwin: refused (deploy Macs locally).
@@ -25,19 +26,19 @@
 . "$NIXHOLD_LIB_ROOT/secret-edit.sh"
 
 cmd_deploy() {
-  local names=() mode="switch" dry_run=0 target="" yes=0
+  local names=() mode="switch" dry_run=0 target="" all=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --mode) mode="$2"; shift 2 ;;
       --dry-run) dry_run=1; shift ;;
       --target) target="$2"; shift 2 ;;
-      --yes) yes=1; shift ;;
+      --all) all=1; shift ;;
       -h | --help)
         cat <<'EOF'
-Usage: nixhold deploy [<name>…] [--mode {switch|boot|test}] [--dry-run]
-                                [--target <addr>] [--yes]
+Usage: nixhold deploy [<name>…|--all] [--mode {switch|boot|test}] [--dry-run]
+                                      [--target <addr>]
 
-  No name picks from the hosts this machine can activate.
+  No name deploys this machine; --all every host it can activate.
 EOF
         return 0
         ;;
@@ -49,41 +50,33 @@ EOF
   nh_require_cmd nix
   nh_fleet_root >/dev/null || return 1
 
-  if [ "${#names[@]}" -eq 0 ]; then
-    local eligible=() line
+  if [ "$all" -eq 1 ]; then
+    if [ "${#names[@]}" -gt 0 ]; then
+      nh_err "--all takes no host names"
+      return 1
+    fi
+    local line
     while IFS= read -r line; do
-      [ -n "$line" ] && eligible+=("$line")
+      [ -n "$line" ] && names+=("$line")
     done < <(nh_deploy_eligible)
-    if [ "${#eligible[@]}" -eq 0 ]; then
+    if [ "${#names[@]}" -eq 0 ]; then
       nh_err "no host in the fleet can be deployed from this machine"
       return 1
     fi
-    if [ "$yes" -eq 1 ]; then
-      names=("${eligible[@]}")
-    elif nh_tty; then
-      local picked
-      picked="$(nh_pick_hosts "Deploy which hosts? (mode $mode$([ "$dry_run" -eq 1 ] && printf ', dry-run'))" "${eligible[@]}")" || {
-        nh_info "nothing selected"
-        return 0
-      }
-      while IFS= read -r line; do
-        [ -n "$line" ] && names+=("$line")
-      done <<<"$picked"
-      yes=1
-    else
-      nh_err "expected: nixhold deploy <name> (no terminal for the picker)"
+  elif [ "${#names[@]}" -eq 0 ]; then
+    local self
+    self="$(nh_deploy_self)" || {
+      nh_err "this machine ($(nh_hostname)) is not a fleet host — nixhold deploy <name>, or --all for every host it can activate"
       return 1
-    fi
+    }
+    names=("$self")
   fi
   if [ -n "$target" ] && [ "${#names[@]}" -ne 1 ]; then
     nh_err "--target applies to exactly one host"
     return 1
   fi
 
-  if [ "$yes" -ne 1 ]; then
-    nh_info "deploy: ${names[*]} — mode=$mode$([ "$dry_run" -eq 1 ] && printf ' dry-run')"
-    nh_prompt_confirm "Proceed?" || { nh_info "aborted"; return 0; }
-  fi
+  nh_info "deploy: ${names[*]} — mode=$mode$([ "$dry_run" -eq 1 ] && printf ' dry-run')"
 
   local name failed=()
   for name in "${names[@]}"; do
@@ -97,25 +90,37 @@ EOF
   [ "${#names[@]}" -eq 1 ] || nh_ok "deployed: ${names[*]}"
 }
 
+# nh_deploy_self — the fleet host this machine is; non-zero when it is
+# none of them. Match by hostname, and on a Mac fall back to the
+# fleet's only darwin host — the fleet name and the macOS/MDM hostname
+# routinely differ (especially before the first switch).
+nh_deploy_self() {
+  local here macs
+  here="$(nh_hostname)"
+  if nh_all_hosts | grep -qx -- "$here"; then
+    printf '%s' "$here"
+    return 0
+  fi
+  [ "$(uname -s)" = "Darwin" ] || return 1
+  macs="$(nh_hosts darwin | cut -d' ' -f1)"
+  case "$macs" in
+    "" | *$'\n'*) return 1 ;;
+  esac
+  printf '%s' "$macs"
+}
+
 # nh_deploy_eligible — the hosts this machine can activate, one per
 # line: every NixOS host (the target builds its own closure) plus a
-# darwin host only when we ARE that Mac. Match by hostname, falling
-# back to "the only mac in the fleet" — the fleet name and the
-# macOS/MDM hostname routinely differ.
+# darwin host only when this Mac is it.
 nh_deploy_eligible() {
-  local line name platform macs=0 here
-  here="$(nh_hostname)"
-  macs="$(nh_hosts darwin | wc -l | tr -d ' ')"
+  local self line name platform
+  self="$(nh_deploy_self)" || self=""
   while IFS= read -r line; do
     name="${line%% *}"
     platform="${line##* }"
-    case "$platform" in
-      nixos) printf '%s\n' "$name" ;;
-      darwin)
-        [ "$(uname -s)" = "Darwin" ] || continue
-        if [ "$here" = "$name" ] || [ "$macs" = 1 ]; then printf '%s\n' "$name"; fi
-        ;;
-    esac
+    if [ "$platform" = "nixos" ] || [ "$name" = "$self" ]; then
+      printf '%s\n' "$name"
+    fi
   done < <(nh_hosts)
 }
 
@@ -130,7 +135,7 @@ nh_deploy_host() {
   arch="$(nh_host_arch "$name")"
 
   local local_host=0
-  if [ "$(nh_hostname)" = "$name" ]; then
+  if [ "$(nh_deploy_self 2>/dev/null || true)" = "$name" ]; then
     local_host=1
   fi
 
@@ -223,9 +228,9 @@ nh_deploy_host() {
       fi
       ;;
     darwin)
-      # darwin deploys are always local — so gate on the OS, not the
-      # hostname. The fleet name and the macOS/MDM hostname routinely
-      # differ (especially before the first switch).
+      # darwin deploys are always local — so gate on the OS, not on
+      # nh_deploy_self, which a fleet of several Macs with a hostname
+      # that matches none of them cannot resolve.
       if [ "$(uname -s)" != "Darwin" ]; then
         nh_err "darwin hosts deploy locally only — run this on $name itself"
         return 1

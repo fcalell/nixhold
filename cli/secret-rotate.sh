@@ -11,7 +11,7 @@
 #
 # Between the rekey and the deploy the hosts still hold the OLD key and
 # the repo holds only new ciphertexts — so a host that reboots in that
-# window comes up unable to decrypt. `nixhold deploy` (no names, or one
+# window comes up unable to decrypt. `nixhold deploy --all` (or one host
 # at a time) closes it: it compares /etc/nixhold/fleet.pub with
 # keys/fleet.pub and installs the new key before it activates anything.
 #
@@ -83,5 +83,5 @@ EOF
 
   nh_ok "fleet key rotated: $(nh_fleet_pub_line)"
   nh_info "the old key ($old) opens nothing in this repo any more"
-  nh_info "next: nixhold deploy — it installs the new key on each host before activating it"
+  nh_info "next: nixhold deploy --all — it installs the new key on each host before activating it"
 }

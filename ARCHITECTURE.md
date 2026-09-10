@@ -338,14 +338,18 @@ the framework's job rather than the operator's:
   costs nothing past the first host: `password` is fleet-scoped,
   and the first `host add` mints the one ciphertext before any host
   is installed, so every later host finds it already provisioned.
-- **Every remote verb that elevates allocates a tty**, so the
-  prompt lands on the operator's terminal: `host key --remote`,
-  `logs` and the fleet-key helpers' remote `sudo cat` / install
-  all run `ssh -t`, and `deploy` passes
-  `nixos-rebuild --ask-sudo-password` where the installed
-  nixos-rebuild supports the flag, `NIX_SSHOPTS=-t` where it does
-  not. One prompt per host per verb is the accepted cost; a verb
-  that touches several hosts prompts several times.
+- **Every remote verb that elevates asks on the operator's
+  terminal, once per process.** The CLI's own escalations (`host
+  key --remote`, `logs`, the fleet-key install) prompt once, cache
+  the password for the process, and feed it to the target's `sudo
+  --stdin` (see "Remote privilege escalation" in `cli/lib/ssh.sh`).
+  `deploy` hands activation to `nixos-rebuild --elevate=sudo
+  --ask-elevate-password`, whose prompt is its own `getpass` and
+  cannot take the cached password, so anything nixhold reads before
+  it must not escalate: `/etc/nixhold/fleet.pub` is `0444` and is
+  read over plain ssh. One prompt per host per routine deploy is the
+  accepted cost; a deploy that also installs the fleet key prompts
+  twice, and a verb that touches several hosts prompts per host.
 - **The console password is the recovery path.** It is what the
   operator types at the machine's own keyboard when the tailnet
   has not joined and ssh is scoped to it (see "sshd exposure
@@ -1409,8 +1413,9 @@ nixhold host key <name> [--remote <user>@<ip>] [--yes]
                                                     record the machine's live ssh host pubkey;
                                                     (re)install the fleet key when it differs
 nixhold host remove [<name>] [--yes]
-nixhold deploy [<name>…] [--mode switch|boot|test] [--dry-run] [--target <addr>] [--yes]
-                                                    no name: pick the hosts; several: in order
+nixhold deploy [<name>…|--all] [--mode switch|boot|test] [--dry-run] [--target <addr>]
+                                                    no name: this machine; --all: every host it
+                                                    can activate; several: in order
 nixhold update [--yes]                              git pull → nix flake update → moved inputs
                                                     → deploy's picker
 nixhold status [<name>] [--fleet]
@@ -1446,7 +1451,9 @@ stays the one-glance present/missing summary.
 - An omitted argument opens a picker built from the fleet view when
   a terminal is attached, and is a usage error when none is (scripts
   pass the arguments). Picking is the confirmation; `--yes` stands
-  in for it in scripts.
+  in for it in scripts. `deploy` is the one verb with no picker: an
+  omitted host is this machine, `--all` is every host it can
+  activate, and naming is the confirmation.
 - Every verb prints its plan before the first write, commits what
   it generated, and ends with the single next command.
 - Prompts default from what is already known: the arch of the
@@ -1546,30 +1553,34 @@ dashboard; never live systemctl.
 ### `nixhold deploy`
 
 Daily verb; thin over `nixos-rebuild switch` / `darwin-rebuild
-switch`. Local iff `$HOSTNAME == <name>` (reliable: the framework
-owns host naming). Remote NixOS: `--target-host` **and**
+switch`. **This machine** is the fleet host whose name is the local
+hostname (reliable: the framework owns host naming), or on a Mac the
+fleet's only darwin host when the hostname matches none (the fleet
+name and the macOS/MDM hostname routinely differ). Local iff
+`<name>` is this machine. Remote NixOS: `--target-host` **and**
 `--build-host` point at the target — **each machine builds its own
 closure**; the operator machine never builds foreign arches
 (applies to install too via `--build-on-remote`). The connection is
 the operator's, activation is `--elevate=sudo` on the target, and
-sudo asks: the verb passes `--ask-sudo-password` where the
-installed nixos-rebuild supports it and otherwise sets
-`NIX_SSHOPTS=-t` so the prompt reaches the operator's terminal (see
-"Sudo asks"). One prompt per host — deploying several hosts prompts
-once each, and a deploy with no terminal is a usage error rather
-than a hang. Remote darwin:
+sudo asks: the verb passes `--ask-elevate-password`, which prompts
+on the operator's terminal and feeds the target's `sudo --stdin`
+(see "Sudo asks"). One prompt per host — deploying several hosts
+prompts once each, and a deploy with no terminal is a usage error
+rather than a hang. Remote darwin:
 refused (deploy Macs locally). The address comes from
 `derived.address.<name>`: the tailnet entry when it resolves,
 otherwise the first non-null address of any other network;
 `--target <addr>` overrides (single host only). Modes: switch
-(default) / boot / test. Zero, one or several hosts: none opens a
-multi-select of the hosts this machine can activate (every NixOS
-host; a darwin host only on that Mac), and the selection is the
-confirmation; explicit names confirm once as a list unless `--yes`;
-several deploy in order, continuing past a failure and reporting at
-the end. Required secrets with no ciphertext are provisioned before
+(default) / boot / test. Zero, one or several hosts: none means this
+machine (a usage error on a machine that is not a fleet host);
+`--all` means every host this machine can activate (every NixOS
+host; a darwin host only when this Mac is it); explicit names deploy
+exactly those. No picker and no confirmation: the name, or `--all`,
+is the intent, and the verb prints its plan line before the first
+host. Several deploy in order, continuing past a failure and
+reporting at the end. Required secrets with no ciphertext are provisioned before
 the build; then the target's fleet key is ensured — read
-`/etc/nixhold/fleet.pub` over `ssh -t` + sudo, and when it is
+`/etc/nixhold/fleet.pub` over plain ssh (it is `0444`), and when it is
 missing or differs from `keys/fleet.pub`, decrypt
 `keys/fleet.key.age` over one operator route and install it. No
 rekey, ever: a host added to the fleet inherits `env` and every

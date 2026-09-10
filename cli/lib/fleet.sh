@@ -137,13 +137,3 @@ nh_pick_host() {
   }
   printf '%s\n' "$rows" | gum choose --header "$header" | awk '{ print $1 }'
 }
-
-# nh_pick_hosts <header> <name…> — a multi-select over the given
-# names, one per line on stdout; non-zero when nothing was picked.
-nh_pick_hosts() {
-  local header="$1" out
-  shift
-  out="$(gum choose --no-limit --header "$header" "$@")" || return 1
-  [ -n "$out" ] || return 1
-  printf '%s\n' "$out"
-}

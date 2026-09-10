@@ -361,10 +361,10 @@ rm -f "$t" "$t.pub"
 
 # nh_fleet_key_read_pub [--remote <user>@<ip>] [--host <name>] — the
 # recipient line the MACHINE holds at /etc/nixhold/fleet.pub, or
-# nothing at all when it holds none. 0444, so no escalation is needed
-# to read it — but the remote read goes through nh_ssh_sudo anyway,
-# since the caller that finds a mismatch installs over the same
-# connection.
+# nothing at all when it holds none. 0444 in a 0755 directory, so the
+# read never escalates: a routine deploy's only password prompt is
+# then nixos-rebuild's own, and nixhold asks for sudo only when the
+# comparison fails and the key has to be installed.
 nh_fleet_key_read_pub() {
   local remote="" host="" out
   while [ "$#" -gt 0 ]; do
@@ -385,7 +385,7 @@ nh_fleet_key_read_pub() {
   else
     local hostargs=()
     [ -n "$host" ] && hostargs=(--host "$host")
-    out="$(nh_ssh_sudo "$remote" "${hostargs[@]}" -- \
+    out="$(nh_ssh "$remote" "${hostargs[@]}" -- \
       'cat /etc/nixhold/fleet.pub 2>/dev/null || true' </dev/null)" || return 2
   fi
   out="$(printf '%s\n' "$out" | awk 'NF { print; exit }')"

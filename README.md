@@ -56,14 +56,16 @@ Reach it pre-install as `nix run github:fcalell/nixhold#nixhold -- <verb>`,
 and post-install as `nixhold <verb>` (on PATH via `programs.nixhold`,
 default on).
 
-Every argument in brackets opens a picker when left out.
+Every argument in brackets opens a picker when left out; `deploy`
+alone defaults to this machine instead.
 
 ```sh
 nixhold host add [<name>]      # the walk: roster entry, secrets,
                                # then "install now?"
 nixhold host install [<name>]  # reformat a host (NixOS: disk picker + disko +
                                # nixos-facter; darwin: darwin-rebuild locally)
-nixhold deploy [<name>…]       # build + switch (local; or over ssh as the
+nixhold deploy [<name>…|--all] # build + switch this machine, the names, or all
+                               # (local; or over ssh as the
                                # operator user, whose sudo password is asked
                                # for once per host)
 nixhold update                 # pull, update inputs, deploy what you pick
