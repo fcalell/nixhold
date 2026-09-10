@@ -24,10 +24,15 @@ in
     };
 
     musicDir = lib.mkOption {
-      type = lib.types.path;
+      # Null until enabled: the whole `nixhold.services` set is read
+      # as data (lint's backend rule, status) on hosts that never
+      # enable this service, and a required path would fail that read.
+      type = lib.types.nullOr lib.types.path;
+      default = null;
       example = "/srv/music";
       description = ''
-        The library. The consumer owns the directory and whatever
+        The library; required once the service is enabled. The
+        consumer owns the directory and whatever
         fills it; the service reads it as user `navidrome` and sees
         nothing else of the filesystem (nixpkgs' unit binds it
         read-only into a private root, and `ProtectHome` hides
@@ -77,8 +82,13 @@ in
     };
   };
 
-  config.assertions = lib.optional (cfg.enable && cfg.implementation == null) {
-    assertion = false;
-    message = "nixhold.services.navidrome is enabled but no implementation is attached on this host — import `nixhold.modules.services.nixos.navidrome` (NixOS only).";
-  };
+  config.assertions =
+    lib.optional (cfg.enable && cfg.implementation == null) {
+      assertion = false;
+      message = "nixhold.services.navidrome is enabled but no implementation is attached on this host — import `nixhold.modules.services.nixos.navidrome` (NixOS only).";
+    }
+    ++ lib.optional (cfg.enable && cfg.musicDir == null) {
+      assertion = false;
+      message = "nixhold.services.navidrome is enabled but `musicDir` is unset — name the library directory.";
+    };
 }
