@@ -301,44 +301,6 @@ deferred modules), wired into
 `home-manager.users.<operator>.imports`. An option, not a
 sibling-file convention.
 
-**Claude Code is bootstrapped, not packaged.**
-`programs.claude-code-native` (default off, opted into from an HM
-fragment) runs the vendor's install script once, when
-`~/.local/bin/claude` is absent, and passes it the release named by
-`programs.claude-code-native.version` — a pinned default, bumped
-like any other framework value. The binary's own auto-updater is
-disabled, so the installed version is the declared one and a
-rebuild is what moves it. The fetch itself is unverified: the
-vendor publishes no checksum for the script, so this is a trusted
-`curl | bash` against `claude.ai` and the framework says so rather
-than implying a supply-chain guarantee it does not have. A failed
-fetch warns and the next activation retries; it never aborts
-activation.
-
-**A Claude Code profile is a launcher.**
-`programs.claude-code-native.profiles.<name>` declares one persona:
-`prompt`, a list of markdown files the framework joins with blank
-lines into the session's whole system prompt (`--system-prompt-file`;
-never the CLI's coding prompt with a paragraph appended, which is
-thousands of tokens about being a software engineer in a terminal);
-`tools`, the built-in set the session may load (`--tools`); `memory`,
-a directory whose `CLAUDE.md` and unconditional `.claude/rules/*.md`
-load at start through `--add-dir` (a path-scoped rule in an added
-directory never fires, measured on 2.1.265, so those stay in
-`~/.claude/rules/`, keyed on file type and so persona-neutral);
-`mcp`, the `mcpServers` map the session alone may reach
-(`--strict-mcp-config --mcp-config`, so the operator's own servers and
-connectors stay out; null inherits them); `model` and `effort`,
-overriding the operator's settings for that persona alone; `chrome`,
-off by default. Each profile renders to one wrapper on PATH,
-`claude-<name>`, that execs the binary with those flags,
-`--system-prompt-snapshot off` so a deployed prompt reaches a resumed
-conversation, and the caller's arguments before them. `--chrome` at
-the call turns the bridge on; a caller with its own `--system-prompt*`
-or `--tools` gets the bare binary. Headless launchers with a runtime
-prompt or tool set (the dogfood fleet's assistant daemon) keep their
-own flags.
-
 **Identity auto-wiring (principle 3).** What one `identity` sets,
 all `mkDefault` unless named:
 

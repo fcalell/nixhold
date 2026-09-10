@@ -130,7 +130,6 @@ self.lib.mkFleet {
       modules = [
         ./known-hosts-assertions.nix
         ./repositories.nix
-        ./claude-profile.nix
       ];
     };
 
