@@ -12,6 +12,10 @@ set -euo pipefail
 # wrapper, BASH_SOURCE[0] points at the unwrapped script path.
 NIXHOLD_LIB_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export NIXHOLD_LIB_ROOT
+# nixhold's own flake.lock, the floor lint measures fleet pins against
+# (rule 13). The package exports it; in-tree it is the checkout's.
+NIXHOLD_LOCK="${NIXHOLD_LOCK:-$NIXHOLD_LIB_ROOT/../flake.lock}"
+export NIXHOLD_LOCK
 
 # Every CLI nix call needs flakes — but a fresh machine (vanilla Nix,
 # pre-first-switch) hasn't enabled them yet. `extra-` merges harmlessly
@@ -56,8 +60,8 @@ Hosts:
   host remove [<name>]              Delete a host from the fleet.
 
 Daily:
-  deploy [<name>…] [--mode …]       Build + activate; no name picks the hosts.
-  update [--yes]                    Pull, update inputs, show what moved, deploy.
+  deploy [<name>…|--all] [--mode …] Build + activate this machine, the names, or all.
+  update [--all]                    Pull, update inputs, show what moved, deploy.
   status [<name>] [--fleet]         Declared services, endpoints, secrets.
   logs [<host>] [<service>]         Tail journald for a unit on a host.
 

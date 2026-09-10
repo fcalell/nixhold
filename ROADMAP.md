@@ -77,6 +77,7 @@ through):
 | Framework-managed remote builders | a consumer informs the design | `fleet.builders.<system>` — reserved, unclaimed |
 | A repo-wide `nix fmt` | formatting drift | `formatter` is bare `nixfmt` on stdin today; a tree formatter would need a wrapper |
 | `nix flake check --no-build` | the no-build form is wanted in CI | it trips over the fixture's `builtins.path` self (an unrealised store path once a check forces `readFile` under it); the builds-allowed check is the smoke test today |
+| Scheduled refresh of nixhold's own lock | the first `nixhold update` whose gate fails on an input nixhold's lock is more than a release behind on | a CI job on a cadence: `nix flake update`, the framework checks, push. The fleet's lock is what builds ("Inputs: who pins what"); nixhold's is the tested floor, and lint's "behind" rule measures against it, so a floor that rots measures nothing |
 
 Lint rules named in the design but not written (trigger: the first
 violation that reaches a host):

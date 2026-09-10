@@ -13,13 +13,24 @@ Status: **pre-v1.** The implemented design is described in
 ## How a fleet consumes it
 
 A fleet lives in its own repo and pins `inputs.nixhold`. The whole
-`flake.nix` is the `mkFleet` call — heavy inputs (nixpkgs,
-home-manager, nix-darwin, agenix, disko, nixos-anywhere) come
-transitively via `inputs.nixhold.inputs.*`.
+`flake.nix` is the `mkFleet` call. The fleet declares the heavy
+inputs too (nixpkgs, home-manager, nix-darwin, agenix, disko,
+nixos-anywhere, nixos-hardware) and points nixhold at them with
+`inputs.nixhold.inputs.<x>.follows`, so one lock — the fleet's —
+decides what every host runs and `nixhold update` moves all of it.
 
 ```nix
 {
-  inputs.nixhold.url = "github:fcalell/nixhold";
+  inputs = {
+    nixhold.url = "github:fcalell/nixhold";
+    # nixhold's seven root inputs, declared here and followed — the
+    # template carries the full block.
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # … home-manager, nix-darwin, agenix, disko, nixos-anywhere,
+    # nixos-hardware, each with the follows nixhold's flake.nix sets
+    nixhold.inputs.nixpkgs.follows = "nixpkgs";
+    # … one follows per heavy input
+  };
   outputs =
     { nixhold, ... }@inputs:
     nixhold.lib.mkFleet {
@@ -68,7 +79,8 @@ nixhold deploy [<name>…|--all] # build + switch this machine, the names, or al
                                # (local; or over ssh as the
                                # operator user, whose sudo password is asked
                                # for once per host)
-nixhold update                 # pull, update inputs, deploy what you pick
+nixhold update [--all]         # pull, update every input, eval-gate every host,
+                               # deploy this machine (or all)
 nixhold secret edit [<host>] [<name>]
                                # provision a missing secret, or edit one
 nixhold secret rekey           # re-encrypt to current recipients

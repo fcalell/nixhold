@@ -38,8 +38,11 @@ pkgs.writeShellApplication {
     nixos-rebuild
   ];
 
+  # The framework's own lock rides along: lint's input-floor rule
+  # measures the fleet's pins against it (rule 13).
   text = ''
     export NIXHOLD_LIB_ROOT="${./.}"
+    export NIXHOLD_LOCK="${../flake.lock}"
     exec bash "${./.}/nixhold.sh" "$@"
   '';
 }

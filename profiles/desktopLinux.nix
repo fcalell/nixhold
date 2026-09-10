@@ -58,7 +58,7 @@
   services.greetd = {
     enable = lib.mkDefault true;
     settings.default_session = {
-      command = lib.mkDefault "${pkgs.greetd.tuigreet}/bin/tuigreet --time --remember --cmd Hyprland";
+      command = lib.mkDefault "${pkgs.tuigreet}/bin/tuigreet --time --remember --cmd Hyprland";
       user = lib.mkDefault "greeter";
     };
   };

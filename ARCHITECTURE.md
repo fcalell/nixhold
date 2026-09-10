@@ -137,10 +137,14 @@ read from disk. A minimal fork passes only `inputs`, `identity`,
 
 Rules:
 
-- The forker declares only `inputs.nixhold` (plus fleet-unique
-  inputs). nixpkgs / home-manager / nix-darwin / agenix / disko /
-  nixos-anywhere come transitively; bumping ahead of the pin uses
-  the standard `inputs.nixhold.inputs.<x>.follows` idiom.
+- The forker owns the heavy inputs. The template declares every
+  root input nixhold declares (nixpkgs, home-manager, nix-darwin,
+  agenix, disko, nixos-anywhere, nixos-hardware) and rebinds each
+  with `inputs.nixhold.inputs.<x>.follows`, so the fleet's lock is
+  the only lock that builds anything: nixhold's own `flake.lock`
+  feeds its checks and devShell and nothing else. `nixhold update`
+  therefore moves everything, and moves it from the fleet (see
+  "Inputs: who pins what").
 - Per-host module list, in order: platform baseline bundle
   (`nixosModules.nixhold` / `darwinModules.nixhold`) →
   `host.profile` → framework baseline (hostname, platform,
@@ -181,11 +185,12 @@ Rules:
 - Pre-fleet CLI access: `nix run github:fcalell/nixhold#nixhold --
   <verb>` works without a fleet; fleet-context verbs error cleanly
   when no `mkFleet` flake is found.
-- Versioning: the fleet's own `flake.lock` is the pin. The
-  template writes the input unpinned (`github:fcalell/nixhold`) and
-  the first `nix flake lock` nails it to a revision; `nixhold
-  update` is what moves it. No tags, no ref in the url — a ref
-  would be a second pin to keep in step with the lock.
+- Versioning: the fleet's own `flake.lock` is the pin, for nixhold
+  and for every heavy input alike. The template writes the inputs
+  unpinned (`github:fcalell/nixhold`, `nixos-unstable`, …) and the
+  first `nix flake lock` nails them to revisions; `nixhold update`
+  is what moves them. No tags, no ref in the url — a ref would be a
+  second pin to keep in step with the lock.
 - Dogfood is out-of-tree from day 1: the author's fleet consumes
   `inputs.nixhold` like any forker.
 
@@ -1279,7 +1284,7 @@ exists, the installer ISO is itself a sufficient operator seat.
 | L3d darwin host | On the Mac itself: name the account after `identity.username`, install Command Line Tools and vanilla multi-user Nix, then `nix run github:fcalell/nixhold#nixhold -- host install <mac>`. With no fleet checkout yet, `--repo <owner/repo> --keys <dir>` — the directory holding `identity.age`, and `operator.age` when the fleet keeps one, copied from any checkout or the safekeeping copy — clones with the `identity` key first, so a wiped Mac needs one operator route and nothing else. Preflight, `/etc/nixhold/fleet.key` written, the Mac's live ssh host pubkey recorded, first switch, secrets verified — one command (see CLI) |
 | L4 add service | edit host/profile module → `nixhold deploy <name>` (provisions missing required secrets first) |
 | L5 new service module | `nixhold service new <name>` → edit |
-| L6 update inputs | `nixhold update` (from any directory): pull → flake update → the inputs that moved, from the lock diff → `deploy`'s host picker → deploy each picked host |
+| L6 update inputs | `nixhold update` (from any directory): pull → baseline eval of every host → flake update → the inputs that moved, from the lock diff → the eval gate (every host evaluates; the warnings and spine-version deltas; a kernel move says "reboot required") → `deploy` this machine (`--all`: every host this machine can activate). A gate failure restores the lock and stops |
 | L7 reinstall/reformat | Boot the ISO, `nixhold host install` → the operator route → pick the host (or `host install <name> --remote root@<ip>` from a fleet machine; the picker there asks for the address). The fleet key is installed from `keys/fleet.key.age` (the route is already open, the clone needed it) → a fresh ssh host key is minted and its pubkey rewritten at `keys/hosts/<name>.pub` → secrets still decrypt, because the recipient set never mentioned the machine → nothing else generated |
 | L8 rename | manual: `git mv secrets/<old> secrets/<new>`, `git mv keys/hosts/<old>.pub keys/hosts/<new>.pub`, edit hostsFile, reinstall. No rekey — the recipients do not know the host's name |
 | L9 remove | `nixhold host remove [<name>]` — deletes the fleet entry, `hosts/<n>`, `secrets/<n>/` and `keys/hosts/<n>.pub`. No rekey: nothing was encrypted to that machine. It still *holds* the fleet key, though, so the verb ends by naming the consequence — if the hardware is not being wiped, `nixhold secret rotate` — and decommissioning the machine is the operator's job |
@@ -1446,8 +1451,9 @@ nixhold host remove [<name>] [--yes]
 nixhold deploy [<name>…|--all] [--mode switch|boot|test] [--dry-run] [--target <addr>]
                                                     no name: this machine; --all: every host it
                                                     can activate; several: in order
-nixhold update [--yes]                              git pull → nix flake update → moved inputs
-                                                    → deploy's picker
+nixhold update [--all]                              git pull → baseline eval → nix flake update
+                                                    → moved inputs → eval gate → deploy (same
+                                                    host rule); a failed gate restores the lock
 nixhold status [<name>] [--fleet]
 nixhold lint [--strict]
 nixhold logs [<host>] [<service>] [--lines N] [--since <when>] [--follow]
@@ -1624,11 +1630,76 @@ is the whole flow. `--dry-run` runs `nixos-rebuild dry-build` (darwin:
 ### `nixhold update`
 
 `git pull --ff-only` in the fleet root (skipped without an
-upstream), `nix flake update`, then the inputs that moved — read
-from the lock diff, `<input>: <old rev> → <new rev>` — and a hand-off
-to `deploy` with no names (`--yes` deploys every eligible host). A
-run where neither the checkout nor an input moved stops there. The
-lock is never auto-committed; the verb ends with the commit command.
+upstream), a baseline eval of every host, `nix flake update`, then
+the inputs that moved — read from the lock diff, `<input>: <old rev>
+→ <new rev>` — the eval gate, and a hand-off to `deploy` under its
+host rule: this machine, or every eligible host with `--all`. A run
+where neither the checkout nor an input moved stops after the
+baseline. The lock is never auto-committed; the verb ends with the
+commit command.
+
+**The eval gate.** One `nix eval` per host per side, reading three
+things off the configuration: `system.build.toplevel.drvPath`,
+`config.warnings`, and the spine versions (NixOS: kernel, systemd,
+glibc, openssh; darwin: openssh, nix — the list is data at the top
+of `update.sh`). Evaluating instantiates without building, so the
+gate covers every host from any machine: a linux host's toplevel
+evaluates on a Mac in seconds. A NixOS host still waiting for its
+hardware report (the pre-install guard under "Hardware") cannot
+instantiate anywhere, so the gate reads its warnings and spine and
+skips its toplevel, and says so. What it catches is what is visible
+before boot — removed or renamed options, failed assertions, type
+errors — and what it reports is the standard upstream signal for a
+breaking change: the warnings that appeared, the spine versions that
+moved. A kernel move ends the report with "reboot required", because
+`deploy` activates with `switch` and a switched userland on the old
+kernel is the one state a deploy cannot see.
+
+- The **baseline** runs after the pull and before the lock is
+  touched. A host that fails there is broken by the checkout, not by
+  an input, and the verb stops with that finding — restoring a lock
+  that never moved would report a fix that fixed nothing.
+- A host that fails **after** the update fails the gate: the lock is
+  restored from the pre-update copy, the lock diff is printed beside
+  the error so the operator sees what moved, and the verb exits
+  non-zero before `deploy`. The fleet never carries a combination
+  that does not evaluate. All inputs move or none: the verb has no
+  per-input flag, because a held input is the diverged state lint
+  flags on every later run (see "Inputs: who pins what").
+
+Not caught: a combination that evaluates, builds, boots and then
+misbehaves. That is `deploy --mode boot` and the previous
+generation, as before.
+
+### Inputs: who pins what
+
+Nested inputs are the trap this section exists for. A bare `nix
+flake update` re-resolves the root inputs of the flake it runs in
+and takes every nested input from the dependency's own lock; the
+fleet cannot see that nixhold's nixpkgs is months old, because
+nothing it runs ever asks. So the fleet declares what it builds
+with: the template carries nixhold's seven root inputs and rebinds
+each with `inputs.nixhold.inputs.<x>.follows`, and nixhold's lock
+stops governing any fleet.
+
+The two locks then diverge, and the direction decides what it
+means:
+
+| Fleet relative to nixhold's lock | Arises from | Guarded by |
+|---|---|---|
+| ahead | the normal state: `nixhold update` moves nixpkgs past what the framework last tested | the eval gate; the fix is a nixhold change, never a fleet workaround |
+| behind | a partial update or a hand-edited lock: nixhold moved, an input did not | lint: no followed input locked older than nixhold's own lock for the same input |
+
+Lint reads nixhold's lock from `$NIXHOLD_LOCK`, which the CLI
+package exports next to `NIXHOLD_LIB_ROOT` (in-tree, the checkout's
+own). For each of nixhold's root inputs: not declared by the fleet
+means the fleet silently inherits nixhold's pin and no `update` ever
+moves it (warn dev / error strict); declared and not followed is two
+copies of one input in the closure (error in both modes); followed
+and older than nixhold's pin is framework code on a base it was not
+written for (warn dev / error strict). The framework's lock is
+refreshed on its own cadence so the tested floor stays near the
+consumers (ROADMAP); until it is, "ahead" only grows.
 
 ### `nixhold secret list`
 
@@ -1781,6 +1852,11 @@ script each under `cli/lint/rules/`:
   worktree — a null `layout.ageIdentityWrapped` is not a path and
   is not checked; `layout.repoUrl` set with `secrets/identity.age`
   missing is a warning ("the ISO cannot clone")
+- `13-input-floor`: every root input nixhold declares is declared
+  by the fleet (warn dev / error strict), followed
+  (`inputs.nixhold.inputs.<x>.follows`; error in both modes), and
+  locked no older than nixhold's own lock for that input (warn dev /
+  error strict). See "Inputs: who pins what"
 
 Enforced as assertions rather than lint (they block the build):
 unknown network on an endpoint, a network missing the field its
@@ -1832,8 +1908,14 @@ Architecture:
   only.
 - **À-la-carte platform module exports** — single bundle per
   platform.
-- **Forker re-declaring heavy inputs** — transitive via
-  `inputs.nixhold.inputs.*` + follows idiom.
+- **Heavy inputs inherited from nixhold's lock** — the first
+  design: the forker declared only `inputs.nixhold` and took
+  nixpkgs and the rest from the framework's lock. Reversed. A bare
+  `nix flake update` re-resolves root inputs only and takes nested
+  ones from the dependency's lock, so `nixhold update` moved the
+  framework and left the kernel where nixhold's lock had it —
+  months behind, invisibly, on every consumer. The forker now
+  declares and follows all seven ("Inputs: who pins what").
 - **Module self-imports via flake inputs** — relative paths
   inside the framework.
 - **In-tree dogfood** — out-of-tree keeps dogfooder UX = forker
