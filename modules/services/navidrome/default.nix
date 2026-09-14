@@ -43,22 +43,15 @@ in
       '';
     };
 
-    backupDir = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = null;
-      example = "/var/lib/backups/navidrome";
+    backup = lib.mkOption {
+      type = types'.backup;
+      default = { };
       description = ''
-        Where Navidrome's own nightly backup (23:00, the last seven
-        kept) puts a consistent copy of its database, which is
+        `dir`: where Navidrome's own nightly backup (23:00, the last
+        seven kept) puts a consistent copy of its database, which is
         everything but the music: users, play counts, playlists,
-        stars. The directory is group `backups` (setgid) and the
-        copies group-readable, so a sync service above it can carry
-        them off the box. `backups` is the group for that one data
-        flow. The parent directory is the consumer's; it must exist
-        (its tmpfiles rule sorting before `10-navidrome`) and it gets
-        an execute-only ACL for user `navidrome`, the writer's uid, so
-        the consumer can close the parent to any group without
-        locking the writer out. Null: no backups.
+        stars; published by the framework (ARCHITECTURE "Backups").
+        Null: no backups.
       '';
     };
 

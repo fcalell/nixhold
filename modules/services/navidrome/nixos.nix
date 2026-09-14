@@ -34,7 +34,14 @@ in
   imports = [ ./default.nix ];
 
   config = lib.mkMerge [
-    { nixhold.services.navidrome.implementation = "nixos"; }
+    {
+      nixhold.services.navidrome = {
+        implementation = "nixos";
+        # The daemon writes its own copies: no oneshot to publish
+        # after, so the record names only the writer.
+        backup.user = user;
+      };
+    }
 
     (lib.mkIf cfg.enable (
       lib.mkMerge [
@@ -84,51 +91,15 @@ in
           systemd.services.navidrome.serviceConfig.BindPaths = [ socketDir ];
         }
 
-        (lib.mkIf (cfg.backupDir != null) {
+        (lib.mkIf (cfg.backup.dir != null) {
           # Navidrome's own scheduler: an sqlite backup of the database
           # into the directory, pruned to the count. The unit binds the
-          # path in by itself.
+          # path in by itself. No oneshot ends with the copy in place,
+          # so publishing rests on the directory's default ACL.
           services.navidrome.settings.Backup = {
-            Path = cfg.backupDir;
+            Path = cfg.backup.dir;
             Schedule = "0 23 * * *";
             Count = 7;
-          };
-
-          # One group per data flow, never a shared "services" group
-          # and never `users` (which is every human account's primary
-          # group, so it grants nothing narrower than "any local
-          # login"). This one carries the nightly copies to whatever
-          # syncs them off the box.
-          users.groups.backups = { };
-
-          systemd.tmpfiles.settings."10-navidrome" = {
-            ${cfg.backupDir} = {
-              # Setgid so every copy lands in `backups`. The writer
-              # runs under a 0066 umask, which would make each copy
-              # 0600; a default ACL on the directory replaces the
-              # umask for files created in it, and this one grants the
-              # group read and nothing more. Symbolic ACL, no `x`: the
-              # copies are files.
-              d = {
-                inherit user;
-                group = "backups";
-                mode = "2750";
-              };
-              "a+".argument = "d:g:backups:r";
-            };
-            # The backup runs as navidrome (nixpkgs' unit: no
-            # supplementary groups), so the parent has to be
-            # traversable by that uid. The consumer owns the parent
-            # and typically closes it to a group the writer is not in
-            # (`backups` is the readers' group, not the writers'), so
-            # the module adds the one bit the writer needs as an ACL:
-            # execute only, on the immediate parent, appended to
-            # whatever the consumer's own rule set. tmpfiles lets a
-            # `+` type share a path with another file's `d` line and
-            # runs the two in file order, so the parent's rule must
-            # sort before `10-navidrome`. The parent must exist: this
-            # line never creates it.
-            ${dirOf cfg.backupDir}."a+".argument = "u:${user}:x";
           };
         })
       ]

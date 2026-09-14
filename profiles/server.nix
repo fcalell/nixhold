@@ -16,6 +16,7 @@
     inputs.nixhold.modules.services.nixos.tailscale
     inputs.nixhold.modules.infra.caddy
     inputs.nixhold.modules.infra.firewall
+    inputs.nixhold.modules.infra.backups
   ];
 
   nixhold.services.openssh.enable = lib.mkDefault true;

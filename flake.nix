@@ -57,6 +57,7 @@
     in
     {
       lib.mkFleet = import ./lib/mkFleet.nix;
+      lib.hardening = import ./lib/hardening.nix;
 
       # No `homeManagerModules`: home-manager is wired by the platform
       # baselines (modules/home/), which need `nixhold.identity` and
@@ -90,6 +91,7 @@
         infra = {
           caddy = ./modules/infra/caddy.nix;
           firewall = ./modules/infra/firewall.nix;
+          backups = ./modules/infra/backups.nix;
           # The adb key's declaration, for a NixOS host that drives an
           # Android device itself (every Android host has it already).
           adbKey = ./modules/android/adb-key.nix;

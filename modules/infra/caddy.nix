@@ -37,6 +37,7 @@ let
   # Staged there, then moved into place, so the path unit below never
   # sees a cert whose matching key has not landed yet.
   tlsStaging = "${tlsDir}/staging";
+  hardening = import ../../lib/hardening.nix;
 
   # caddy's admin API is what `caddy reload` (nixpkgs' ExecReload,
   # `services.caddy.enableReload`) talks to. On its default
@@ -400,8 +401,12 @@ in
           pkgs.tailscale
           pkgs.coreutils
         ];
-        serviceConfig = {
+        serviceConfig = hardening // {
           Type = "oneshot";
+          # The cert directory it fills, and the chown that hands the
+          # pair to caddy.
+          ReadWritePaths = [ tlsDir ];
+          CapabilityBoundingSet = [ "CAP_CHOWN" ];
           # A first boot runs this before the node has joined the
           # tailnet, and `tailscale cert` fails. Without a retry the
           # next attempt is the timer's — a week away once the 2min
@@ -464,7 +469,7 @@ in
 
       systemd.services.caddy-tls-reload = {
         description = "Reload caddy after TLS cert refresh";
-        serviceConfig = {
+        serviceConfig = hardening // {
           Type = "oneshot";
           # reload-or-restart (not plain reload): also brings caddy up
           # if it failed an earlier start because the cert was missing.

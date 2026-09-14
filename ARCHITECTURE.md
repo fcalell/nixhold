@@ -296,6 +296,24 @@ an assertion: the framework can't tell a deliberate
 `User = <operator>` in a host module from an accident, so the rule
 is lint rule `10-service-user` (see `nixhold lint`).
 
+**One hardening set.** `inputs.nixhold.lib.hardening` is the
+`serviceConfig` every framework or fleet unit starts from: no new
+privileges, a read-only system and no home, the kernel and other
+processes hidden, no namespaces, an empty capability set, unix and
+inet sockets only, the system-service syscall set, a 0077 umask. A
+unit merges it and names each exception as the systemd key set to
+its permissive value beside the reason: `PrivateDevices = false`
+with a `DeviceAllow` for a GPU, `MemoryDenyWriteExecute = false` for
+a JIT, `ReadWritePaths` for a directory written outside the state
+directory, `CAP_CHOWN` in the bounding set for a copier that hands
+files to another uid. The framework's own oneshots
+(`tailscale-caddy-cert`, `caddy-tls-reload`, `backup-taskchampion`)
+take it; nixpkgs-owned units keep nixpkgs' hardening. A unit whose
+sandbox is a second copy of the block is the failure the set exists
+to end, and lint rule `14-service-hardening` reports every unit
+defined outside nixpkgs that runs a command and carries no
+`NoNewPrivileges`.
+
 **Per-host home-manager**: `nixhold.home.extraModules` (list of
 deferred modules), wired into
 `home-manager.users.<operator>.imports`. An option, not a
@@ -1276,7 +1294,7 @@ while the network is fleet data, so the host names it:
 nixhold.services.vaultwarden = {
   enable = true;
   expose.web.network = "tailnet";
-  backupDir = "/var/lib/backups/vaultwarden";
+  backup.dir = "/var/lib/backups/vaultwarden";
 };
 ```
 
@@ -1285,22 +1303,31 @@ used but not defined", which is the honest failure: `network` is
 required on the endpoint type, and auto-picking a shared network was
 rejected (see Rejected, "addressOf").
 
-**`backupDir` splits ownership at one directory.** The module owns
-the directory itself: it creates it, hands it to group `backups`
-(setgid, 2750) and makes every copy group-readable, so the one
-service that carries backups off the box reads them by group
-membership and nothing else on the box can. The consumer owns the
-parent — the shared root several services write under, typically
-closed to that same group — and the module does not assume it can
-be entered: nixpkgs' backup unit runs as the service's own uid with
-no supplementary groups, so the module appends an execute-only ACL
-for that uid on the immediate parent (a tmpfiles `a+` line, which
-may share a path with the consumer's `d` line and runs after it in
-file order; the consumer's rule sorts before `10-<service>`). The
-alternative, putting the writer in `backups`, was rejected: group
-membership is per user, so the network-facing daemon would gain read
-on every other service's copies for a bit only the oneshot needs on
-one directory.
+**Backups: publishing is infra.** A service that keeps a copy of
+its state declares `backup` (`nixhold.types.backup`): `dir` is the
+operator's, where the copies land; `unit` and `user` are the
+implementation's, the oneshot whose run ends with the copy in place
+(null when the daemon itself writes the copies on its own schedule)
+and the uid that writes them. `modules/infra/backups.nix` activates
+from that data like caddy from endpoints and owns the directory: the
+`backups` group (the one group of this data flow), the directory
+itself setgid `2750` under the writer's uid so nothing outside the
+group reads a copy, an execute-only ACL on the parent for a writer
+that is not root (the consumer owns the parent, typically closed to
+a group the writer is not in, and putting the writer in `backups`
+was rejected: group membership is per user, so a network-facing
+daemon would gain read on every other service's copies for a bit
+only the oneshot needs), a default ACL granting the group read for a
+writer that is the daemon itself, and on a named unit a 0027 umask
+plus a post-run chmod for a copier that preserves the 0600 modes of
+what it copies. The directory line lives under tmpfiles `10-<name>`
+with its fields forced, because nixpkgs' vaultwarden creates the
+same directory under that name. The producer, its timer and the
+transport off the box stay the service's: vaultwarden's producer is
+nixpkgs' `backup-vaultwarden`, taskchampion's is its own oneshot
+(sqlite `.backup`, the rest `cp -a`), Navidrome's is its scheduler.
+A fleet-local service publishes the same record, which is the
+plugin seam in use.
 
 **An app that has to know its own origin** reads
 `nixhold.infra.url.<service>.<endpoint>` — the resolved
@@ -1338,13 +1365,9 @@ header by design — Subsonic clients carry a Navidrome user's
 credentials, which an admin sets in the UI on a user the header
 created — and stays behind the same node-identity gate as every
 tailnet endpoint. `musicDir` is the consumer's directory, read-only
-to the service; `backupDir` uses Navidrome's own scheduler (23:00,
-seven kept) and publishes the copies the way the other two do —
-setgid `backups` directory, an execute-only ACL on the parent for the
-writer's uid — with one more line, a default ACL granting the group
-read, because the copies are written by the daemon itself under
-nixpkgs' `0066` umask and a default ACL is what replaces a umask for
-files created in a directory.
+to the service; `backup.dir` is written by Navidrome's own
+scheduler (23:00, seven kept) under nixpkgs' `0066` umask, which is
+the case the default ACL in "Backups" exists for.
 
 **Tailnet membership on the Mac is declarative too.**
 `nixhold.services.tailscale` has a darwin implementation beside the
@@ -1971,6 +1994,12 @@ script each under `cli/lint/rules/`:
   accident, and the rule is an opinion about module design (see
   "No service runs as the operator uid"), not an invariant the
   build depends on
+- `14-service-hardening`: every `systemd.services.<unit>` on a NixOS
+  host that nixhold's or the fleet's own files define and nixpkgs
+  does not (read from `definitionsWithLocations`, so a nixpkgs unit
+  nixhold decorates is nixpkgs') and that runs a command carries
+  `NoNewPrivileges = true`, the mark of the hardening set (warn dev
+  / error strict). Exemptions are a closed list in the rule
 - every layout path (defaulted or overridden) exists in the
   worktree — a null `layout.ageIdentityWrapped` is not a path and
   is not checked; `layout.repoUrl` set with `secrets/identity.age`

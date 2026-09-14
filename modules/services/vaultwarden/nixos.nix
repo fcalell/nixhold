@@ -13,7 +13,6 @@
 {
   config,
   lib,
-  pkgs,
   ...
 }:
 let
@@ -42,7 +41,18 @@ in
   ];
 
   config = lib.mkMerge [
-    { nixhold.services.vaultwarden.implementation = "nixos"; }
+    {
+      nixhold.services.vaultwarden = {
+        implementation = "nixos";
+        # nixpkgs' producer: its oneshot runs as vaultwarden and
+        # `cp -r`s the vault's 0600 files, which is what the
+        # framework's post-run chmod on the unit is for.
+        backup = {
+          unit = "backup-vaultwarden";
+          user = "vaultwarden";
+        };
+      };
+    }
 
     (lib.mkIf cfg.enable (
       lib.mkMerge [
@@ -92,47 +102,8 @@ in
           };
         }
 
-        (lib.mkIf (cfg.backupDir != null) {
-          services.vaultwarden.backupDir = cfg.backupDir;
-
-          # One group per data flow, never a shared "services" group
-          # and never `users` (which is every human account's primary
-          # group, so it grants nothing narrower than "any local
-          # login"). This one carries the nightly copies to whatever
-          # syncs them off the box.
-          users.groups.backups = { };
-
-          # nixpkgs creates the directory 0770
-          # vaultwarden:vaultwarden; the sync service (group backups)
-          # has to read it. Setgid so every file the backup writes
-          # lands in `backups`. vaultwarden writes its data 0600 and
-          # the backup's `cp -r` keeps those modes (umask only removes
-          # bits), so group access is granted afterwards, explicitly
-          # and nothing more — the copy holds the vault's RSA keys.
-          # Symbolic chmod leaves the directory's setgid bit alone.
-          systemd.tmpfiles.settings."10-vaultwarden" = {
-            ${cfg.backupDir}.d = {
-              group = lib.mkForce "backups";
-              mode = lib.mkForce "2750";
-            };
-            # The backup runs as vaultwarden (nixpkgs' unit: no
-            # supplementary groups), so the parent has to be
-            # traversable by that uid. The consumer owns the parent
-            # and typically closes it to a group the writer is not in
-            # (`backups` is the readers' group, not the writers'), so
-            # the module adds the one bit the writer needs as an ACL:
-            # execute only, on the immediate parent, appended to
-            # whatever the consumer's own rule set. tmpfiles lets a
-            # `+` type share a path with another file's `d` line and
-            # runs the two in file order, so the parent's rule must
-            # sort before `10-vaultwarden`. The parent must exist:
-            # this line never creates it.
-            ${dirOf cfg.backupDir}."a+".argument = "u:vaultwarden:x";
-          };
-          systemd.services.backup-vaultwarden.serviceConfig = {
-            UMask = "0027";
-            ExecStartPost = "${pkgs.coreutils}/bin/chmod -R u=rwX,g=rX,o= ${cfg.backupDir}";
-          };
+        (lib.mkIf (cfg.backup.dir != null) {
+          services.vaultwarden.backupDir = cfg.backup.dir;
         })
       ]
     ))

@@ -203,6 +203,41 @@ let
     "ed25519"
     "rsa"
   ];
+
+  # What a service that keeps a copy of its state publishes, and the
+  # one field the operator sets. `dir` is the operator's; `unit` and
+  # `user` are the implementation's. `modules/infra/backups.nix`
+  # consumes the record.
+  backupType = types.submodule {
+    options = {
+      dir = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "/var/lib/backups/vaultwarden";
+        description = ''
+          Where the copies land: a directory the framework owns
+          (group `backups`, setgid, group-readable) under a parent
+          the consumer owns. Null: no copies.
+        '';
+      };
+      unit = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        internal = true;
+        description = ''
+          The oneshot whose run ends with the copy in place; the
+          framework sets its umask and publishes after it. Null when
+          the daemon itself writes the copies on its own schedule.
+        '';
+      };
+      user = mkOption {
+        type = types.str;
+        default = "root";
+        internal = true;
+        description = "The uid that writes the copies.";
+      };
+    };
+  };
 in
 {
   # `nixhold.types` is a read-only attrset of submodule types.
@@ -222,10 +257,11 @@ in
       expose = exposeType;
       network = networkType;
       sshKeyType = sshKeyTypeType;
+      backup = backupType;
     };
     description = ''
       Shared option types for framework and service-module option
-      declarations: `expose`, `network`, `sshKeyType`. Additional
+      declarations: `expose`, `network`, `sshKeyType`, `backup`. Additional
       types land alongside the consumer module that needs them.
     '';
   };

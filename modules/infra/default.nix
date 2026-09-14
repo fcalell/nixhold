@@ -7,5 +7,6 @@
   imports = [
     ./caddy.nix
     ./firewall.nix
+    ./backups.nix
   ];
 }

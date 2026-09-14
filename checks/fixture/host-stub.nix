@@ -81,18 +81,18 @@
 
   # The shipped HTTP services. Each declares its own endpoint whole
   # except for the network, which is fleet data — the one field a host
-  # names. `backupDir` puts the nightly copies under a shared root the
+  # names. `backup.dir` puts the nightly copies under a shared root the
   # `backups` group carries off the box.
   nixhold.services = {
     vaultwarden = {
       enable = true;
       expose.web.network = "tailnet";
-      backupDir = "/var/lib/backups/vaultwarden";
+      backup.dir = "/var/lib/backups/vaultwarden";
     };
     taskchampion = {
       enable = true;
       expose.sync.network = "tailnet";
-      backupDir = "/var/lib/backups/taskchampion";
+      backup.dir = "/var/lib/backups/taskchampion";
     };
     syncthing = {
       enable = true;
@@ -102,7 +102,7 @@
       enable = true;
       expose.web.network = "tailnet";
       musicDir = "/srv/music";
-      backupDir = "/var/lib/backups/navidrome";
+      backup.dir = "/var/lib/backups/navidrome";
     };
   };
 
@@ -115,6 +115,44 @@
       s = config.nixhold.secrets.fixtureweb;
     in
     [
+      # --- backup publishing (modules/infra/backups.nix) ---
+      {
+        # Three producers, one publish: every backup directory is the
+        # infra module's line, setgid `backups`, under the writer's uid.
+        assertion =
+          lib.all
+            (
+              n:
+              let
+                d = config.systemd.tmpfiles.settings."10-${n}".${config.nixhold.services.${n}.backup.dir}.d;
+              in
+              d.group == "backups" && d.mode == "2750"
+            )
+            [
+              "vaultwarden"
+              "taskchampion"
+              "navidrome"
+            ];
+        message = "fixture-server: a backup directory is not published by the backups infra module";
+      }
+      {
+        # A named oneshot gets the umask and the post-run chmod; the
+        # daemon-written one (navidrome) gets neither.
+        assertion =
+          config.systemd.services.backup-vaultwarden.serviceConfig.UMask == "0027"
+          && config.systemd.services.backup-taskchampion.serviceConfig ? ExecStartPost
+          && config.nixhold.services.navidrome.backup.unit == null;
+        message = "fixture-server: the backup record's unit half is not honoured";
+      }
+      {
+        # Every unit the framework defines here takes the hardening set.
+        assertion = lib.all (n: config.systemd.services.${n}.serviceConfig.NoNewPrivileges == true) [
+          "backup-taskchampion"
+          "tailscale-caddy-cert"
+          "caddy-tls-reload"
+        ];
+        message = "fixture-server: a framework oneshot runs without the hardening set";
+      }
       {
         assertion = s.resolvedOwner == "root" && s.resolvedMode == "0400" && s.category == "service";
         message = "fixture: a `unit` secret defaults to root/0400 and category service";

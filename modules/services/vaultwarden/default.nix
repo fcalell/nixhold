@@ -23,22 +23,14 @@ in
       '';
     };
 
-    backupDir = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = null;
-      example = "/var/lib/backups/vaultwarden";
+    backup = lib.mkOption {
+      type = types'.backup;
+      default = { };
       description = ''
-        Where nixpkgs' daily backup timer (23:00, persistent) puts a
-        consistent copy of the vault: a `sqlite3 .backup` of the
-        database plus the attachments and RSA keys. The directory is
-        group `backups` (setgid) and the files group-readable, so a
-        sync service above it can carry the backup off the box.
-        `backups` is the group for that one data flow. The parent
-        directory is the consumer's; it must exist (its tmpfiles rule
-        sorting before `10-vaultwarden`) and it gets an execute-only
-        ACL for user `vaultwarden`, the backup's uid, so the consumer
-        can close the parent to any group without locking the writer
-        out. Null: no backup timer.
+        `dir`: where nixpkgs' daily backup timer (23:00, persistent)
+        puts a consistent copy of the vault, a `sqlite3 .backup` of
+        the database plus the attachments and RSA keys; published
+        by the framework (ARCHITECTURE "Backups"). Null: no timer.
       '';
     };
 

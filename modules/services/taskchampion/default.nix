@@ -23,16 +23,14 @@ in
       '';
     };
 
-    backupDir = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = null;
-      example = "/var/lib/backups/taskchampion";
+    backup = lib.mkOption {
+      type = types'.backup;
+      default = { };
       description = ''
-        Where a daily timer (23:00, persistent) puts a consistent copy
-        of the sync server's state directory, group `backups` and
-        group-readable so a sync service above it carries it off the
-        box — `backups` is the group for that one data flow. The
-        content is client-side ciphertext. Null: no backup timer.
+        `dir`: where a daily timer (23:00, persistent) puts a
+        consistent copy of the sync server's state directory,
+        client-side ciphertext; published by the framework
+        (ARCHITECTURE "Backups"). Null: no timer.
       '';
     };
 
