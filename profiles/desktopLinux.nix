@@ -27,6 +27,9 @@
   nixhold.services.openssh.enable = lib.mkDefault true;
   nixhold.services.tailscale.enable = lib.mkDefault true;
 
+  # A seat: the operator's declared repositories are checked out here.
+  nixhold.home.checkouts = lib.mkDefault true;
+
   # Store hygiene: weekly gc + optimise on every shipped profile.
   nix.gc = {
     automatic = lib.mkDefault true;

@@ -43,6 +43,21 @@ in
     example = "~/src";
   };
 
+  options.nixhold.home.checkouts = mkOption {
+    type = types.bool;
+    default = false;
+    description = ''
+      Whether this host checks out the fleet's declared repositories
+      (`nixhold.repositories`) under `repositoriesDir`: one
+      provisioning unit per repository, run at login and retried
+      until the clone succeeds (see ARCHITECTURE "Provisioning").
+      The seat hostkinds set it (`desktopLinux`,
+      `workstationDarwin`). A server or a guest carries every
+      declaration (the env secret, the forge ssh block, the direnv
+      library) and no checkout unless it sets this itself.
+    '';
+  };
+
   # Derived, not a knob: the same directory with `~` resolved. Every
   # consumer compares it against `$PWD`-shaped strings, and reading
   # one value here is what makes the repository default and

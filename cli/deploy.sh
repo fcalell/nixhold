@@ -321,6 +321,9 @@ nh_deploy_host() {
       fi
       # The guests this machine started for the first time.
       [ "$dry_run" -eq 1 ] || nh_deploy_capture_guest_keys "$name" "$local_host" "$target"
+      # Activation put the closure in place; the provisioning units
+      # say whether the host reached what it declares.
+      [ "$dry_run" -eq 1 ] || nh_provision_report "$name" nixos "$local_host" "$target"
       ;;
     darwin)
       # darwin deploys are always local — so gate on the OS, not on
@@ -341,6 +344,7 @@ nh_deploy_host() {
       # nix-darwin requires root for switch (since the 25.05-era
       # activation refactor), same as the NixOS path.
       (cd "$root" && sudo darwin-rebuild "${args[@]}" --flake ".#$name")
+      [ "$dry_run" -eq 1 ] || nh_provision_report "$name" darwin 1
       ;;
     *)
       nh_err "unsupported arch for $name: $arch"

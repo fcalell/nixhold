@@ -380,6 +380,72 @@ the framework's job rather than the operator's:
 
 ---
 
+## Provisioning
+
+Three rules for anything a host has to *do* to reach its declared
+state beyond what the closure already is: activation is pure,
+provisioning is a unit, the closure over the network.
+
+**Activation is pure.** NixOS, nix-darwin and home-manager
+activation link files, set permissions and environment, and write
+generated files. It runs offline, at boot, before the network and
+before any login (home-manager's NixOS unit is ordered `before
+systemd-user-sessions.service` and after nothing but the nix
+daemon), and it runs on every boot. Nothing in it may reach the
+network, wait for a secret that decrypts later, or fetch anything.
+An activation step that "warns and lets the next activation retry"
+retries at the next boot, under the same conditions, and so never
+succeeds on a host that boots without a link.
+
+**Provisioning is a unit.** Work that needs the network, a decrypted
+secret, or a logged-in session is a systemd user service on NixOS
+and a launchd agent on darwin, rendered from the declaration that
+needs it, at the home-manager layer. What a unit has that an
+activation step cannot:
+
+- *Retry as the dependency.* The user manager has no
+  `network-online.target` (systemd ships none in the user instance),
+  so "wait for the network" is `Restart=on-failure` with
+  `RestartSec=30`: the unit runs at login, fails while the link, the
+  key or the forge is not there, and is re-run every 30 s until it
+  exits 0, after which `on-failure` never restarts it. On NixOS the
+  retry is bounded by the unit's start limit (`StartLimitBurst=60`
+  in `StartLimitIntervalSec=1h`: thirty minutes, then `failed` until
+  the next login, deploy, or hour); launchd retries unbounded
+  (`KeepAlive.SuccessfulExit = false`, `ThrottleInterval = 30`).
+  `KeepAlive.NetworkState` is not used: Apple documents it as no
+  longer implemented.
+- *Idempotence as a condition.* `ConditionPathExists=!<done marker>`
+  skips the unit (does not fail it) once its work exists, so later
+  logins cost one condition check. launchd has no start condition,
+  so the script tests the same marker first.
+- *`Type=exec`, not `oneshot`.* Both take `Restart=on-failure`, but
+  home-manager's activation starts newly wanted units through
+  sd-switch and waits for their start jobs. A oneshot's job lasts
+  the whole clone (and aborts activation past 120 s); an exec's
+  completes when the process is forked.
+- *A state the verbs can read.* `failed` and `activating
+  (auto-restart)` are what `nixhold deploy` reports after activation
+  and what `nixhold status <host>` shows (see both), instead of a
+  warning in a boot-time journal.
+
+The first consumer is `nixhold.repositories` (next section); the
+rendering lives there until a second framework consumer exists
+(ROADMAP: the shared unit-rendering helper).
+
+**The closure over the network.** A thing that can be a store path
+is one. A binary fetched at activation time is the wrong answer
+when a fixed-output fetch of the same release exists: then it
+arrives with the install and needs no boot-time network at all. The
+runtime fetch is for what cannot be pinned by hash, and it is then
+a unit.
+
+Two shapes were turned down for this: a convergence pass that
+re-runs the whole activation after `network-online.target`, and
+ordering home-manager's unit after the network (see "Rejected").
+
+---
+
 ## Repositories & env
 
 The operator's working checkouts are declarations, not manual
@@ -391,6 +457,8 @@ auto-wiring shape as identity).
 nixhold.repositories.<name> = "<url>";        # or { url; path?; key?; }
 nixhold.home.repositoriesDir = "~/projects";  # default; sits next to
                                               # nixhold.home.extraModules
+nixhold.home.checkouts = true;                # the seat hostkinds set it:
+                                              # desktopLinux, workstationDarwin
 ```
 
 A bare string is the url; the submodule adds `path`, defaulting to
@@ -419,7 +487,7 @@ keeps its own `~` expansion, against the same home.
 | one HM `programs.ssh.settings."<forge host>"` per **distinct** forge host | the url's host, parsed from scp-like `user@host:path` and `ssh://user@host/path` (https urls get none), and github.com for the fleet repo itself whenever `layout.repoUrl` is set — the checkout the CLI clones is no declared repository, but its forge takes the same key, so a host that declares nothing still reaches the fleet as the fleet. `IdentityFile = "~/.ssh/<key secret>"; IdentitiesOnly = true;`, `mkDefault`, gated on that secret's `active` — and **no `User`**: the url carries it. Every repository on one forge host names the same `key` (assertion) |
 | `nixhold.secrets.identity-<key>` | for every `key` a repository names other than `ed25519`: `sshKey = true`, `sshKeyType = <key>`, and `mkDefault` fleet scope, `category = "framework"`, owner user, `required = false` — the same posture as `identity` |
 | `~/.config/direnv/lib/nixhold.sh` | an HM `xdg.configFile` direnv library, emitted only under `mkIf programs.direnv.enable` (the framework never enables direnv). For the directory being loaded it finds the declared repository path containing `$PWD` (longest prefix wins, `~` expanded) and `dotenv_if_exists`es that repository's decrypted age path |
-| an HM activation step per repository | after `writeBoundary`: clone the url to `path` when `path` is absent and the repository's key file is readable, then write a managed empty `.envrc` when there is none, append it to `<path>/.git/info/exclude` once, and `direnv allow` when direnv is available |
+| a provisioning unit per repository, on a host with `nixhold.home.checkouts` | `nixhold-repo-<name>`: a systemd user service (NixOS) or launchd agent (darwin), per "Provisioning". Its script clones the url to `path` when `path` is absent (an ssh url first checks that the repository's key file is readable and exits 1, a retry, when it is not), then writes the managed empty `.envrc` when there is none, appends it to `<path>/.git/info/exclude` once, and `direnv allow`s when direnv is available. That `.envrc` is the done marker: `ConditionPathExists=!<path>/.envrc` |
 
 **The first clone is not TOFU.** Both baselines pin github.com's
 published SSH host keys in `programs.ssh.knownHosts` (see Host-key
@@ -427,15 +495,21 @@ trust), so the activation step below authenticates the forge
 against a committed key on a host that has never talked to it.
 A forge the framework does not pin is the operator's to add.
 
-**The clone skips loudly, never fails.** `~/.ssh/identity` may not
-be readable yet — agenix on darwin decrypts asynchronously under
-launchd, and a first activation runs before the operator has
-provisioned the key at all — so the step prints why it is skipping
-and exits 0. The next activation clones. It never pulls, and it
+**The clone is a unit, on the seat.** A declaration is fleet-wide:
+the secret, the forge block and the direnv library reach every
+host. The checkout follows the operator's seat:
+`nixhold.home.checkouts` is the hostkind's to set (`desktopLinux`
+and `workstationDarwin` do; `server` and guests do not), and only a
+host with it renders the units. Each runs at login and retries
+until it succeeds (`~/.ssh/identity` may not be readable yet:
+agenix on darwin decrypts asynchronously under launchd, the network
+may not be up, the key may not have been minted at all; each is an
+exit 1 and a retry, never a silent skip). It never pulls, and it
 never touches an existing `.envrc`: the framework's write is a
 comment pointing at the direnv library, and the exclude entry
 keeps it out of a repo whose other contributors never asked for
-it.
+it. A host without a seat that wants a checkout sets `checkouts`
+itself.
 
 **One outbound key, and a named exception.** The fleet has one
 outbound key, `identity`, and registers it everywhere. Per-forge
@@ -1946,15 +2020,24 @@ ok, 1 user error, 2 framework error, 3 lint violation. Output:
 plain text, `--json` passthrough where structured; gum only where
 a TTY exists.
 
-### `nixhold status` — bounded
+### `nixhold status` — declarations, plus one live line
 
-Declaration-side only (works with hosts down): enabled services,
+Declaration-side (works with hosts down): enabled services,
 their expose endpoints, and each declared secret with its category,
 scope, and ciphertext present or missing; `--fleet` = one line per
-host, a guest's marked `guest of <machine>`. An Android host shows its plan: packages with versions,
-removals, settings, launcher, owner.
-Anything richer is `nix eval` / `nixos-option`. Never a
-dashboard; never live systemctl.
+host, a guest's marked `guest of <machine>`, and declaration-only.
+An Android host shows its plan: packages with versions, removals,
+settings, launcher, owner. One live line, `provisioning:`, for a
+single NixOS or darwin host: the state of its `nixhold-*` units
+(see "Provisioning"), read over the same pinned connection `deploy`
+uses (`systemctl --user` on NixOS, `launchctl list` on this Mac):
+`ok`, the failed and retrying units by name, or `unreachable`; a
+host being down never fails the verb. This is the one live probe,
+and it exists because a provisioning unit's failure is otherwise a
+line in a boot-time journal nobody reads: the point of
+provisioning-as-units is that a verb can answer "did the machine
+reach what it declares". Anything richer is `nix eval` /
+`nixos-option` / `nixhold logs`. Never a dashboard.
 
 ### `nixhold deploy`
 
@@ -1996,7 +2079,11 @@ missing or differs from `keys/fleet.pub`, decrypt
 rekey, ever: a host added to the fleet inherits `env` and every
 shared repository env because it holds the key those ciphertexts
 were already written to, so declaring the repository and deploying
-is the whole flow. `--dry-run` runs `nixos-rebuild dry-build` (darwin:
+is the whole flow. After activation the verb reads the host's
+`nixhold-*` provisioning units and prints any that are failed or
+retrying (the read `status` makes): activation succeeding says the
+closure is in place, not that the checkouts it declares exist.
+`--dry-run` runs `nixos-rebuild dry-build` (darwin:
 `check`). Tradeoffs accepted: tiny VPSes may struggle building
 (substituters cover most); power users escape to raw `nixos-rebuild
 --build-host`.
@@ -2279,6 +2366,16 @@ once its reason no longer holds.
 
 Architecture:
 
+- **A convergence pass after `network-online.target`** — a oneshot
+  that re-runs the whole home activation once the link is up, so
+  network-dependent activation steps get one run that can succeed.
+  It keeps imperative, network-touching work inside activation,
+  retried by re-running everything, and hides the category error
+  (see "Provisioning"). A unit per declaration instead.
+- **Ordering home-manager's unit after the network** — one line,
+  but that unit is `before = systemd-user-sessions.service`, so
+  every login on every host would wait for `wait-online` to settle
+  or time out; a laptop on wifi pays it at every boot.
 - **Facet system / registry / `byName` indexes** — `mkOption` is
   the publish, `config` the subscribe.
 - **Two-pass fleet eval** — one-pass (principle 13).

@@ -3,13 +3,24 @@
 # scope, and everything one `nixhold.repositories` entry produces
 # (env secret, forge ssh matchBlock, direnv library).
 #
-# Imported by fixture-server and fixture-mac, so the same
-# expectations are checked on both platforms — the wiring is
+# Imported by fixture-server, fixture-desktop and fixture-mac, so the
+# same expectations are checked on both platforms — the wiring is
 # home-manager and the delivery of `env` is a platform half, and a
-# drift between them would otherwise only show up on a real Mac.
-{ config, lib, ... }:
+# drift between them would otherwise only show up on a real Mac —
+# and on both sides of `nixhold.home.checkouts`: the server carries
+# the declarations and no checkout unit, the two seats carry one
+# unit per repository, systemd on NixOS and launchd on darwin.
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 let
   hm = config.home-manager.users.${config.nixhold.identity.username};
+  isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
+  checkouts = config.nixhold.home.checkouts;
+  units = if isDarwin then hm.launchd.agents else hm.systemd.user.services;
   secrets = config.nixhold.secrets;
   direnvLib = hm.xdg.configFile."direnv/lib/nixhold.sh".text or "";
   sshBlocks = hm.programs.ssh.settings;
@@ -107,8 +118,10 @@ in
       message = "fixture: an unprovisioned identity-rsa must not produce a forge block (got ${builtins.toJSON (lib.attrNames sshBlocks)})";
     }
     {
-      assertion = hm.home.activation ? nixhold-repo-legacy;
-      message = "fixture: no clone activation step was emitted for the legacy repository";
+      # An unprovisioned key is the unit's to wait for (exit 1, retry),
+      # so the unit exists like any other on a seat.
+      assertion = !checkouts || units ? nixhold-repo-legacy;
+      message = "fixture: no checkout unit was emitted for the legacy repository";
     }
     {
       assertion = secrets.env.scope == "fleet" && secrets.env.category == "framework";
@@ -164,9 +177,49 @@ in
       assertion = !(lib.hasInfix "work/docs" direnvLib);
       message = "fixture: a repository with no provisioned env must not appear in the direnv library";
     }
+    # --- the checkout: a provisioning unit on a seat, never an
+    #     activation step ("Provisioning") ---
     {
-      assertion = hm.home.activation ? nixhold-repo-notes;
-      message = "fixture: no clone activation step was emitted for the notes repository";
+      assertion = !(lib.any (n: lib.hasPrefix "nixhold-repo-" n) (lib.attrNames hm.home.activation));
+      message = "fixture: a repository clone is an activation step again; it must be a provisioning unit";
+    }
+    {
+      assertion = checkouts == (units ? nixhold-repo-notes);
+      message = "fixture: checkout units must follow nixhold.home.checkouts = ${lib.boolToString checkouts}, got ${builtins.toJSON (lib.attrNames units)}";
+    }
+    {
+      # The retry IS the network dependency (no network-online.target
+      # in the user manager), bounded on NixOS; the marker is the
+      # managed .envrc; exec so sd-switch never waits on a clone.
+      assertion =
+        !checkouts
+        || isDarwin
+        || (
+          let
+            u = units.nixhold-repo-notes;
+          in
+          u.Service.Type == "exec"
+          && u.Service.Restart == "on-failure"
+          && u.Service.RestartSec == 30
+          && u.Unit.StartLimitBurst == 60
+          && u.Unit.ConditionPathExists == "!${hm.home.homeDirectory}/projects/notes/.envrc"
+          && u.Install.WantedBy == [ "default.target" ]
+        );
+      message = "fixture: the NixOS checkout unit does not carry the documented retry/condition shape";
+    }
+    {
+      assertion =
+        !checkouts
+        || !isDarwin
+        || (
+          let
+            c = units.nixhold-repo-notes.config;
+          in
+          # The KeepAlive submodule carries every key (null when
+          # unset), so "absent" is null here.
+          c.KeepAlive.SuccessfulExit == false && c.ThrottleInterval == 30 && c.KeepAlive.NetworkState == null
+        );
+      message = "fixture: the darwin checkout agent does not carry the documented KeepAlive shape";
     }
 
     # --- the fleet checkout sits with the declared repositories ---

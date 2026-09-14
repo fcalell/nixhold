@@ -18,6 +18,9 @@
 
   nixhold.services.tailscale.enable = lib.mkDefault true;
 
+  # A seat: the operator's declared repositories are checked out here.
+  nixhold.home.checkouts = lib.mkDefault true;
+
   # Store hygiene: weekly gc + optimise, as on the NixOS profiles.
   # launchd needs an explicit interval or the timers silently no-op;
   # both follow `nix.enable`, which nix-darwin asserts they require.

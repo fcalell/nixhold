@@ -15,6 +15,10 @@
   ...
 }:
 {
+  # The NixOS side of the checkout units: the desktop is the one
+  # NixOS fixture host with a seat (`nixhold.home.checkouts`).
+  imports = [ ./repositories.nix ];
+
   programs.sway.enable = true;
   services.greetd = {
     enable = true;

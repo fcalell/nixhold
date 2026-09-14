@@ -6,8 +6,12 @@
 # outbound key (`identity`, or `identity-<type>` for a forge that
 # cannot take ed25519 — declared here the moment a repository names
 # it), a direnv library that exports that env inside the checkout,
-# and a clone at activation if the directory is not there yet. Nothing here is per-host: a repository is declared once for the
-# fleet and every host that evaluates this module carries it.
+# and, on a host with `nixhold.home.checkouts`, a provisioning unit
+# that clones it (ARCHITECTURE "Provisioning": never at activation,
+# which runs before the network). The declaration is fleet-wide: a
+# repository is declared once and every host carries its secret, its
+# forge block and its direnv entry; only the checkout follows the
+# seat.
 #
 # The fleet repo itself is declared nowhere — `layout.repoUrl` names
 # it and the CLI clones it — but its forge takes the same key, so it
@@ -282,46 +286,110 @@ in
             }
           '';
 
-          cloneActivation =
+          # The checkout script one provisioning unit runs. Exit 0 is
+          # done; any other exit is "not yet" and the unit retries
+          # (the network, the key, the forge: each is a retry, never a
+          # silent skip). The managed .envrc is the done marker, tested
+          # here as well as in the unit's condition, because launchd
+          # has no start condition.
+          checkoutScript =
             name: r:
             let
               dir = expand r.path;
               # Only an ssh URL needs the key; an https clone must not
-              # be skipped waiting for one.
+              # wait for one.
               needsKey = forgeHost r.url != null;
               keySecret = secrets.${keySecretName r.key};
             in
-            hmArgs.lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+            pkgs.writeShellScript "nixhold-repo-${name}" ''
+              set -euo pipefail
+              # A unit's PATH is the manager's, not a login shell's, and
+              # git spawns ssh by name.
+              export PATH=${
+                lib.makeBinPath [
+                  pkgs.git
+                  pkgs.openssh
+                  pkgs.coreutils
+                  pkgs.gnugrep
+                ]
+              }:$PATH
               repo=${lib.escapeShellArg dir}
-              clone=1
-              ${lib.optionalString needsKey ''
-                if [ ! -r "$HOME/${keySecret.homePath}" ]; then
-                  clone=0
-                  warnEcho "nixhold: ${name} not cloned — ~/${keySecret.homePath} is not readable yet (agenix decrypts asynchronously on darwin, and a key nobody has minted is not there at all; re-run activation once it is there)"
-                fi
-              ''}
-              if [ ! -e "$repo" ] && [ "$clone" = 1 ]; then
-                run ${pkgs.git}/bin/git clone ${lib.escapeShellArg r.url} "$repo" \
-                  || warnEcho "nixhold: cloning ${name} failed — the next activation retries"
-              fi
-
-              # An .envrc is what makes direnv load at all; nixhold
-              # only ever creates a missing one, never touches the
-              # repository's own, and never pulls.
-              if [ -d "$repo" ] && [ ! -e "$repo/.envrc" ]; then
-                echo '# managed by nixhold: repository env is loaded by ~/.config/direnv/lib/nixhold.sh' > "$repo/.envrc"
-                if [ -d "$repo/.git" ]; then
-                  mkdir -p "$repo/.git/info"
-                  if ! ${pkgs.gnugrep}/bin/grep -qxF '.envrc' "$repo/.git/info/exclude" 2>/dev/null; then
-                    echo '.envrc' >> "$repo/.git/info/exclude"
+              [ ! -e "$repo/.envrc" ] || exit 0
+              if [ ! -e "$repo" ]; then
+                ${lib.optionalString needsKey ''
+                  if [ ! -r "$HOME/${keySecret.homePath}" ]; then
+                    echo "nixhold: ~/${keySecret.homePath} is not readable yet — ${name} waits for it" >&2
+                    exit 1
                   fi
-                fi
-                ${lib.optionalString direnvEnabled ''
-                  run ${pkgs.direnv}/bin/direnv allow "$repo" \
-                    || warnEcho "nixhold: direnv allow failed for ${name}"
                 ''}
+                git clone ${lib.escapeShellArg r.url} "$repo"
               fi
+              # An .envrc is what makes direnv load at all; nixhold only
+              # ever creates a missing one, never touches the
+              # repository's own, and never pulls. Written last: it is
+              # the marker, so a failure before it is a retry.
+              if [ -d "$repo/.git" ]; then
+                mkdir -p "$repo/.git/info"
+                grep -qxF '.envrc' "$repo/.git/info/exclude" 2>/dev/null \
+                  || echo '.envrc' >> "$repo/.git/info/exclude"
+              fi
+              echo '# managed by nixhold: repository env is loaded by ~/.config/direnv/lib/nixhold.sh' > "$repo/.envrc"
+              ${lib.optionalString direnvEnabled ''
+                ${pkgs.direnv}/bin/direnv allow "$repo" || {
+                  rm -f "$repo/.envrc"
+                  exit 1
+                }
+              ''}
             '';
+
+          # One unit per repository, per ARCHITECTURE "Provisioning".
+          # The user manager has no network-online.target, so the
+          # dependency on the network is the retry: on-failure every
+          # 30 s, bounded on NixOS by the start limit (an hour's worth,
+          # then `failed` until the next login or deploy), unbounded
+          # under launchd, which has no start limit. Type=exec rather
+          # than oneshot: home-manager's sd-switch waits for the start
+          # job of a newly wanted unit, and a oneshot's lasts the whole
+          # clone. KeepAlive.NetworkState is deliberately absent: Apple
+          # documents it as no longer implemented.
+          checkoutUnits = lib.optionalAttrs config.nixhold.home.checkouts (
+            if pkgs.stdenv.hostPlatform.isDarwin then
+              {
+                launchd.agents = lib.mapAttrs' (name: r: {
+                  name = "nixhold-repo-${name}";
+                  value = {
+                    enable = true;
+                    config = {
+                      ProgramArguments = [ "${checkoutScript name r}" ];
+                      RunAtLoad = true;
+                      KeepAlive.SuccessfulExit = false;
+                      ThrottleInterval = 30;
+                    };
+                  };
+                }) repos;
+              }
+            else
+              {
+                systemd.user.services = lib.mapAttrs' (name: r: {
+                  name = "nixhold-repo-${name}";
+                  value = {
+                    Unit = {
+                      Description = "nixhold: check out repository ${name}";
+                      ConditionPathExists = "!${expand r.path}/.envrc";
+                      StartLimitIntervalSec = "1h";
+                      StartLimitBurst = 60;
+                    };
+                    Service = {
+                      Type = "exec";
+                      ExecStart = "${checkoutScript name r}";
+                      Restart = "on-failure";
+                      RestartSec = 30;
+                    };
+                    Install.WantedBy = [ "default.target" ];
+                  };
+                }) repos;
+              }
+          );
         in
         {
           # One matchBlock per distinct forge host, not per
@@ -354,12 +422,8 @@ in
           # Never enables direnv — it wires into the one the operator
           # already runs.
           xdg.configFile."direnv/lib/nixhold.sh" = lib.mkIf direnvEnabled { text = direnvLib; };
-
-          home.activation = lib.mapAttrs' (name: r: {
-            name = "nixhold-repo-${name}";
-            value = cloneActivation name r;
-          }) repos;
-        };
+        }
+        // checkoutUnits;
     }
   ];
 }

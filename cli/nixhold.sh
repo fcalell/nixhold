@@ -32,6 +32,8 @@ export NIX_CONFIG
 . "$NIXHOLD_LIB_ROOT/lib/fleet.sh"
 # shellcheck source=lib/ssh.sh
 . "$NIXHOLD_LIB_ROOT/lib/ssh.sh"
+# shellcheck source=lib/provision.sh
+. "$NIXHOLD_LIB_ROOT/lib/provision.sh"
 # shellcheck source=lib/secrets.sh
 . "$NIXHOLD_LIB_ROOT/lib/secrets.sh"
 # shellcheck source=lib/operator.sh

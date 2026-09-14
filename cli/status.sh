@@ -1,9 +1,12 @@
 # nixhold status [<name>] [--fleet]
 #
 # Reads declared services, their expose endpoints and the secret
-# manifest from the fleet eval. Declaration-side only — no live SSH
-# probes; runtime truth lives in `nixhold logs` and `systemctl
-# status`. No <name> means this machine.
+# manifest from the fleet eval, plus ONE live line for a single host:
+# the state of its nixhold-* provisioning units (lib/provision.sh),
+# because that is the one runtime fact the declarations cannot
+# answer — whether the machine reached what it declares. Everything
+# else runtime lives in `nixhold logs` and `systemctl status`, and
+# `--fleet` stays declaration-only. No <name> means this machine.
 
 cmd_status() {
   local host="" fleet_view=0
@@ -99,6 +102,35 @@ nh_status_host() {
     [ -e "$(nh_secret_file "$sdir" "$host" "$name" "$scope")" ] && state="present"
     printf '    %-24s %-12s %-6s %-8s %-8s %s\n' "$name" "$category" "$scope" "$state" "$req" "$desc"
   done
+  echo
+  printf '  provisioning: %s\n' "$(nh_status_provisioning "$host" "$platform")"
+}
+
+# nh_status_provisioning <host> <platform> — the live line. The
+# connection is deploy's: the operator user at the deploy address,
+# pinned to the committed host key. A host that is down is a word
+# here, never a failure of the verb.
+nh_status_provisioning() {
+  local host="$1" platform="$2" local_host=0 target="" state="" rc=0
+  [ "$(nh_deploy_self 2>/dev/null || true)" = "$host" ] && local_host=1
+  if [ "$platform" = "nixos" ] && [ "$local_host" -ne 1 ]; then
+    local user addr
+    user="$(nh_host_eval "$host" nixos nixhold.identity.username 2>/dev/null | jq -r '.')" || user=""
+    addr="$(nh_deploy_addr "$host")" || addr=""
+    if [ -z "$user" ] || [ -z "$addr" ]; then
+      printf 'unreachable (no address for %s yet)' "$host"
+      return 0
+    fi
+    target="$user@$addr"
+  fi
+  state="$(nh_provision_state "$host" "$platform" "$local_host" "$target")" || rc=$?
+  case "$rc" in
+    0) printf '%s' "$state" | awk 'NR > 1 { printf "\n                " } { printf "%s", $0 }' ;;
+    2) printf 'unreachable' ;;
+    3) printf 'no user session yet (units run at the first login)' ;;
+    4) printf 'read it on %s itself (launchd)' "$host" ;;
+    *) printf '?' ;;
+  esac
 }
 
 # nh_status_android <host> — an Android host has no services: what it
