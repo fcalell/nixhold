@@ -30,6 +30,14 @@
 # for (known_hosts pinning). Host keys are random per install and are
 # recipients of nothing: a re-image mints a new one and rekeys nothing.
 #
+# A Windows on ANOTHER disk whose loader sits on the target's ESP is
+# carried across the format: `EFI/Microsoft` is read off the old ESP
+# before disko and put back on the new one (in place on the ISO, via
+# --extra-files over ssh), and systemd-boot lists it on its own. Only
+# with evidence — a Windows installation found on a non-target disk —
+# and only Windows: nothing on the target disk survives, and no other
+# loader is one systemd-boot would show.
+#
 # Disk: the roster field `hosts.<name>.disk`, written by the picker
 # (or --disk); the framework renders its one disko shape from it. A
 # picker runs on every install and never reads the roster value, so a
@@ -249,15 +257,83 @@ nh_name_os() {
   esac
 }
 
+# nh_windows_disks <remote> <lsblk-json> — the disks holding a Windows
+# installation (an NTFS partition with Windows/System32, read through
+# a read-only mount on the target), one name per line.
+nh_windows_disks() {
+  local remote="$1" json="$2" pairs
+  pairs="$(printf '%s' "$json" | jq -r '
+    .blockdevices[] | select(.type == "disk") | .name as $d
+    | (.children // [])[] | select((.fstype // "") == "ntfs")
+    | "\($d) \(.name)"')"
+  [ -n "$pairs" ] || return 0
+  # shellcheck disable=SC2016 # runs on the TARGET's shell
+  nh_target_sudo_sh "$remote" '
+    d="$(mktemp -d)" || exit 0
+    printf "%s\n" '"'$pairs'"' | while read -r disk part; do
+      [ -n "$part" ] || continue
+      if nh_rsudo mount -o ro -t ntfs3 "/dev/$part" "$d" 2>/dev/null ||
+         nh_rsudo mount -o ro -t ntfs "/dev/$part" "$d" 2>/dev/null; then
+        [ -d "$d/Windows/System32" ] && echo "$disk"
+        nh_rsudo umount "$d" 2>/dev/null
+      fi
+    done
+    rmdir "$d" 2>/dev/null
+    exit 0' 2>/dev/null | sort -u || true
+}
+
+# nh_windows_carry <remote> <lsblk-json> <disk-name> — the partition
+# of the target disk whose EFI/Microsoft is carried into the new ESP:
+# an ESP of that disk holding Windows' loader, when a Windows
+# installation exists on some OTHER disk. Empty otherwise: a Windows
+# on the target disk goes with it, loader included.
+nh_windows_carry() {
+  local remote="$1" json="$2" target="$3" part
+  nh_windows_disks "$remote" "$json" | grep -qvx -- "$target" || return 0
+  while IFS= read -r part; do
+    [ -n "$part" ] || continue
+    if nh_esp_loaders "$remote" "$part" | grep -qix microsoft; then
+      printf '%s' "$part"
+      return 0
+    fi
+  done < <(printf '%s' "$json" | nh_disk_esps "$target")
+}
+
+# nh_esp_tar <remote> <partition-name> — EFI/Microsoft of that ESP as
+# a tar stream on stdout, read through a read-only mount on the
+# target. The directory name is taken as the filesystem stores it.
+nh_esp_tar() {
+  local remote="$1" part="$2"
+  # shellcheck disable=SC2016 # runs on the TARGET's shell
+  nh_target_sudo_sh "$remote" '
+    d="$(mktemp -d)" || exit 1
+    nh_rsudo mount -o ro "/dev/'"$part"'" "$d" || exit 1
+    m="$(ls "$d/EFI" | grep -ix microsoft | head -n1)"
+    rc=0
+    if [ -n "$m" ]; then nh_rsudo tar -C "$d/EFI" -cf - "$m" || rc=1; else rc=1; fi
+    nh_rsudo umount "$d" 2>/dev/null
+    rmdir "$d" 2>/dev/null
+    exit $rc'
+}
+
+# nh_disk_name <remote> <by-id> — the kernel name behind a by-id path,
+# resolved on the target.
+nh_disk_name() {
+  nh_target_sh "$1" "basename \"\$(readlink -f '$2')\""
+}
+
 # nh_esp_guard <remote> <lsblk-json> <disk-name> — the second OS walk.
 # The chosen disk's ESP holding another OS's loader means that OS
 # stops booting when the disk is erased: name it and require a second
-# explicit confirmation. A Windows ESP on a NON-target disk is left
-# alone and gets the one line that lists it in systemd-boot's menu
-# (the firmware menu boots it regardless).
+# explicit confirmation — unless it is Windows' loader and Windows
+# lives on another disk, which the install carries across (see the
+# header). A Windows ESP on a NON-target disk is left alone and gets
+# the one line that lists it in systemd-boot's menu (the firmware
+# menu boots it regardless).
 nh_esp_guard() {
-  local remote="$1" json="$2" target="$3" part entry other names=""
+  local remote="$1" json="$2" target="$3" part entry other names="" carry
   local -a parts entries
+  carry="$(nh_windows_carry "$remote" "$json" "$target")"
   # Collected before the prompt: gum reads its answer from stdin, and a
   # loop fed by a process substitution hands it the pipe's EOF, which
   # counts as No. One decision per disk, so every foreign loader is
@@ -268,7 +344,11 @@ nh_esp_guard() {
     mapfile -t entries < <(nh_esp_loaders "$remote" "$part" | nh_foreign_loaders)
     for entry in "${entries[@]}"; do
       [ -n "$entry" ] || continue
-      nh_warn "the ESP /dev/$part on /dev/$target holds the boot files of $(nh_name_os "$entry") — that OS stops booting when this disk is erased; move it to an ESP on its own disk first (Windows: bcdboot from a recovery environment)"
+      if [ "$part" = "$carry" ] && printf '%s' "$entry" | grep -qix microsoft; then
+        nh_info "the ESP /dev/$part holds Windows' boot files and Windows lives on another disk — they are carried into the new ESP, and systemd-boot lists Windows"
+        continue
+      fi
+      nh_warn "the ESP /dev/$part on /dev/$target holds the boot files of $(nh_name_os "$entry") — that OS stops booting when this disk is erased; move it to an ESP on its own disk first"
       names="${names:+$names, }$(nh_name_os "$entry")"
     done
   done
@@ -374,7 +454,7 @@ nh_stage_host_key() {
 # Called as `nh_local_install … || rc=$?`, so errexit is off in here:
 # every step is checked explicitly.
 nh_local_install() {
-  local name="$1" root="$2" facter_target="$3"
+  local name="$1" root="$2" facter_target="$3" carry="${4:-}"
 
   # Baked into the installer ISO; requiring them here is what makes
   # the local path honest outside it.
@@ -407,6 +487,16 @@ nh_local_install() {
     nh_err "disko failed — nothing was installed"
     return 1
   }
+
+  # Windows' loader, read off the old ESP before the format, onto the
+  # new one before the loader is installed beside it.
+  if [ -n "$carry" ]; then
+    if ! { nh_sudo install -d /mnt/boot/EFI && nh_sudo tar -xf "$carry" -C /mnt/boot/EFI; }; then
+      nh_err "could not put Windows' boot files onto the new ESP"
+      return 1
+    fi
+    nh_ok "carried Windows' boot files into the new ESP"
+  fi
 
   # A fresh host key, generated after the disk exists but before the
   # closure is built: keys/hosts/<name>.pub is committed here and the
@@ -901,6 +991,26 @@ EOF
     nh_ok "wrote disk = \"$disk\" for $name into $hosts_file"
   fi
 
+  # 1b. Windows' loader on the target's ESP, with Windows on another
+  #     disk: read it now, while the old ESP exists. Both paths put it
+  #     back after the format (nh_local_install; --extra-files).
+  local carry="" carry_part
+  if [ -n "$disk" ]; then
+    local cjson cname
+    cjson="$(nh_disk_json "$remote")" || cjson=""
+    cname="$(nh_disk_name "$remote" "$disk" 2>/dev/null)" || cname=""
+    carry_part=""
+    [ -z "$cjson" ] || [ -z "$cname" ] || carry_part="$(nh_windows_carry "$remote" "$cjson" "$cname")"
+    if [ -n "$carry_part" ]; then
+      carry="$(nh_tmpdir esp-carry)/microsoft.tar" || return 1
+      if ! nh_esp_tar "$remote" "$carry_part" >"$carry" || [ ! -s "$carry" ]; then
+        nh_err "could not read Windows' boot files off /dev/$carry_part — nothing has been erased"
+        return 1
+      fi
+      nh_ok "read Windows' boot files off /dev/$carry_part; they return to the new ESP after the format"
+    fi
+  fi
+
   # 2. Confirm. The picker already confirmed against the partition
   #    list; the --disk / roster / custom-layout paths would otherwise
   #    reformat with zero prompt.
@@ -916,7 +1026,7 @@ EOF
 
   local rc=0
   if [ -z "$remote" ]; then
-    nh_local_install "$name" "$root" "$facter_target" || rc=$?
+    nh_local_install "$name" "$root" "$facter_target" "$carry" || rc=$?
   else
     # 3. Stage what the machine needs before its first activation:
     #    /etc/nixhold/fleet.key (agenix decrypts with it on the first
@@ -937,6 +1047,12 @@ EOF
       nh_err "the fleet key could not be staged — $name would first-boot unable to decrypt anything"
       return 1
     }
+    if [ -n "$carry" ]; then
+      if ! { mkdir -p "$extra/boot/EFI" && tar -xf "$carry" -C "$extra/boot/EFI"; }; then
+        nh_err "could not stage Windows' boot files for the new ESP"
+        return 1
+      fi
+    fi
 
     # Before the build, so the host first-boots with every required
     # secret decryptable. Fatal, as in `deploy`.

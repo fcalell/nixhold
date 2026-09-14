@@ -636,20 +636,30 @@ what the declaration names. There is no file to copy into place.
 
 **A second OS on its own disk is inside the shape.** The framework
 formats only the declared disk and never touches a sibling drive;
-a shared data disk is an ordinary `fileSystems` entry. Two things
-make it a walked path rather than a hazard: the picker mounts the
-chosen disk's ESP read-only and, when it holds another OS's boot
-files (`EFI/Microsoft`, or any loader that is not systemd-boot's),
-names that OS and requires a second explicit confirmation — that
-OS stops booting when its loader is erased, and should be moved
-to its own ESP first; and when such an ESP sits on a *non-target*
-disk the picker prints the one line that chainloads it,
-`boot.loader.systemd-boot.windows.<n>.efiDeviceHandle`. The
-handle is readable only from the UEFI shell (`map -c`), so it is
-operator-set in the host module and the framework wraps nothing;
-the firmware boot menu works with no configuration at all. A
-second OS on the *same* disk stays outside the framework: disko
-rewrites the whole partition table of the disk it is given.
+a shared data disk is an ordinary `fileSystems` entry. Three
+things make it a walked path rather than a hazard. The picker
+mounts the chosen disk's ESP read-only and, when it holds another
+OS's boot files (`EFI/Microsoft`, or any loader that is not
+systemd-boot's), names that OS and requires a second explicit
+confirmation: that OS stops booting when its loader is erased. The
+one exception is Windows' loader when a Windows installation is
+found on a *non-target* disk (an NTFS partition with
+`Windows/System32`, read the same read-only way): the install
+reads `EFI/Microsoft` off the old ESP before disko and puts it on
+the new one before the loader is installed beside it — in place on
+the ISO, through `--extra-files` over ssh — and systemd-boot lists
+Windows on its own, since it recognises that loader on its own
+ESP. Nothing on the target disk survives, so a Windows there goes
+with its loader and the picker names it among what is erased; no
+other loader is carried, since none is one systemd-boot would
+show and none says where its OS lives. And when a Windows ESP sits
+on a *non-target* disk the picker prints the one line that
+chainloads it, `boot.loader.systemd-boot.windows.<n>.efiDeviceHandle`.
+The handle is readable only from the UEFI shell (`map -c`), so it
+is operator-set in the host module and the framework wraps
+nothing; the firmware boot menu works with no configuration at
+all. A second OS on the *same* disk stays outside the framework:
+disko rewrites the whole partition table of the disk it is given.
 
 **Disk picker UX.** The operator never types or copies a device
 path. The picker lists whole disks with size, model, bus, and a
@@ -2408,7 +2418,17 @@ Install & deploy:
 - **A framework option for the second OS's boot entry** — the EFI
   device handle systemd-boot needs is readable only from the UEFI
   shell; `boot.loader.systemd-boot.windows` in the host module is
-  the whole answer, and the picker prints it.
+  the whole answer, and the picker prints it. When the loader is
+  carried onto the framework's own ESP no option is needed at all.
+- **Carrying every foreign loader across a format** — only
+  Windows' is carried, and only with a Windows found on another
+  disk: systemd-boot shows no other loader, and no other loader
+  says where its OS lives, so a carried one would as likely be a
+  dead entry for the OS just erased.
+- **Re-creating the firmware's "Windows Boot Manager" entry** — it
+  points at the erased partition and goes stale; systemd-boot's
+  menu is the framework's boot entry, and writing NVRAM entries is
+  not thin glue.
 - **`--disko-from`** — a custom layout is a declaration, not a
   file copied into place; the placeholder `disko.nix` it replaced
   went with it.
