@@ -1712,8 +1712,8 @@ With no `<name>`, a gum picker offers every fleet host (reformat)
 plus "new host…" (runs the `host add` TUI, then installs). Local
 mode then runs the remote path's phases in place: disk pick →
 disko → stage the fleet key into `/mnt/etc/nixhold` and a fresh
-ssh host key into `/mnt/etc/ssh` → local closure build →
-`nixos-install` → facter written into the checkout. A reformat
+ssh host key into `/mnt/etc/ssh` → closure build into the target
+store → `nixos-install` → facter written into the checkout. A reformat
 commits + pushes the host's new `keys/hosts/<n>.pub`; a new host
 also pushes its hosts-file entry with its `disk` and its
 `facter.json`, over the same `identity`-key remote. Darwin is
@@ -1824,6 +1824,25 @@ Notable shapes:
   installer (or refuses without a terminal), so a fleet machine
   can't be formatted by accident. No hostname auto-detection — the
   guard is the environment marker.
+- **Both install paths build into the target store.** The ISO's
+  `/nix/store` is an overlay whose writable layer is an *unsized*
+  tmpfs (`iso-image.nix`: `options = [ "mode=0755" ]`), so it is
+  half of RAM no matter how large the disk being installed is, and
+  the root the build scratch would land on is another one. A
+  closure built there is capped by memory, and a graphical host —
+  more so one whose roster entry carries a guest, whose toplevel
+  is part of it — does not fit. So the local path builds with
+  `--store /mnt` once disko has mounted the target: the chroot
+  store `nixos-install` builds into for its own `--flake` form,
+  and the one nixos-anywhere hands the `--remote` path
+  (`local?root=/mnt`). `nixos-install --system` then sets the
+  profile with `--store /mnt` too, finds the closure already
+  there, and copies nothing. `--extra-substituters
+  auto?trusted=1` keeps the installer's own store a source, so
+  what it already realised is reused rather than re-fetched, and
+  `TMPDIR` under `/mnt` moves build scratch off the RAM-backed
+  root. The ceiling is the target disk; RAM only holds the
+  evaluator.
 - **`host add` ends in the install question; `host install` is the
   reformat.** The install picker lists every host the machine can
   install (NixOS hosts; a darwin host only on that Mac) plus "new

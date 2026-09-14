@@ -532,9 +532,27 @@ nh_local_install() {
   nh_stage_for_eval "$root" "$facter_target"
   nh_ok "wrote $facter_target"
 
-  nh_info "building $name's system closure"
+  # Into the TARGET's store, not the installer's. The ISO's
+  # /nix/store is an overlay whose writable layer is an unsized tmpfs
+  # — half of RAM, whatever the disk being installed holds — and its
+  # / is another one, so a closure built in place is capped by memory
+  # and a graphical host's does not fit. `--store /mnt` is the chroot
+  # store nixos-install builds into itself and nixos-anywhere gives
+  # the --remote path; `auto?trusted=1` keeps the installer's own
+  # store a source, so what it already realised is not re-fetched;
+  # TMPDIR moves build scratch off the RAM-backed root. `env` rather
+  # than a prefix assignment: sudo resets the environment.
+  nh_sudo install -d -m 1777 /mnt/tmp || {
+    nh_err "could not create /mnt/tmp for the build"
+    return 1
+  }
+  nh_info "building $name's system closure into $name's own store"
+  # --print-out-paths reports the logical /nix/store path even out of
+  # a chroot store, so nixos-install --system below takes it as-is
+  # and copies nothing.
   local out
-  out="$(nix build --no-link --print-out-paths --no-warn-dirty \
+  out="$(nh_sudo env TMPDIR=/mnt/tmp nix build --no-link --print-out-paths \
+    --no-warn-dirty --store /mnt --extra-substituters 'auto?trusted=1' \
     "$root#nixosConfigurations.$name.config.system.build.toplevel")" || {
     nh_err "closure build failed"
     return 1
