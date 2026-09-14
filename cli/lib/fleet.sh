@@ -10,9 +10,11 @@
 # sees the new roster.
 
 # nh_fleet_view — the view as JSON on stdout:
-#   { hosts:   { <name>: { arch, platform, networks, disk, serial, publicIp, publicFqdn } },
+#   { hosts:   { <name>: { arch, platform, networks, disk, serial, publicIp, publicFqdn,
+#                          guests: { <guest>: { devices } } } },
 #     network: { <name>: { type, magicDnsSuffix, domain } },
-#     address: { <host>: { <network>: <addr|null> } } }
+#     address: { <host>: { <network>: <addr|null> } },
+#     machineOf: { <guest>: <machine> } }
 # Non-zero when the fleet has no host to read it from, or the eval
 # fails (the error is nix's own).
 nh_fleet_view() {
@@ -35,6 +37,7 @@ nh_fleet_view() {
       in if cs == { } then null else {
         hosts = builtins.mapAttrs (n: h: {
           inherit (h) arch networks disk serial publicIp publicFqdn;
+          guests = builtins.mapAttrs (_: g: { inherit (g) devices; }) h.guests;
           platform =
             if builtins.match ".*-darwin" h.arch != null then "darwin"
             else if builtins.match ".*-android" h.arch != null then "android"
@@ -42,6 +45,7 @@ nh_fleet_view() {
         }) f.hosts;
         inherit (f) network;
         address = f.derived.address;
+        machineOf = builtins.mapAttrs (_: g: g.machine) f.derived.guests;
       }')" || return 1
     if [ "$json" != "null" ]; then
       printf '%s' "$json" >"$memo" || return 1
@@ -97,6 +101,88 @@ nh_host_arch() {
 # (empty when null).
 nh_host_field() {
   nh_fleet_view | jq -r --arg h "$1" --arg f "$2" '.hosts[$h][$f] // empty'
+}
+
+# nh_host_machine <host> — the machine that runs <host> as a guest
+# ("Guests"); empty when it runs on its own hardware.
+nh_host_machine() {
+  nh_fleet_view | jq -r --arg h "$1" '.machineOf[$h] // empty'
+}
+
+# nh_host_guests <machine> — the guests <machine> names, one per line.
+nh_host_guests() {
+  nh_fleet_view | jq -r --arg h "$1" '.hosts[$h].guests // {} | keys[]'
+}
+
+# nh_add_guest_entry <hosts-file> <machine> <guest> — write
+# `guests.<guest> = { };` as the last field of <machine>'s roster entry:
+# the machine names its guests, the guest's own entry says nothing
+# about where it runs. Same entry shape as nh_set_host_field.
+nh_add_guest_entry() {
+  local file="$1" machine="$2" guest="$3" tmp
+  if ! grep -qE "^[[:space:]]+${machine}[[:space:]]*=[[:space:]]*\{" "$file"; then
+    nh_err "no entry for $machine in $file — the roster is not in the shape 'host add' writes"
+    return 1
+  fi
+  tmp="$(mktemp -t nixhold-hosts.XXXXXX)" || {
+    nh_err "could not create a temp file to rewrite $file"
+    return 1
+  }
+  if ! machine="$machine" guest="$guest" awk '
+    BEGIN { inside = 0; done = 0 }
+    {
+      if (!inside && !done && $0 ~ ("^[[:space:]]+" ENVIRON["machine"] "[[:space:]]*=[[:space:]]*\\{")) {
+        inside = 1
+        indent = $0
+        sub(/[^ \t].*$/, "", indent)
+        close_re = "^" indent "\\};[[:space:]]*$"
+        print
+        next
+      }
+      if (inside && $0 ~ close_re) {
+        print indent "  guests." ENVIRON["guest"] " = { };"
+        inside = 0
+        done = 1
+      }
+      print
+    }
+  ' "$file" >"$tmp" || ! mv "$tmp" "$file"; then
+    rm -f "$tmp"
+    nh_err "could not write guests.$guest into $file"
+    return 1
+  fi
+}
+
+# nh_remove_guest_entries <hosts-file> <guest> — drop every
+# `guests.<guest> = …;` a machine entry carries, one line or a block
+# closed by `};` at the same indentation. A host that left the roster
+# is nobody's guest.
+nh_remove_guest_entries() {
+  local file="$1" guest="$2" tmp
+  grep -qE "^[[:space:]]+guests\.${guest}[[:space:]]*=" "$file" || return 0
+  tmp="$(mktemp -t nixhold-hosts.XXXXXX)" || {
+    nh_err "could not create a temp file to rewrite $file"
+    return 1
+  }
+  if ! guest="$guest" awk '
+    BEGIN { skip = 0 }
+    {
+      if (!skip && $0 ~ ("^[[:space:]]+guests\\." ENVIRON["guest"] "[[:space:]]*=")) {
+        if ($0 ~ /;[[:space:]]*$/) next
+        skip = 1
+        indent = $0
+        sub(/[^ \t].*$/, "", indent)
+        close_re = "^" indent "\\};[[:space:]]*$"
+        next
+      }
+      if (skip && $0 ~ close_re) { skip = 0; next }
+      if (!skip) print
+    }
+  ' "$file" >"$tmp" || ! mv "$tmp" "$file"; then
+    rm -f "$tmp"
+    nh_err "could not remove guests.$guest from $file"
+    return 1
+  fi
 }
 
 # nh_set_host_field <hosts-file> <name> <field> <value> — write

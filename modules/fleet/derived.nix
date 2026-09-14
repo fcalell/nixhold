@@ -17,6 +17,42 @@ in
 
     publicHosts = lib.attrNames (lib.filterAttrs (_: h: h.publicIp != null) fleet.hosts);
 
+    # One row per guest, from the machine entries that name it. The
+    # veth addresses come from the guest's index in the sorted list
+    # of every guest: 10.233.<index+1>.1 on the machine, .2 in the
+    # guest — the range nixpkgs' own container examples use, one /24
+    # per guest, and the same value on both sides of the boundary
+    # because both read it here.
+    guests =
+      let
+        rows = lib.concatMap (
+          machine:
+          lib.mapAttrsToList (guest: grant: {
+            name = guest;
+            value = {
+              inherit machine;
+              inherit (grant) devices;
+            };
+          }) fleet.hosts.${machine}.guests
+        ) (lib.attrNames fleet.hosts);
+        # `listToAttrs` keeps the first definition of a duplicate key;
+        # the machines are walked in name order, so it is the first
+        # machine's.
+        byGuest = lib.listToAttrs rows;
+        names = lib.attrNames byGuest;
+      in
+      lib.mapAttrs (
+        guest: row:
+        let
+          index = lib.lists.findFirstIndex (n: n == guest) 0 names;
+        in
+        row
+        // {
+          hostAddress = "10.233.${toString (index + 1)}.1";
+          localAddress = "10.233.${toString (index + 1)}.2";
+        }
+      ) byGuest;
+
     hostsByNetwork = lib.mapAttrs (
       netName: _: lib.attrNames (lib.filterAttrs (_: h: lib.elem netName h.networks) fleet.hosts)
     ) fleet.network;

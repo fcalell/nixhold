@@ -90,22 +90,48 @@ let
   # Android host shares.
   hostPlatform = host: { lib, ... }: { nixpkgs.hostPlatform = lib.mkDefault host.arch; };
 
+  nixosSpecialArgs = name: {
+    inherit inputs identity;
+    fleet = fleetView;
+    hostname = name;
+  };
+  nixosModules =
+    name: host:
+    [
+      inputs.nixhold.nixosModules.nixhold
+      (hostPlatform host)
+    ]
+    ++ [ host.profile ]
+    ++ baseline name host
+    ++ host.modules;
+
+  # A guest ("Guests") is a host of the roster like any other, and its
+  # machine's `containers.<guest>` is built from the same module list
+  # with the same specialArgs, so the container's system is the
+  # guest's own configuration — nixpkgs' container module evaluates
+  # it where it needs the guest's config (its warnings read it), and
+  # a pure eval of one list is one closure. Everything else about the
+  # boundary — the veth, the tun device, the fleet key, the device
+  # grant — is rendered by modules/guests/machine.nix from the roster,
+  # not here: this is the one thing that needs the guest's module
+  # list, which only mkFleet holds.
+  # A name under `guests` that is no roster host renders nothing, so
+  # the fleet still evaluates and lint rule 15 is what reports it.
+  guestContainers =
+    host:
+    lib.mapAttrsToList (guest: _: {
+      containers.${guest} = {
+        specialArgs = nixosSpecialArgs guest;
+        config.imports = nixosModules guest hosts.${guest};
+      };
+    }) (lib.filterAttrs (guest: _: hosts ? ${guest}) (host.guests or { }));
+
   mkNixosHost =
     name: host:
     nixpkgs.lib.nixosSystem {
       system = host.arch;
-      specialArgs = {
-        inherit inputs identity;
-        fleet = fleetView;
-        hostname = name;
-      };
-      modules = [
-        inputs.nixhold.nixosModules.nixhold
-        (hostPlatform host)
-      ]
-      ++ [ host.profile ]
-      ++ baseline name host
-      ++ host.modules;
+      specialArgs = nixosSpecialArgs name;
+      modules = nixosModules name host ++ guestContainers host;
     };
 
   nixosConfigurations = lib.mapAttrs mkNixosHost linuxHosts;

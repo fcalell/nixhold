@@ -329,7 +329,10 @@ nh_pick_install_host() {
     name="${line%% *}"
     platform="${line##* }"
     case "$platform" in
-      nixos) rows="${rows}${name}	(reformat — erases its disk)
+      nixos)
+        # A guest has no disk: it starts with its machine's deploy.
+        [ -z "$(nh_host_machine "$name")" ] || continue
+        rows="${rows}${name}	(reformat — erases its disk)
 " ;;
       darwin)
         [ "$(uname -s)" = "Darwin" ] || continue
@@ -796,6 +799,15 @@ EOF
       cmd_host_add
       return $?
     fi
+  fi
+
+  # A guest ("Guests") owns no disk and is never imaged: its machine's
+  # deploy builds and starts it.
+  local machine
+  machine="$(nh_host_machine "$name" 2>/dev/null || true)"
+  if [ -n "$machine" ]; then
+    nh_err "$name is a guest of $machine — nothing to install; 'nixhold deploy $machine' builds and starts it"
+    return 1
   fi
 
   local platform arch

@@ -192,6 +192,13 @@
           # every other NixOS fixture host is a server.
           fixture-desktop = fixture.nixosConfigurations.fixture-desktop.config.system.build.toplevel;
 
+          # The guest ("Guests"): a server-profile host fixture-desktop
+          # runs as a container. Its own eval is what the machine's
+          # `containers.fixture-guest.path` points at, so the desktop
+          # check above builds it too; this one reads the guest side
+          # of the boundary through the stub's assertions.
+          fixture-guest = fixture.nixosConfigurations.fixture-guest.config.system.build.toplevel;
+
           # The fleet's own installer image. Evaluating it covers the
           # whole ISO module — including the "THIN by contract"
           # assertion that no baked ciphertext is a subpath of the

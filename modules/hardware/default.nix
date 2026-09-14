@@ -11,6 +11,9 @@
 #     layout has no swap partition) is set alongside it at mkDefault. A host that
 #     wants anything else declares `disko.devices` in its own module
 #     and leaves `disk` null; install then formats what that names.
+#   Neither applies to a guest (a host some machine's roster entry
+#   names under `guests`): a container has no disk and no hardware to
+#   report, so both default off there.
 #   - the facter report, `nixhold.hardware.facterReport` — defaults to
 #     `<layout.hostsDir>/<host>/facter.json`, a computed subpath like
 #     every layout default; install writes it there. Until the file
@@ -31,7 +34,13 @@
 let
   cfg = config.nixhold.hardware;
   fleet = config.nixhold.fleet;
-  disk = if fleet.derived.self == null then null else fleet.derived.self.disk;
+  # A guest has no hardware of its own: the machine's is the
+  # machine's to hand out (see "Guests"), so nothing below renders
+  # for one — no layout, no loader, no swap, no report. Read from the
+  # roster rather than `boot.isContainer`: the loader lines below sit
+  # under `boot.*`, so a condition on a `boot.*` value is a cycle.
+  isGuest = fleet.selfName != null && fleet.derived.guests ? ${fleet.selfName};
+  disk = if fleet.derived.self == null || isGuest then null else fleet.derived.self.disk;
   declared = cfg.facterReport != null;
   present = declared && builtins.pathExists cfg.facterReport;
 in
@@ -55,7 +64,7 @@ in
   config = lib.mkMerge [
     {
       nixhold.hardware.facterReport = lib.mkDefault (
-        if fleet.selfName == null then
+        if fleet.selfName == null || isGuest then
           null
         else
           config.nixhold.layout.hostsDir + "/${fleet.selfName}/facter.json"

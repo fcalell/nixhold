@@ -64,6 +64,9 @@ nh_status_host() {
 
   echo "HOST: $host ($platform, $(nh_host_arch "$host"))"
   printf '  networks: %s\n' "$(nh_host_field "$host" networks | jq -r 'join(", ")')"
+  local machine
+  machine="$(nh_host_machine "$host")"
+  [ -z "$machine" ] || printf '  guest of: %s  (deploys with it)\n' "$machine"
   echo
   printf '  services:\n'
   printf '%s' "$services_json" | jq -r '
@@ -141,10 +144,14 @@ nh_status_android() {
 # One table row. A host that fails to evaluate is marked and the walk
 # continues — one broken host must not hide the rest of the fleet —
 # but the verb's exit status remembers it. An Android host has no
-# services column: its plan is `nixhold status <name>`.
+# services column: its plan is `nixhold status <name>`. A guest is
+# marked with its machine in the last column.
 nh_status_row() {
-  local host="$1" platform="$2" services_json secrets_json services secrets missing sdir name
+  local host="$1" platform="$2" services_json secrets_json services secrets missing sdir name note=""
   sdir="$(nh_worktree_secrets_dir)" || return 1
+  local machine
+  machine="$(nh_host_machine "$host")"
+  [ -z "$machine" ] || note="guest of $machine"
   if [ "$platform" = "android" ]; then
     services_json="{}"
     services="-"
@@ -166,7 +173,8 @@ nh_status_row() {
     [ -e "$(nh_secret_file "$sdir" "$host" "$name" "$scope")" ] || missing=$((missing + 1))
   done < <(printf '%s' "$secrets_json" | jq -r '
     to_entries[] | [ .key, (.value.scope // "host") ] | @tsv')
-  printf '%-16s %-8s %-9s %-8s %s\n' "$host" "$platform" "$services" "$secrets" "$([ "$missing" -eq 0 ] || printf '%s missing' "$missing")"
+  printf '%-16s %-8s %-9s %-8s %s%s\n' "$host" "$platform" "$services" "$secrets" \
+    "$([ "$missing" -eq 0 ] || printf '%s missing  ' "$missing")" "$note"
 }
 
 nh_status_fleet() {

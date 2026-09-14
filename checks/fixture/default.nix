@@ -110,11 +110,27 @@ self.lib.mkFleet {
     # `server` profile, so without this one the desktop profile's
     # defaults — the session entry, the wayland environment, the
     # portal and audio stack — are shipped and built nowhere.
+    # It is also the fixture's machine with a guest ("Guests"): the
+    # grant below is one render node and one sound card, so both
+    # branches of the machine-side module are rendered.
     fixture-desktop = {
       arch = "x86_64-linux";
       profile = self.profiles.desktopLinux;
       modules = [ ./desktop-stub.nix ];
       disk = "/dev/disk/by-id/fixture-desktop-root";
+      guests.fixture-guest.devices = [
+        "/dev/dri/renderD128"
+        "/dev/snd/by-id/usb-Fixture_Card_0001-00"
+      ];
+    };
+
+    # The guest: a server-profile host whose entry says nothing about
+    # where it runs — no `disk`, since the hardware is
+    # fixture-desktop's. `networks` left to its default.
+    fixture-guest = {
+      arch = "x86_64-linux";
+      profile = self.profiles.server;
+      modules = [ ./guest-stub.nix ];
     };
 
     # `networks` left to its default: every tailscale-typed network.

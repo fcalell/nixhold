@@ -52,6 +52,12 @@ through):
 
 ---
 
+## Guests
+
+| Item | Trigger | Intended shape |
+|---|---|---|
+| A pipewire socket door across the boundary | the first seat that plays through a card a guest owns (the dogfood fleet's multi-output USB card, once the homelab is the house's audio router) | the guest exposes its pipewire socket on a bound path, the machine's pipewire adds it as a remote sink; same-machine socket audio, a few milliseconds |
+
 ## Secrets & keys
 
 | Item | Trigger | Intended shape |

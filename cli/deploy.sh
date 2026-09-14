@@ -14,7 +14,12 @@
 #   - Android: the plan is built here and the device converged onto
 #     it over adb (deploy-android.sh); --mode does not apply.
 # Several hosts deploy in order; a failure on one does not abandon
-# the rest, and the verb reports the failed set at the end.
+# the rest, and the verb reports the failed set at the end. A guest
+# ("Guests") is deployed by deploying its machine: the name resolves
+# to the machine, the plan line says so, and --all names machines
+# only, their guests coming with them. The first deploy that starts a
+# guest records the ssh host key it minted as keys/hosts/<guest>.pub,
+# as `host install` does for a machine it images.
 #
 # Before the build: required secrets with no ciphertext are
 # provisioned, then the host is made to hold the fleet key. That check
@@ -76,6 +81,23 @@ EOF
     }
     names=("$self")
   fi
+  # A guest's name means its machine; two names that meet on one
+  # machine deploy it once.
+  local resolved=() n m seen
+  for n in "${names[@]}"; do
+    m="$(nh_host_machine "$n" 2>/dev/null || true)"
+    if [ -n "$m" ]; then
+      nh_info "$n is a guest of $m — deploying $m"
+      n="$m"
+    fi
+    seen=0
+    for m in "${resolved[@]}"; do
+      [ "$m" = "$n" ] && seen=1
+    done
+    [ "$seen" -eq 1 ] || resolved+=("$n")
+  done
+  names=("${resolved[@]}")
+
   if [ -n "$target" ] && [ "${#names[@]}" -ne 1 ]; then
     nh_err "--target applies to exactly one host"
     return 1
@@ -126,17 +148,66 @@ nh_deploy_self() {
 # nh_deploy_eligible — the hosts this machine can activate, one per
 # line: every NixOS host (the target builds its own closure), every
 # Android host (this machine builds the plan and drives adb), plus a
-# darwin host only when this Mac is it.
+# darwin host only when this Mac is it. A guest is not listed: its
+# machine is, and the guest comes with it.
 nh_deploy_eligible() {
   local self line name platform
   self="$(nh_deploy_self)" || self=""
   while IFS= read -r line; do
     name="${line%% *}"
     platform="${line##* }"
+    [ -z "$(nh_host_machine "$name")" ] || continue
     if [ "$platform" = "nixos" ] || [ "$platform" = "android" ] || [ "$name" = "$self" ]; then
       printf '%s\n' "$name"
     fi
   done < <(nh_hosts)
+}
+
+# nh_deploy_capture_guest_keys <machine> <local> <target> — after a
+# machine activated, record the ssh host pubkey of every guest that
+# has none committed yet. The key is minted by sshd inside the guest
+# on its first start, under the machine's
+# /var/lib/nixos-containers/<guest>/etc/ssh — root-only, hence sudo
+# either side — and the container starts after activation returns, so
+# the read waits for it a little. A guest whose key cannot be read
+# (mode=boot, a container that failed to start) is a warning: `host
+# key <guest>` records it later, over the tailnet.
+nh_deploy_capture_guest_keys() {
+  local machine="$1" local_host="$2" target="$3" root keys_dir guest live path snippet
+  root="$(nh_fleet_root)" || return 1
+  keys_dir="$(nh_worktree_keys_dir)" || return 1
+  local pending=()
+  while IFS= read -r guest; do
+    [ -n "$guest" ] || continue
+    [ -e "$keys_dir/hosts/$guest.pub" ] || pending+=("$guest")
+  done < <(nh_host_guests "$machine")
+  [ "${#pending[@]}" -gt 0 ] || return 0
+
+  # The password is cached in THIS shell so the reads below, which run
+  # in command substitutions, do not each ask for it.
+  if [ "$local_host" -ne 1 ]; then
+    case "${target%%@*}" in
+      root) ;;
+      *) nh_sudo_password_ensure "$target" || return 0 ;;
+    esac
+  fi
+  for guest in "${pending[@]}"; do
+    path="/var/lib/nixos-containers/$guest/etc/ssh/ssh_host_ed25519_key.pub"
+    snippet="i=0; until nh_rsudo test -r $path || [ \$i -ge 6 ]; do i=\$((i+1)); sleep 5; done; nh_rsudo cat $path"
+    if [ "$local_host" -eq 1 ]; then
+      live="$(sh -c "$(nh_sudo_preamble_local)
+$snippet" 2>/dev/null)" || live=""
+    else
+      live="$(nh_ssh_sudo "$target" --host "$machine" -- "$snippet" </dev/null 2>/dev/null)" || live=""
+    fi
+    if [ -z "$live" ]; then
+      nh_warn "$guest's ssh host key is not readable on $machine yet (the guest has not started?) — 'nixhold host key $guest' records it once the guest is on the tailnet"
+      continue
+    fi
+    nh_commit_host_pub "$guest" "$live" >/dev/null || continue
+    nh_ok "$guest's ssh host pubkey is recorded as keys/hosts/$guest.pub"
+    nh_commit_paths "$root" "host($guest): pubkey" "$keys_dir/hosts/$guest.pub"
+  done
 }
 
 # nh_deploy_host <name> <mode> <dry-run> <target> — one host.
@@ -248,6 +319,8 @@ nh_deploy_host() {
           --elevate=sudo \
           --ask-elevate-password
       fi
+      # The guests this machine started for the first time.
+      [ "$dry_run" -eq 1 ] || nh_deploy_capture_guest_keys "$name" "$local_host" "$target"
       ;;
     darwin)
       # darwin deploys are always local — so gate on the OS, not on

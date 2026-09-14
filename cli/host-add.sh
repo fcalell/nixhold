@@ -1,12 +1,17 @@
-# nixhold host add [<name>] [--install <user>@<ip>]
+# nixhold host add [<name>] [--install <user>@<ip>] [--on <machine>]
 #
 # The walk that brings a host into the fleet:
-#   1. Prompt name (when not given), arch, profile, networks,
-#      publicIp, stateVersion — every abort happens here, before the
-#      first write. Prompts default from what is known: the machine's
-#      arch when it is the target (ISO, Mac), the profile from the
-#      arch, stateVersion from the pinned nixpkgs / nix-darwin (an
-#      Android host has none).
+#   1. Prompt name (when not given), arch, profile, where it runs,
+#      networks, publicIp, stateVersion — every abort happens here,
+#      before the first write. Prompts default from what is known:
+#      the machine's arch when it is the target (ISO, Mac), the
+#      profile from the arch, stateVersion from the pinned nixpkgs /
+#      nix-darwin (an Android host has none).
+#      "Where it runs" is asked for a NixOS host when the roster has
+#      a NixOS machine of the same arch to run it on: its own
+#      hardware, or that machine as a container ("Guests"; --on
+#      <machine> answers it). A guest is written into the machine's
+#      `guests`, takes no public address and is never installed.
 #      Networks are asked only when the fleet declares more than the
 #      tailscale default, a public address only for a host on an
 #      internet network; publicFqdn defaults in the roster.
@@ -30,16 +35,19 @@
 # installer ISO, whose checkout is ephemeral, it is pushed too.
 
 cmd_host_add() {
-  local name="" install_target=""
+  local name="" install_target="" on_machine=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --install) install_target="$2"; shift 2 ;;
+      --on) on_machine="${2:-}"; shift 2 ;;
       -h | --help)
         cat <<'EOF'
-Usage: nixhold host add [<name>] [--install <user>@<ip>]
+Usage: nixhold host add [<name>] [--install <user>@<ip>] [--on <machine>]
 
   Walks the host into the fleet, then asks whether to install it now.
   --install <user>@<ip> answers that with "over ssh to <ip>".
+  --on <machine> makes the host a guest of a NixOS machine in the
+  roster: a container the machine's deploy builds and starts.
 EOF
         return 0
         ;;
@@ -121,12 +129,54 @@ EOF
     profile="$custom"
   fi
 
+  # The fleet view is unreadable while the fleet has no host (the
+  # first add): every question below that reads it stands at its
+  # default, unasked.
+  local view=""
+  view="$(nh_fleet_view 2>/dev/null)" || view=""
+
+  # Where it runs: a NixOS host may be a guest of a NixOS machine of
+  # the same arch that is not a guest itself ("Guests"). Asked only
+  # when there is such a machine; --on answers it.
+  local machine="" machines=""
+  case "$arch" in
+    *-linux)
+      if [ -n "$view" ]; then
+        machines="$(printf '%s' "$view" | jq -r --arg a "$arch" '
+          .machineOf as $m
+          | .hosts | to_entries[]
+          | select(.value.platform == "nixos" and .value.arch == $a and ($m[.key] == null))
+          | .key')"
+      fi
+      if [ -n "$on_machine" ]; then
+        if ! printf '%s\n' "$machines" | grep -qx -- "$on_machine"; then
+          nh_err "--on $on_machine: not a NixOS $arch machine in the roster that could run $name; nothing was written"
+          return 1
+        fi
+        machine="$on_machine"
+      elif [ -n "$machines" ] && nh_tty; then
+        local choice
+        # shellcheck disable=SC2046 # one space-free machine name per line
+        choice="$(nh_prompt_choose "Where does $name run?" "its own hardware" \
+          $(printf '%s\n' "$machines" | awk '{ print $1 " (as a container)" }'))" || choice=""
+        case "$choice" in
+          "") nh_err "aborted — no answer; nothing was written"; return 1 ;;
+          "its own hardware") ;;
+          *) machine="${choice%% *}" ;;
+        esac
+      fi
+      ;;
+    *)
+      if [ -n "$on_machine" ]; then
+        nh_err "--on applies to a NixOS host; $name is $arch"
+        return 1
+      fi
+      ;;
+  esac
+
   # Networks: the roster defaults to every tailscale-typed network, so
   # the question only exists when the fleet declares something else.
-  # The fleet view is unreadable while the fleet has no host (the
-  # first add): the default stands, unasked.
-  local view="" networks="" all_nets ts_nets
-  view="$(nh_fleet_view 2>/dev/null)" || view=""
+  local networks="" all_nets ts_nets
   if [ -n "$view" ] &&
     [ "$(printf '%s' "$view" | jq '.network | length > 1 or any(.[]; .type != "tailscale")')" = "true" ]; then
     all_nets="$(printf '%s' "$view" | jq -r '.network | keys[]')"
@@ -139,9 +189,11 @@ EOF
     fi
   fi
 
-  # A public address is only usable on an internet-typed network.
+  # A public address is only usable on an internet-typed network, and
+  # never a guest's: the gateway is the host with the public address,
+  # which a guest's veth is not.
   local public_ip=""
-  if [ -n "$networks" ] &&
+  if [ -z "$machine" ] && [ -n "$networks" ] &&
     [ "$(printf '%s' "$view" | jq --arg n "$networks" '[.network | to_entries[] | select(.value.type == "internet") | .key] | any(. as $k | $n | split(",") | index($k) != null)')" = "true" ] &&
     nh_prompt_confirm "Does $name have a stable public IP?"; then
     public_ip="$(nh_prompt_input "publicIp (e.g. 203.0.113.42)")" || public_ip=""
@@ -204,6 +256,10 @@ EOF
   esac
   nh_append_host_entry "$hosts_file" "$name" "$arch" "$profile" "$networks" "$public_ip" "$modpath" || return 1
   nh_ok "wrote host entry for $name into $hosts_file"
+  if [ -n "$machine" ]; then
+    nh_add_guest_entry "$hosts_file" "$machine" "$name" || return 1
+    nh_ok "$name is a guest of $machine (guests.$name in its entry; grant devices there)"
+  fi
   nh_fleet_view_reset
 
   # Make the generated files visible to git-flake eval: a dirty git
@@ -233,6 +289,13 @@ EOF
   nh_push_if_installer "$root"
   nh_ok "$name is in the fleet"
 
+  if [ -n "$machine" ]; then
+    if [ -n "$install_target" ]; then
+      nh_warn "--install ignored: a guest is not installed"
+    fi
+    nh_info "next: nixhold deploy $machine  (builds and starts $name; its ssh host pubkey is recorded then)"
+    return 0
+  fi
   nh_add_install_question "$name" "$arch" "$install_target"
 }
 

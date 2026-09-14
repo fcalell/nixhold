@@ -133,7 +133,7 @@ read from disk. A minimal fork passes only `inputs`, `identity`,
 | `identity` | `{ username, fullName, email }` |
 | `layout` (optional) | CLI filesystem contract; every field defaults from `inputs.self`: `secrets` → `/secrets`, `hostsFile` → `/hosts.nix`, `modulesDir` → `/modules`, `profilesDir` → `/profiles`, `hostsDir` → `/hosts`, `keysDir` → `/keys`, `ageRecipient` → `/keys/operator.pub` (the operator recipient *list*, one age recipient per line), `ageIdentityWrapped` → `/keys/operator.age` when that file exists and `null` when it does not (`nullOr path`; see "Operator routes"). `repoUrl` is the one non-derivable field — a bare `owner/repo` slug (github.com assumed, cloned over SSH with the fleet's `identity` key), typed to reject URL schemes and a `.git` suffix since both the remote and `programs.nixhold.fleetDir` are built out of it; required to build the installer ISO, unused otherwise. Defaulting is computed values off `self`, not filesystem discovery (principle 14 intact) |
 | `networks` | `{ <name> = { type, magicDnsSuffix?, domain? }; }` |
-| `hosts` | `{ <name> = { arch, profile, modules, networks?, disk?, serial?, publicIp?, publicFqdn? }; }`; `arch` names the family the builder dispatches on, `aarch64-android` included (see "Android hosts") |
+| `hosts` | `{ <name> = { arch, profile, modules, networks?, disk?, serial?, publicIp?, publicFqdn?, guests? }; }`; `arch` names the family the builder dispatches on, `aarch64-android` included (see "Android hosts"); `guests` names the hosts this machine runs as containers (see "Guests") |
 
 Rules:
 
@@ -174,7 +174,8 @@ Rules:
   invariants are module assertions instead; the framework's own
   `checks` are the synthetic fixture fleet (`fixture-server`,
   `fixture-gateway`, `fixture-node`, `fixture-desktop`,
-  `fixture-iso`, `fixture-mac`, `fixture-kiosk`, `fixture-mobile`),
+  `fixture-guest`, `fixture-iso`, `fixture-mac`, `fixture-kiosk`,
+  `fixture-mobile`),
   which is what catches contract
   drift per commit. Every shipped profile is drawn by a host there:
   a profile nothing builds is a profile nothing checks.
@@ -266,7 +267,9 @@ Concepts, not filesystem (principle 14):
   at its default path (see Hardware).
 - **Fleet manifest** — the `mkFleet` args attach a profile to each
   host; the manifest reads as "I have a server, a desktop, a
-  workstation, a screen, a phone."
+  workstation, a screen, a phone." A machine that carries other
+  hosts as containers names them under `guests`; the guests' own
+  entries do not change (see "Guests").
 
 Source-tree layout inside the framework: kind-first
 (`modules/<kind>/`), with `nixos.nix`/`darwin.nix` platform
@@ -668,6 +671,159 @@ missing → eval still succeeds (lint/status work) but build is
 blocked by an assertion pointing at `nixhold host install`. This
 is what lets nixos-anywhere evaluate the disko script, kexec,
 generate the report, then build.
+
+## Guests
+
+A host is what the fleet addresses: a name, a tailnet node, a
+profile, secrets, endpoints. A **machine** is hardware. Most hosts
+are their own machine; a **guest** is a host that runs as a NixOS
+container inside another host's machine. The guest's roster entry
+is the same entry it would have on its own hardware: `arch`,
+`profile`, `modules`, `networks`. What places it is the machine's
+entry, which names it under `guests`. Nothing in a guest says where
+it runs, so a guest moves to bare metal, or to another machine, by
+editing the machine entries only.
+
+| Field | On | Shape |
+|---|---|---|
+| `hosts.<machine>.guests` | a NixOS host | `{ <guest> = { devices? }; }`, default `{}`; each key is a roster host |
+| `hosts.<machine>.guests.<guest>.devices` | the grant | list of stable device paths under `/dev` (`/dev/dri/renderD128`, `/dev/snd/by-id/usb-…`), default `[]` |
+
+A machine's profile says what the machine is for a person:
+`desktopLinux` when someone sits at it, `server` when nobody does.
+A machine carries a seat and guests in any combination; neither
+knows about the other. The seat is the one role that is never a
+guest: a graphical session needs DRM master, the input devices, a
+VT and logind's seat, which systemd-nspawn does not virtualise, and
+a VM would need the GPU passed through and so taken from every
+other guest. The seat also has nothing a boundary would protect:
+its home is declarative and its state is files. Services, secrets
+and a network identity are what a boundary protects, and those are
+the guest's.
+
+**The guest is a full host.** `mkFleet` emits the guest's
+`nixosConfigurations.<guest>` exactly as before, so lint and status
+read it like any host, and adds to the machine's configuration
+`containers.<guest>` built from the same module list with the same
+`specialArgs`. One list, one closure: the machine's closure contains
+the guest's system, which is how NixOS containers work, and the
+guest's own attribute is the same configuration read from the top
+(nixpkgs' container module evaluates the list itself where it reads
+the guest's config, so the machine's eval carries the guest's; a
+pure eval of one list gives one system). The guest runs its own
+tailscaled and is its own tailnet node under its own name, so
+`derived.address.<guest>` resolves the way it does for any host,
+sshd inside the guest is pinned by `keys/hosts/<guest>.pub`, and
+caddy inside the guest terminates the guest's endpoints on the
+guest's FQDN with a cert `tailscale cert` issues for that node.
+Nothing on the rest of the fleet, in the guest's secrets or in a
+client's URL says the guest is a container.
+
+**What the baseline skips in a guest.** Hardware is the machine's.
+The guest's own eval carries the container mark
+(`boot.isNspawnContainer`, set by the baseline from the roster), and
+the hardware module reads the same roster fact — a condition under
+`boot.*` on a `boot.*` value would be a cycle — so a guest gets no
+disko layout, no boot loader, no zram, no facter report and no
+facter assertion, and no `disk` in the roster. Its gc and optimise
+timers are off: the store is the machine's, reached through the
+machine's nix-daemon socket. A guest entry carrying `disk`, `guests`
+of its own, `publicIp` or `publicFqdn` is a lint error: a guest owns
+no disk, nesting is not a shape, and the gateway is the host with
+the public address, which a guest's veth is not (cross-host routing
+on the roadmap is where a guest would serve internet endpoints
+through its machine).
+
+**The boundary is the framework's.** Three things cross it, and the
+machine's configuration renders all three from the roster entry:
+
+- **Network.** A private veth pair whose two ends are derived once
+  for both sides (`derived.guests.<guest>.{hostAddress,localAddress}`,
+  a `10.233.<n>.0/24` per guest in name order), masqueraded by the
+  machine; no uplink interface is named, since a seat machine
+  roams. The guest's tun device and the network capability
+  tailscaled needs. A NetworkManager machine leaves `ve-*`
+  unmanaged. The guest resolves through its own systemd-resolved —
+  the machine's `/etc/resolv.conf` is a stub on the machine's
+  loopback, which no other network namespace reaches — from
+  resolved's built-in fallback until tailscaled hands it MagicDNS on
+  join. The guest joins the tailnet through the machine's NAT like
+  any node behind a router; the machine's own tailscaled is a
+  separate node and neither sees the other's traffic.
+- **The fleet key.** `/etc/nixhold/fleet.key` is bound read-only
+  from the machine, so the guest decrypts every ciphertext the way
+  every host does and `deploy` ensures the key once, on the
+  machine. The guest's ssh host key is its own, minted at first
+  start under the guest's state; the deploy that first starts a
+  guest captures its pubkey into `keys/hosts/<guest>.pub` as
+  `host install` does for a machine.
+- **State.** The guest's root is the machine's
+  `/var/lib/nixos-containers/<guest>`. A backup copy a guest's
+  service publishes lands under the guest's own root and leaves
+  over the guest's transport, so "Backups" is unchanged.
+
+**Devices are granted, then disclaimed.** Hardware is the machine's
+to hand out, so the grant is on the machine's entry: `devices`
+names each node by a stable path. A path under `/dev/dri` is a
+render node, bound as it is and shareable, since the kernel
+time-slices a GPU between every process on the machine, guest or
+not. A path under `/dev/snd/by-id` is a sound card: the machine's
+`/dev/snd` is visible in the guest — a device directory is bound or
+not — and the device cgroup is what lets the guest open that card's
+control and PCM nodes and no other. Which nodes those are is
+runtime knowledge (a by-id link resolves to a card index the kernel
+assigns), so a oneshot on the machine resolves the grant before the
+container starts and sets the unit's `DeviceAllow`, and a udev rule
+runs it again, live, when a card appears; a card that is unplugged
+is a warning, not a guest that will not start. The machine's
+wireplumber, when the seat has one, disables the granted card by
+its bus id — the string the by-id link is named from — so the
+guest's pipewire is its only owner; `/run/udev` is bound read-only
+into a guest with any grant, since a container has no udev and
+libudev reads the database there. The unit of a grant is the card,
+never a jack: a card with several outputs is one owner's, and the
+other side reaches an output through a pipewire socket the owner
+exposes, the same shape as the assistant's socket door to caddy. A
+guest's own unit that names a device in its hardening exceptions
+(`DeviceAllow`) that the grant does not hold is a lint finding, so
+a guest cannot silently want what its machine never gave.
+
+**A machine with guests never sleeps.** Suspend and hibernate are
+off and the lid and power key do nothing, set from the roster
+(`mkDefault`, principle 4) the moment `guests` is non-empty. A seat
+keeps its idle policy for the screen only.
+
+**CLI.** `deploy <guest>` deploys the guest's machine and prints
+the resolution in its plan line; `--all` deploys machines, and their
+guests come with them. `host install <guest>` is a usage error
+naming the machine, and the install picker does not offer a guest.
+`host add` asks where a NixOS host runs when the roster has a NixOS
+machine of its arch to run it on — its own hardware, or that
+machine as a container (`--on <machine>` answers it) — writes the
+machine's `guests` entry, asks it no public address and ends with
+the machine's deploy rather than the install question. `host
+remove` drops the guest from every machine that named it. `status`
+reads the guest's declaration side as any
+host's and marks it `guest of <machine>` in `--fleet`. Lint rule
+`15-guests`: a guest is named by at most one machine, its `arch` is
+its machine's, the machine is NixOS, the guest carries no `disk`,
+`guests`, `publicIp` or `publicFqdn`, every granted path is under
+`/dev`, and every `DeviceAllow` node in a guest's own units is
+within the grant (warn dev / error strict).
+
+Checks: `fixture-desktop` names `fixture-guest` under `guests` with
+one render node and one sound card, so building the desktop builds
+the guest's system through `containers.fixture-guest.path`; the
+desktop stub asserts the machine side of the boundary, the guest
+stub the guest side.
+
+**Performance is native.** A container shares the machine's
+kernel: a guest process opens the same device node through the
+same driver as a machine process would, so a transcode or a speech
+model on a granted render node runs at bare-metal speed, and a
+granted sound card carries audio with no resampling or relay
+between the two pipewires. What is shared is time on the GPU, which
+is the same sharing two applications on the seat already do.
 
 ## Android hosts
 
@@ -1730,7 +1886,7 @@ a TTY exists.
 Declaration-side only (works with hosts down): enabled services,
 their expose endpoints, and each declared secret with its category,
 scope, and ciphertext present or missing; `--fleet` = one line per
-host. An Android host shows its plan: packages with versions,
+host, a guest's marked `guest of <machine>`. An Android host shows its plan: packages with versions,
 removals, settings, launcher, owner.
 Anything richer is `nix eval` / `nixos-option`. Never a
 dashboard; never live systemctl.
@@ -1763,7 +1919,8 @@ machine (a usage error on a machine that is not a fleet host);
 `--all` means every host this machine can activate (every NixOS
 host and every Android host; a darwin host only when this Mac is
 it); explicit names deploy
-exactly those. No picker and no confirmation: the name, or `--all`,
+exactly those. A guest's name resolves to its machine (see
+"Guests"). No picker and no confirmation: the name, or `--all`,
 is the intent, and the verb prints its plan line before the first
 host. Several deploy in order, continuing past a failure and
 reporting at the end. Required secrets with no ciphertext are provisioned before
@@ -2006,6 +2163,11 @@ script each under `cli/lint/rules/`:
   nixhold decorates is nixpkgs') and that runs a command carries
   `NoNewPrivileges = true`, the mark of the hardening set (warn dev
   / error strict). Exemptions are a closed list in the rule
+- `15-guests`: a guest is named by at most one machine, shares its
+  machine's `arch`, its machine is NixOS, and it carries no `disk`,
+  `guests`, `publicIp` or `publicFqdn`; every granted device path
+  is under `/dev`; every `DeviceAllow` node in a guest's own units
+  is within its grant (warn dev / error strict; see "Guests")
 - every layout path (defaulted or overridden) exists in the
   worktree — a null `layout.ageIdentityWrapped` is not a path and
   is not checked; `layout.repoUrl` set with `secrets/identity.age`
@@ -2080,6 +2242,27 @@ Architecture:
   UX; the CI fixture covers contract drift.
 - **Host `kind`/`type`/`primary` fields** — profile is the kind;
   VPS-ness derives from declarations; no primary (principle 16).
+- **`hostedBy` on the guest** — the first shape for "Guests": the
+  guest's entry naming its machine. Reversed before building: it
+  inverts control, the placeable thing declaring its place, so
+  moving a guest edits the guest, and a machine's cargo is spread
+  over every guest entry instead of read off the machine. The
+  machine names its guests, the direction `disk` and `profile`
+  already point.
+- **The seat as a guest, and a bare "base" host under both** —
+  systemd-nspawn has no seats (DRM master, input, a VT, logind), a
+  VM takes the GPU from every other guest, and the seat holds
+  nothing a boundary protects. A base host whose only content is a
+  guests list is the machine's own entry with a second name.
+- **A VM boundary for guests** — a container shares the kernel and
+  so shares a GPU and a sound card at native speed; a VM shares
+  neither without passthrough, which is exclusive. One kernel as the
+  trust domain is accepted for a solo operator's fleet.
+- **The device grant derived from the guest's hardening
+  exceptions** — `DeviceAllow` speaks in nodes and classes
+  (`char-alsa`), and a class is every card on the machine, the
+  seat's included; a grant has to name one card. The exceptions
+  are checked against the grant instead.
 - **Appliances as a second roster** (`nixhold.fleet.appliances`, an
   `appliance provision` verb) — a device that is not a host
   duplicates the roster, deploy, status and address derivation, and

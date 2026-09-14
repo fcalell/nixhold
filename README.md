@@ -72,13 +72,15 @@ alone defaults to this machine instead.
 
 ```sh
 nixhold host add [<name>]      # the walk: roster entry, secrets,
-                               # then "install now?"
+                               # then "install now?" (--on <machine>:
+                               # a container of that machine instead)
 nixhold host install [<name>]  # reformat a host (NixOS: disk picker + disko +
                                # nixos-facter; darwin: darwin-rebuild locally)
 nixhold deploy [<name>…|--all] # build + switch this machine, the names, or all
                                # (local; or over ssh as the
                                # operator user, whose sudo password is asked
-                               # for once per host)
+                               # for once per host; a guest's name deploys
+                               # the machine that runs it)
 nixhold update [--all]         # pull, update every input, eval-gate every host,
                                # deploy this machine (or all)
 nixhold secret edit [<host>] [<name>]

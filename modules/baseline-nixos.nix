@@ -22,6 +22,11 @@
     # from one `nixhold.repositories` entry.
     ./repositories
     ./hardware
+    # Both sides of "Guests": what a host sets when it is a container
+    # of another host's machine, and what a machine renders for the
+    # guests its roster entry names. Each gates itself on the roster.
+    ./guests/guest.nix
+    ./guests/machine.nix
     ./cli
     ./home
     ./home/nixos.nix

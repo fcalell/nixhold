@@ -100,6 +100,8 @@ cmd_host_remove() {
     ' "$hosts_file" >"$tmp"
     mv "$tmp" "$hosts_file"
     nh_ok "removed entry from $hosts_file"
+    # A machine that named it as a guest stops naming it.
+    nh_remove_guest_entries "$hosts_file" "$name" || return 1
     nh_fleet_view_reset
   fi
 

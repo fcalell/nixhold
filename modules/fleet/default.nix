@@ -57,6 +57,30 @@ let
     };
   };
 
+  # The grant a machine makes to one guest: device nodes by a path
+  # that names the same hardware on every boot. A render node
+  # (`/dev/dri/renderD*`) is bound as it is and stays shareable; a
+  # sound card (`/dev/snd/by-id/*`) is bound whole — its control and
+  # PCM nodes — and hidden from the machine's own wireplumber, so the
+  # guest's pipewire is its only owner. The machine-side module
+  # (modules/guests/machine.nix) renders both.
+  guestSubmodule = types.submodule {
+    options.devices = mkOption {
+      type = types.listOf types.str;
+      default = [ ];
+      description = ''
+        Device nodes granted to this guest, each a stable path under
+        `/dev`: a render node (`/dev/dri/renderD128`) or a sound
+        card (`/dev/snd/by-id/usb-…`). The card is the unit of a
+        grant, never one of its jacks.
+      '';
+      example = [
+        "/dev/dri/renderD128"
+        "/dev/snd/by-id/usb-Anker_PowerConf_S330_A1B2C3-00"
+      ];
+    };
+  };
+
   hostSubmodule = types.submodule (
     { name, config, ... }:
     let
@@ -162,6 +186,21 @@ let
           '';
           example = "homelab.example.com";
         };
+
+        guests = mkOption {
+          type = types.attrsOf guestSubmodule;
+          default = { };
+          description = ''
+            The roster hosts this machine runs as NixOS containers
+            (see "Guests"). Each key is a host in `hosts` whose own
+            entry does not change: what places a guest is the
+            machine's entry, so a guest moves to bare metal or to
+            another machine by editing machine entries only. The
+            value is the device grant. NixOS hosts only; a guest
+            names no guests of its own.
+          '';
+          example = lib.literalExpression ''{ homelab.devices = [ "/dev/dri/renderD128" ]; }'';
+        };
       };
 
       config = {
@@ -247,6 +286,43 @@ in
           have it in their `networks` field. Consumers walk
           this for cross-host wiring without re-deriving the
           membership predicate.
+        '';
+      };
+
+      guests = mkOption {
+        type = types.attrsOf (
+          types.submodule {
+            options = {
+              machine = mkOption {
+                type = types.str;
+                description = "The host whose `guests` names this one.";
+              };
+              devices = mkOption {
+                type = types.listOf types.str;
+                description = "The machine's device grant, as declared.";
+              };
+              hostAddress = mkOption {
+                type = types.str;
+                description = "The machine's end of the guest's veth pair.";
+              };
+              localAddress = mkOption {
+                type = types.str;
+                description = "The guest's end of its veth pair.";
+              };
+            };
+          }
+        );
+        readOnly = true;
+        description = ''
+          Every guest in the fleet, keyed by its name: the machine
+          that runs it, the device grant, and the two ends of its
+          veth pair. The addresses are derived from the guest's
+          position in the sorted list of every guest, so the two
+          sides of the boundary — the machine's `containers.<guest>`
+          and the guest's own eth0 — read one value and never
+          disagree. A guest named by two machines surfaces here as
+          the alphabetically first machine's; lint rule 15 is what
+          reports the conflict.
         '';
       };
 
