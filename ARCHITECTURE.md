@@ -241,18 +241,24 @@ Concepts, not filesystem (principle 14):
   "Android hosts"). Forkers compose their own by importing
   module values; multiple profiles compose via
   `{ imports = [ ... ]; }`. Everything profile-set is overridable
-  in the host file. A profile owns the whole shape of its host
-  kind, not a starting point for it: `desktopLinux` carries the
-  graphical seat end to end — greetd as the session entry,
-  hyprland, pipewire + rtkit, portals, graphics, NetworkManager,
-  nix-ld, a file manager, the workstation font set, and the wayland
-  environment PAM exports (`NIXOS_OZONE_WL`, `XDG_CURRENT_DESKTOP`,
-  the toolkit backends) — because a variable set in a compositor
-  config reaches that compositor's children and nothing else.
+  in the host file. A profile owns the seat of its host kind and
+  names no application: `desktopLinux` is the graphical seat end
+  to end — graphics, pipewire + rtkit, the portal service, polkit,
+  NetworkManager, nix-ld, the FIDO2 token's udev rules, and the
+  toolkit wayland variables PAM exports (`NIXOS_OZONE_WL`, the
+  GDK/Qt/SDL backends), because a variable set in a compositor
+  config reaches that compositor's children and nothing else. The
+  compositor, the session entry that launches it, the portal that
+  goes with it, `XDG_CURRENT_DESKTOP`, the file manager, fonts and
+  the tool belt are the fleet's, in the host module that carries the
+  compositor; `allowUnfree` is a fleet policy, set in the fleet.
   `workstationDarwin` carries the mac equivalent: Touch ID on
-  `sudo_local` (the darwin half of "Sudo asks") and the same font
-  set. Every value is `mkDefault`, so a host overrides the one
-  option rather than opting out of the profile.
+  `sudo_local` (the darwin half of "Sudo asks") and zsh. `server`
+  is the headless box: documentation off, fwupd off, networkd with
+  the link as its online signal, oomd on the root slice. What every
+  profile installs is `git`, since the CLI clones, and on the Linux
+  seat `libfido2`. Every value is `mkDefault`, so a host overrides
+  the one option rather than opting out of the profile.
 - **Per-host modules (layer 3)** are free-form NixOS/Darwin
   modules (service enables, home fragments, host extras) —
   operator filenames, no framework path conventions. Hardware is

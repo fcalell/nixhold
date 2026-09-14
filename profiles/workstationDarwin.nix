@@ -39,8 +39,6 @@
     };
   };
 
-  nixpkgs.config.allowUnfree = lib.mkDefault true;
-
   programs.zsh.enable = lib.mkDefault true;
 
   # The darwin half of "Sudo asks": every elevation prompts, and on a
@@ -49,22 +47,8 @@
   # survives the OS rewriting /etc/pam.d/sudo on update.
   security.pam.services.sudo_local.touchIdAuth = lib.mkDefault true;
 
-  # Workstation fonts, matching the desktopLinux profile: a nerd font
-  # for the terminal, font-awesome for status-bar glyphs, noto for
-  # everything else. `fonts.packages` is the same option on nix-darwin
-  # and NixOS, and a list, so a fleet appends rather than overrides.
-  fonts.packages = with pkgs; [
-    nerd-fonts.jetbrains-mono
-    font-awesome
-    noto-fonts
-    noto-fonts-cjk-sans
-    noto-fonts-color-emoji
-  ];
-
-  environment.systemPackages = with pkgs; [
-    git
-    ripgrep
-  ];
+  # `git`: the CLI clones the operator's repositories.
+  environment.systemPackages = [ pkgs.git ];
 
   system.stateVersion = lib.mkDefault 5;
 }

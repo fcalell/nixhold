@@ -187,7 +187,7 @@
           # of those, so this check fails if the scoping regresses.
           fixture-node = fixture.nixosConfigurations.fixture-node.config.system.build.toplevel;
 
-          # The desktop profile. Hyprland, greetd, portals, nix-ld and
+          # The desktop profile. The seat: graphics, audio, portals, nix-ld and
           # the wayland session environment are only reachable here —
           # every other NixOS fixture host is a server.
           fixture-desktop = fixture.nixosConfigurations.fixture-desktop.config.system.build.toplevel;

@@ -1,23 +1,33 @@
 # fixture-desktop — the fixture's desktopLinux host, and the only
 # place that profile is built. It serves nothing and is on the tailnet
 # alone: what it covers is the graphical-seat side of the framework —
-# the session entry, the wayland environment, the portal/audio/graphics
-# stack and the identity wiring that only fires when NetworkManager is
-# on.
-{ config, lib, ... }:
+# the wayland environment, the portal/audio/graphics stack and the
+# identity wiring that only fires when NetworkManager is on. The
+# compositor and its session entry are the host's, as on a real
+# fleet; the stub brings the smallest ones.
 {
+  config,
+  lib,
+  pkgs,
+  ...
+}:
+{
+  programs.sway.enable = true;
+  services.greetd = {
+    enable = true;
+    settings.default_session.command = "${pkgs.greetd.tuigreet}/bin/tuigreet --cmd sway";
+  };
+
   # No machine ever ran `host install` for a fixture host, so there is
   # no report to point at: opt out of the facter guard.
   nixhold.hardware.facterReport = null;
 
   assertions = [
     {
-      # greetd IS the session entry on this profile: without a default
-      # session the box boots to a console and the compositor never
-      # starts.
-      assertion =
-        config.services.greetd.enable && config.services.greetd.settings.default_session ? command;
-      message = "fixture-desktop: the desktopLinux profile leaves the host with no graphical session entry";
+      # The profile names no compositor, so it must set nothing that
+      # names one: the session variable is the host's.
+      assertion = !(config.environment.sessionVariables ? XDG_CURRENT_DESKTOP);
+      message = "fixture-desktop: the desktopLinux profile names a compositor (XDG_CURRENT_DESKTOP)";
     }
     {
       # Wayland clients read these from PAM's environment, so they
