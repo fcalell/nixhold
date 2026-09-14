@@ -13,7 +13,7 @@ to choose first.
 | Item | Trigger | Intended shape |
 |---|---|---|
 | `lan` network type + identity for LAN clients | first LAN-only consumer | a LAN address carries no identity signal, so it needs an internal CA / mTLS to say who is calling |
-| L4 protocols (`tcp` / `udp` / `grpc`) | first L4 consumer | the `protocol` enum gains non-HTTP members, and the module that terminates them is a new infra consumer of `nixhold.infra.endpoints` — the list gains a branch, never a silent omission |
+| L4 protocols (`tcp` / `udp` / `grpc`) | met: the dogfood fleet's desktop opens Steam remote play (tcp 27036-27037, udp 27031-27036) on the tailscale interface by hand, invisible to `status` | the `protocol` enum gains non-HTTP members, and the module that terminates them is a new infra consumer of `nixhold.infra.endpoints` — the list gains a branch, never a silent omission |
 | Identity on `internet` endpoints | first internet endpoint that wants framework auth rather than app auth | `forward_auth` against an IdP / OIDC, the internet counterpart of tailnet identity auth; until then `auth = false` stays required-explicit there |
 | Per-interface caddy listeners | first host serving both internet and tailnet endpoints | `bind` to the tailnet address so a mixed-posture host no longer depends on the firewall rule; plus port 80 on the tailnet interface for the redirect vhost. Lifts the mixed-posture assertion |
 | Cross-host routing (service on A, gateway on B) | real consumer | the single-gateway rule holds the door open |

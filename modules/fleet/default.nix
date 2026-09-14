@@ -42,7 +42,7 @@ let
           `"<host>.<magicDnsSuffix>"`. Without it, tailscale
           addresses resolve to `null`.
         '';
-        example = "tail6ac451.ts.net";
+        example = "tail-abc123.ts.net";
       };
 
       domain = mkOption {

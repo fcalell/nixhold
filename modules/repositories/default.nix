@@ -123,7 +123,7 @@ let
             home. Set it only for a repository that does not belong
             beside the others.
           '';
-          example = "~/work/monorepo";
+          example = "~/src/monorepo";
         };
       };
 
@@ -151,7 +151,7 @@ in
         notes = "git@github.com:alice/notes.git";
         monorepo = {
           url = "git@github.com:acme/monorepo.git";
-          path = "~/work/monorepo";
+          path = "~/src/monorepo";
         };
         legacy = {
           url = "ssh://APKAEXAMPLE@git-codecommit.eu-central-1.amazonaws.com/v1/repos/legacy";
