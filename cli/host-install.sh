@@ -578,7 +578,10 @@ nh_local_install() {
 # read through the same $NIXHOLD_IDENTITY_FILE / $NIXHOLD_CLONE_KEY_FILE
 # path, so the operator's seat (the passphrase, or the token in their
 # pocket) is all they bring.
-_NH_BOOTSTRAPPED=0
+# Set from the environment so the handover in nh_reexec_at_fleet_pin
+# carries it: the child's clone step finds the checkout already in
+# place and would otherwise skip the relocation.
+_NH_BOOTSTRAPPED="${NIXHOLD_BOOTSTRAPPED:-0}"
 nh_bootstrap_fleet() {
   local repo="$1" keys="$2" dir parent remote
   case "$repo" in
@@ -633,6 +636,7 @@ nh_bootstrap_fleet() {
     fi
     _NH_CLONING=0
     _NH_BOOTSTRAPPED=1
+    nh_mark_cloned
     nh_ok "cloned fleet to $dir"
   fi
   _NH_FLEET_ROOT="$dir"
@@ -892,6 +896,9 @@ EOF
   fi
   local root
   root="$(nh_fleet_root)" || return 2
+  # Before any prompt and any write: if this run cloned the checkout,
+  # the CLI that finishes the install is the one that checkout pins.
+  nh_reexec_at_fleet_pin "$root"
 
   # Host selection.
   if [ -z "$name" ]; then

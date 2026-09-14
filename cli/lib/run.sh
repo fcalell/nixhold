@@ -137,7 +137,52 @@ nh_clone_fleet() {
     nh_err "cloned $remote to $dir but it holds no flake.nix"
     return 1
   fi
+  nh_mark_cloned
   nh_ok "cloned fleet to $dir"
+}
+
+# nh_reexec_at_fleet_pin <fleet-root> — hand the rest of this run to
+# the CLI this fleet pins, per ARCHITECTURE "The installing CLI is the
+# fleet's".
+#
+# A bare machine is always reached by a CLI from somewhere other than
+# the fleet's lock: the one the installer ISO baked (the fleet's pin
+# when the image was written) or the one an operator typed a url for
+# on a fresh Mac. Either can disagree with the framework modules the
+# host is about to be built from. The checkout that was just cloned
+# re-exports the framework's own `apps` (lib/mkFleet.nix), so its
+# pinned CLI is one `nix run` away.
+#
+# Only after a clone this process made: a steady-state run is already
+# on its fleet's pin, and a dev run out of a framework checkout must
+# not be silently swapped for the fleet's. A child rather than `exec`,
+# because the dispatcher's EXIT trap owns the scratch root and `exec`
+# would leave the plaintext in it behind.
+nh_reexec_at_fleet_pin() {
+  local root="$1" pinned="" system="" rc=0
+  [ -z "${NIXHOLD_REEXEC:-}" ] || return 0
+  nh_cloned_this_process || return 0
+  # Sources run directly have no package path to compare, so there is
+  # nothing to be stale against.
+  [ -n "${NIXHOLD_SELF:-}" ] || return 0
+
+  system="$(nh_system)" || return 0
+  pinned="$(nix eval --raw --no-warn-dirty \
+    "path:$root#packages.$system.nixhold.outPath" 2>/dev/null)" || {
+    nh_warn "could not read the CLI $root pins — continuing on this one"
+    return 0
+  }
+  [ "$pinned" != "$NIXHOLD_SELF" ] || return 0
+
+  nh_info "this CLI is not the one $root pins — re-running there"
+  nh_info "  nix run path:$root#nixhold -- ${_NH_ARGV[*]}"
+  # NIXHOLD_BOOTSTRAPPED carries "the checkout was cloned into the
+  # framework's default directory" across: the child's own clone step
+  # finds it already there, and would otherwise skip the relocation to
+  # the host's own fleetDir.
+  NIXHOLD_REEXEC=1 NIXHOLD_BOOTSTRAPPED="${_NH_BOOTSTRAPPED:-0}" \
+    nix run --no-warn-dirty "path:$root#nixhold" -- "${_NH_ARGV[@]}" || rc=$?
+  exit "$rc"
 }
 
 # nh_system — the system double this CLI runs on: baked in by the
@@ -271,6 +316,24 @@ nh_tmpdir() {
     return 1
   }
   printf '%s' "$d"
+}
+
+# nh_mark_cloned / nh_cloned_this_process — did THIS run clone the
+# fleet checkout it is working from?
+#
+# A file under the process scratch root rather than a shell variable,
+# for the reason the scratch root itself is keyed on `$$`:
+# nh_clone_fleet runs inside `$(nh_fleet_root)`, and a subshell's
+# assignments are thrown away. The dispatcher's exit wipe removes it
+# with everything else.
+nh_mark_cloned() {
+  local root
+  root="$(nh_tmp_root)" || return 0
+  : >"$root/cloned" || true
+}
+
+nh_cloned_this_process() {
+  [ -f "$(nh_scratch_root_path)/cloned" ]
 }
 
 # nh_at_exit <function-name> — register a handler the dispatcher's

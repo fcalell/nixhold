@@ -48,6 +48,10 @@ trap 'nh_run_at_exit; exit 143' TERM
 # other way a verb dies mid-flight with plaintext staged.
 trap 'nh_run_at_exit; exit 129' HUP
 
+# Set by main() before anything is dispatched; declared here so the
+# handover helper can read it under `set -u` whatever the entry point.
+_NH_ARGV=()
+
 usage() {
   cat <<'EOF'
 nixhold — manage a nixhold-declared fleet. An argument in [brackets]
@@ -81,6 +85,10 @@ EOF
 # Two-token verbs ("host add", "secret edit", …) get joined into
 # one subcommand-script name so the dispatcher stays flat.
 main() {
+  # What the operator typed, verbatim: a verb that bootstraps a
+  # checkout replays exactly this on the CLI that checkout pins
+  # (nh_reexec_at_fleet_pin).
+  _NH_ARGV=("$@")
   if [ "$#" -eq 0 ]; then
     usage
     exit 0

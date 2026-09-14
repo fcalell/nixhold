@@ -63,6 +63,7 @@ EOF
   nh_require_cmd gum jq nix age age-keygen
   local root
   root="$(nh_fleet_root)" || return 1
+  nh_reexec_at_fleet_pin "$root"
 
   if [ -z "$name" ]; then
     name="$(nh_prompt_input "Name for the new host")" || name=""

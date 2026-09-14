@@ -1588,7 +1588,7 @@ exists, the installer ISO is itself a sufficient operator seat.
 | L2 first host | `nixhold host add [<name>]` — the walk: name, profile, arch (defaulted from the machine when it is the target), networks only when the fleet declares more than one, public address only when an internet network exists, stateVersion defaulted from the pinned inputs; entry written to `layout.hostsFile`, then the fleet's one-time artifacts: the operator identity when `keys/operator.pub` is empty, the fleet key when `keys/fleet.key.age` is missing, and the framework secrets minted (`identity` — its pubkey printed with every forge the fleet's repositories name, and seeded into `keys/login.pub` — and `password`) alongside any required-missing one. Everything generated is committed, then "install now?" — this machine (on the ISO, or a Mac), over ssh to an address, or later |
 | L2b later host | The same walk, and that is all of it: nothing is minted and nothing is rekeyed. `identity` and `password` are fleet-scoped and already provisioned, the fleet key already opens every ciphertext, and the new machine gets that key at install. A host joins with no forge step, no new password and no route prompt |
 | L3 NixOS host | On-prem: boot the fleet ISO on the target, `nixhold host install` → the operator route → "new host…" runs the add walk and installs in place. VPS / from another machine: `nixhold host add <name>` and answer "over ssh" with the address (scripted: `--install root@<ip>`); the fleet ISO makes the target reachable with zero typing, any installer works |
-| L3d darwin host | On the Mac itself: name the account after `identity.username`, install Command Line Tools and vanilla multi-user Nix, then `nix run github:fcalell/nixhold#nixhold -- host install <mac>`. With no fleet checkout yet, `--repo <owner/repo> --keys <dir>` — the directory holding `identity.age`, and `operator.age` when the fleet keeps one, copied from any checkout or the safekeeping copy — clones with the `identity` key first, so a wiped Mac needs one operator route and nothing else. Preflight, `/etc/nixhold/fleet.key` written, the Mac's live ssh host pubkey recorded, first switch, secrets verified — one command (see CLI) |
+| L3d darwin host | On the Mac itself: name the account after `identity.username`, install Command Line Tools and vanilla multi-user Nix, then `nix run github:fcalell/nixhold#nixhold -- host install <mac>`. With no fleet checkout yet, `--repo <owner/repo> --keys <dir>` — the directory holding `identity.age`, and `operator.age` when the fleet keeps one, copied from any checkout or the safekeeping copy — clones with the `identity` key first, so a wiped Mac needs one operator route and nothing else; the run then continues on the CLI that checkout pins, so the typed `github:` url bootstraps rather than decides the version (see "The installing CLI is the fleet's"). Preflight, `/etc/nixhold/fleet.key` written, the Mac's live ssh host pubkey recorded, first switch, secrets verified — one command (see CLI) |
 | L4 add service | edit host/profile module → `nixhold deploy <name>` (provisions missing required secrets first) |
 | L5 new service module | `nixhold service new <name>` → edit |
 | L6 update inputs | `nixhold update` (from any directory): pull → baseline eval of every host → flake update → the inputs that moved, from the lock diff → the eval gate (every host evaluates; the warnings and spine-version deltas; a kernel move says "reboot required") → `deploy` this machine (`--all`: every host this machine can activate). A gate failure restores the lock and stops |
@@ -1694,7 +1694,11 @@ equals repo + a route, the same boundary as principle 16:
   run; avahi (`root@nixhold-installer.local`).
 
 Not baked: repo contents, plaintext secrets, the fleet key, host
-keys, build closures. The ISO goes stale only when the repo
+keys, build closures. The CLI it carries is a **bootstrap**: it
+opens the operator route and clones, and then hands the run to the
+CLI the clone pins (see "The installing CLI is the fleet's"), so a
+verb fixed after the stick was written still reaches the target.
+The ISO therefore goes stale only when the repo
 location, login keys, operator recipients, or the `identity` key
 change — flash once, reuse for years. Installs need network
 (private repo clone + closure downloads).
@@ -1824,6 +1828,32 @@ Notable shapes:
   installer (or refuses without a terminal), so a fleet machine
   can't be formatted by accident. No hostname auto-detection — the
   guard is the environment marker.
+- **The installing CLI is the fleet's.** A bare machine is reached
+  by a CLI that came from somewhere other than this fleet's lock:
+  the one baked into the ISO (the fleet's pin *when the image was
+  written*) or the one an operator types a url for on a fresh Mac
+  (`nix run github:…#nixhold`, whatever HEAD is that day). Either
+  can be older or newer than the framework modules the host is
+  about to be built from. So a verb that **cloned a checkout in
+  this process** re-runs itself at that checkout's pin —
+  `nix run path:<checkout>#nixhold`, which resolves because
+  `mkFleet` re-exports the framework's `apps`. The image's copy is
+  a bootstrap: route, clone, hand over.
+  - Only after a clone this process made. A steady-state run is
+    already on its fleet's pin, and a dev run out of a framework
+    checkout must not be silently swapped for the fleet's.
+  - The clone is recorded as a file under the process scratch root,
+    not a shell variable: `nh_clone_fleet` runs inside
+    `$(nh_fleet_root)`, whose assignments a subshell throws away.
+  - As a **child**, not `exec`: the dispatcher's EXIT trap owns the
+    scratch root, and `exec` would leave the plaintext it holds on
+    disk. The child's exit status is the run's.
+  - `$NIXHOLD_REEXEC` is the loop guard; `$NIXHOLD_BOOTSTRAPPED`
+    carries "this checkout was cloned into the framework's default
+    directory" across the handover, so the child still relocates it
+    to the host's `fleetDir`.
+  - The operator's route opens once per process, so the handover
+    costs one more touch (or passphrase) right after the clone.
 - **Both install paths build into the target store.** The ISO's
   `/nix/store` is an overlay whose writable layer is an *unsized*
   tmpfs (`iso-image.nix`: `options = [ "mode=0755" ]`), so it is

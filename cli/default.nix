@@ -59,8 +59,14 @@ pkgs.writeShellApplication {
   # must know which one they are.
   # And the framework's checkout directory, for the one verb that
   # runs before there is a fleet to evaluate (lib/defaults.nix).
+  # `NIXHOLD_SELF` is this package's own store path: what a
+  # bootstrapping verb compares against the CLI the fleet it just
+  # cloned pins, before handing the run over to it. Unset when the
+  # sources are run directly, which is what makes that a no-op in a
+  # dev checkout.
   text = ''
     export NIXHOLD_LIB_ROOT="${./.}"
+    export NIXHOLD_SELF="${placeholder "out"}"
     export NIXHOLD_LOCK="${../flake.lock}"
     export NIXHOLD_SYSTEM="${pkgs.stdenv.hostPlatform.system}"
     export NIXHOLD_REPOSITORIES_DIR="${repositoriesDir}"
