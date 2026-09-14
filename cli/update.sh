@@ -3,18 +3,21 @@
 # The input-refresh workflow (lifecycle L6), runnable from any
 # directory — nh_fleet_root resolves the checkout.
 #   1. git pull --ff-only in the fleet root
-#   2. the baseline: every host evaluates as the checkout stands
-#   3. nix flake update (flake.lock)
-#   4. the inputs that moved, from the lock diff
-#   5. the eval gate: every host evaluates against the new lock; the
-#      warnings that appeared and the spine versions that moved; a
-#      kernel move ends with "reboot required". A host that fails
-#      restores the lock and stops the verb before deploy.
-#   6. hand off to `deploy`: this machine, or --all
-# Nothing new from step 1 or 3 exits early after the baseline: there
-# is nothing to deploy for. All inputs move or none — no per-input
-# flag, because a held input is the "behind" state lint flags
-# (rule 13) on every later run.
+#   2. the pins that have no file yet, written (ARCHITECTURE "Pins")
+#   3. the baseline: every host evaluates as the checkout stands
+#   4. nix flake update (flake.lock)
+#   5. every pin resolved against its `latest`; what moved: inputs
+#      from the lock diff, pins by version
+#   6. the eval gate: every host evaluates against the new lock and
+#      pins; the warnings that appeared and the spine versions that
+#      moved; a kernel move ends with "reboot required". A host that
+#      fails restores the lock and the pin files and stops the verb
+#      before deploy.
+#   7. hand off to `deploy`: this machine, or --all
+# Nothing new from step 1, 2, 4 or 5 exits early after the baseline:
+# there is nothing to deploy for. All inputs and pins move or none —
+# no per-input flag, because a held input is the "behind" state lint
+# flags (rule 13) on every later run.
 
 # The spine: the versions the gate reports when they move, per
 # platform, as one Nix attrset off the host's configuration `h`
@@ -53,12 +56,12 @@ cmd_update() {
     esac
   done
 
-  nh_require_cmd nix git jq || return 1
+  nh_require_cmd nix git jq curl || return 1
   local root
   root="$(nh_fleet_root)" || return 1
 
-  # Scratch for the lock snapshot, wiped by the dispatcher's exit
-  # handler (a trap here would replace it).
+  # Scratch for the lock and pin snapshots, wiped by the dispatcher's
+  # exit handler (a trap here would replace it).
   local tmp
   tmp="$(nh_tmpdir update)" || return 1
 
@@ -66,6 +69,16 @@ cmd_update() {
   nh_update_pull "$root" || return 1
   head_after="$(git -C "$root" rev-parse HEAD 2>/dev/null || true)"
   head_before="$_NH_UPDATE_HEAD_BEFORE"
+
+  # A pin declared and not yet written has no earlier state to gate
+  # against, and a checkout that declares one does not build without
+  # it: written first, so the baseline sees it.
+  local new_pins=""
+  new_pins="$(nh_pins_bootstrap)" || return 1
+  if [ -n "$new_pins" ]; then
+    nh_info "pins written:"
+    printf '%s\n' "$new_pins" | sed 's/^/    /' >&2
+  fi
 
   # The baseline runs before the lock is touched: a host that fails
   # here is broken by the checkout, not by an input, and restoring a
@@ -76,16 +89,17 @@ cmd_update() {
     return 1
   }
 
-  local lock="$root/flake.lock" moved=""
+  # A Ctrl-C between the update and the gate leaves the lock and the
+  # pins moved and unchecked; the exit handler restores them until
+  # the gate passes and disarms it.
+  local lock="$root/flake.lock" moved="" moved_pins=""
   if [ -f "$lock" ]; then
     cp "$lock" "$tmp/flake.lock.before"
-    # A Ctrl-C between the update and the gate leaves the lock moved
-    # and unchecked; the exit handler restores it until the gate
-    # passes and clears the arming below.
     _NH_UPDATE_LOCK="$lock"
     _NH_UPDATE_LOCK_BEFORE="$tmp/flake.lock.before"
-    nh_at_exit nh_update_rollback
   fi
+  _NH_UPDATE_PINS="$tmp/pins"
+  nh_at_exit nh_update_rollback
   nh_info "nix flake update ($root)"
   ( cd "$root" && nix flake update ) || {
     nh_err "nix flake update failed"
@@ -96,30 +110,44 @@ cmd_update() {
   else
     moved="(new flake.lock)"
   fi
+  moved_pins="$(nh_pins_move "$tmp/pins")" || {
+    nh_update_rollback
+    nh_err "a pin could not be resolved — flake.lock and the pin files restored, nothing deployed"
+    return 1
+  }
 
-  if [ -z "$moved" ] && [ "$head_before" = "$head_after" ]; then
-    _NH_UPDATE_LOCK_BEFORE=""
-    nh_ok "nothing to update — inputs and checkout are already current"
+  if [ -z "$moved" ] && [ -z "$moved_pins" ] && [ -z "$new_pins" ] && [ "$head_before" = "$head_after" ]; then
+    nh_update_disarm
+    nh_ok "nothing to update — inputs, pins and checkout are already current"
     return 0
   fi
   [ "$head_before" = "$head_after" ] || nh_info "checkout moved ${head_before:0:12} → ${head_after:0:12}"
-  if [ -n "$moved" ]; then
-    nh_info "inputs moved:"
-    printf '%s\n' "$moved" | sed 's/^/    /' >&2
-    nh_info "gate: evaluating every host against the new lock"
+  if [ -n "$moved" ] || [ -n "$moved_pins" ]; then
+    if [ -n "$moved" ]; then
+      nh_info "inputs moved:"
+      printf '%s\n' "$moved" | sed 's/^/    /' >&2
+    fi
+    if [ -n "$moved_pins" ]; then
+      nh_info "pins moved:"
+      printf '%s\n' "$moved_pins" | sed 's/^/    /' >&2
+    fi
+    nh_info "gate: evaluating every host against the new lock and pins"
     if ! nh_update_eval "$root" "$tmp" after; then
       nh_update_rollback
-      nh_err "an input broke a host — flake.lock restored, nothing deployed. The inputs that moved:"
-      printf '%s\n' "$moved" | sed 's/^/    /' >&2
+      nh_err "an input or a pin broke a host — flake.lock and the pin files restored, nothing deployed. What moved:"
+      printf '%s\n' "$moved" "$moved_pins" | sed '/^$/d; s/^/    /' >&2
       nh_err "the fix belongs where the breakage is (nixhold for a framework module), not in a held pin"
       return 1
     fi
-    _NH_UPDATE_LOCK_BEFORE=""
+    nh_update_disarm
     if nh_update_report "$tmp"; then
       nh_warn "a kernel moved — deploy activates the userland; the new kernel runs only after a reboot"
     fi
-    nh_info "commit the lock:  git -C $root commit -m 'flake: update inputs' flake.lock"
   fi
+  nh_update_disarm
+  local files
+  files="$(nh_update_commit_files "$root" "$moved" "$tmp/pins" "$new_pins")"
+  [ -z "$files" ] || nh_info "commit what moved:  git -C $root commit -m 'flake: update inputs' $files"
 
   . "$NIXHOLD_LIB_ROOT/deploy.sh"
   if [ "$all" -eq 1 ]; then
@@ -129,15 +157,91 @@ cmd_update() {
   fi
 }
 
-# The lock restore, armed between `nix flake update` and a passed
-# gate (see cmd_update); a no-op once disarmed.
+# The lock and pin restore, armed between `nix flake update` and a
+# passed gate (see cmd_update); a no-op once disarmed. The pin
+# snapshot dir holds `<name>.before` per moved pin and an index of
+# "<name><TAB><worktree file>" lines, written by nh_pins_move.
 _NH_UPDATE_LOCK=""
 _NH_UPDATE_LOCK_BEFORE=""
+_NH_UPDATE_PINS=""
 nh_update_rollback() {
-  [ -n "$_NH_UPDATE_LOCK_BEFORE" ] && [ -f "$_NH_UPDATE_LOCK_BEFORE" ] || return 0
-  cp "$_NH_UPDATE_LOCK_BEFORE" "$_NH_UPDATE_LOCK" || return 1
+  local name file
+  if [ -n "$_NH_UPDATE_LOCK_BEFORE" ] && [ -f "$_NH_UPDATE_LOCK_BEFORE" ]; then
+    cp "$_NH_UPDATE_LOCK_BEFORE" "$_NH_UPDATE_LOCK" || return 1
+    _NH_UPDATE_LOCK_BEFORE=""
+    nh_warn "flake.lock restored to its pre-update state"
+  fi
+  if [ -n "$_NH_UPDATE_PINS" ] && [ -f "$_NH_UPDATE_PINS/index" ]; then
+    while IFS=$'\t' read -r name file; do
+      cp "$_NH_UPDATE_PINS/$name.before" "$file" || return 1
+      nh_warn "pin $name restored to its pre-update state"
+    done <"$_NH_UPDATE_PINS/index"
+    _NH_UPDATE_PINS=""
+  fi
+  return 0
+}
+
+nh_update_disarm() {
   _NH_UPDATE_LOCK_BEFORE=""
-  nh_warn "flake.lock restored to its pre-update state"
+  _NH_UPDATE_PINS=""
+}
+
+# nh_pins_bootstrap — write every declared pin whose file does not
+# exist yet. Prints "<name>: (new) → <version>" per file written.
+nh_pins_bootstrap() {
+  local pins name decl file version
+  pins="$(nh_fleet_pins)" || return 1
+  for name in $(printf '%s' "$pins" | jq -r 'keys[]'); do
+    decl="$(printf '%s' "$pins" | jq -c --arg n "$name" '.[$n]')"
+    file="$(nh_pin_file "$name" "$(printf '%s' "$decl" | jq -r '.file')")" || return 1
+    [ -e "$file" ] && continue
+    mkdir -p "$(dirname "$file")" || return 1
+    version="$(nh_pin_fetch "$name" "$(printf '%s' "$decl" | jq -r '.latest')" "$(printf '%s' "$decl" | jq -r '.manifest')" "$file")" || return 1
+    printf '%s: (new) → %s\n' "$name" "$version"
+  done
+}
+
+# nh_pins_move <snapshot-dir> — resolve every declared pin against
+# its `latest`; a file whose version differs is snapshotted and
+# rewritten. Prints "<name>: <old> → <new>" per move.
+nh_pins_move() {
+  local snap="$1" pins name decl file old new fetched
+  pins="$(nh_fleet_pins)" || return 1
+  mkdir -p "$snap" || return 1
+  for name in $(printf '%s' "$pins" | jq -r 'keys[]'); do
+    decl="$(printf '%s' "$pins" | jq -c --arg n "$name" '.[$n]')"
+    file="$(nh_pin_file "$name" "$(printf '%s' "$decl" | jq -r '.file')")" || return 1
+    old="$(nh_pin_version "$file")"
+    fetched="$snap/$name.new"
+    new="$(nh_pin_fetch "$name" "$(printf '%s' "$decl" | jq -r '.latest')" "$(printf '%s' "$decl" | jq -r '.manifest')" "$fetched")" || return 1
+    [ "$new" != "$old" ] || continue
+    cp "$file" "$snap/$name.before" || return 1
+    printf '%s\t%s\n' "$name" "$file" >>"$snap/index"
+    cp "$fetched" "$file" || return 1
+    printf '%s: %s → %s\n' "$name" "$old" "$new"
+  done
+}
+
+# nh_update_commit_files <root> <lock-diff> <snapshot-dir> <new-pins>
+# — the paths that moved, relative to the fleet root, for the commit
+# hint: the lock when an input did, every pin file written or moved.
+nh_update_commit_files() {
+  local root="$1" moved="$2" snap="$3" new_pins="$4" out="" name file pins
+  [ -z "$moved" ] || out="flake.lock"
+  if [ -f "$snap/index" ]; then
+    while IFS=$'\t' read -r name file; do
+      out="$out${out:+ }${file#"$root"/}"
+    done <"$snap/index"
+  fi
+  if [ -n "$new_pins" ]; then
+    pins="$(nh_fleet_pins)" || return 1
+    while IFS= read -r name; do
+      name="${name%%:*}"
+      file="$(nh_pin_file "$name" "$(printf '%s' "$pins" | jq -r --arg n "$name" '.[$n].file')")" || return 1
+      out="$out${out:+ }${file#"$root"/}"
+    done <<<"$new_pins"
+  fi
+  printf '%s' "$out"
 }
 
 # nh_update_probe <root> <host> <platform> <out.json> — one eval per

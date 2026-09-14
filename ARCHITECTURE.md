@@ -1665,7 +1665,7 @@ exists, the installer ISO is itself a sufficient operator seat.
 | L3d darwin host | On the Mac itself: name the account after `identity.username`, install Command Line Tools and vanilla multi-user Nix, then `nix run github:fcalell/nixhold#nixhold -- host install <mac>`. With no fleet checkout yet, `--repo <owner/repo> --keys <dir>` — the directory holding `identity.age`, and `operator.age` when the fleet keeps one, copied from any checkout or the safekeeping copy — clones with the `identity` key first, so a wiped Mac needs one operator route and nothing else; the run then continues on the CLI that checkout pins, so the typed `github:` url bootstraps rather than decides the version (see "The installing CLI is the fleet's"). Preflight, `/etc/nixhold/fleet.key` written, the Mac's live ssh host pubkey recorded, first switch, secrets verified — one command (see CLI) |
 | L4 add service | edit host/profile module → `nixhold deploy <name>` (provisions missing required secrets first) |
 | L5 new service module | `nixhold service new <name>` → edit |
-| L6 update inputs | `nixhold update` (from any directory): pull → baseline eval of every host → flake update → the inputs that moved, from the lock diff → the eval gate (every host evaluates; the warnings and spine-version deltas; a kernel move says "reboot required") → `deploy` this machine (`--all`: every host this machine can activate). A gate failure restores the lock and stops |
+| L6 update inputs and pins | `nixhold update` (from any directory): pull → pins with no file yet written → baseline eval of every host → flake update → pins resolved → what moved: inputs from the lock diff, pins by version → the eval gate (every host evaluates; the warnings and spine-version deltas; a kernel move says "reboot required") → `deploy` this machine (`--all`: every host this machine can activate). A gate failure restores the lock and the pin files and stops |
 | L7 reinstall/reformat | Boot the ISO, `nixhold host install` → the operator route → pick the host (or `host install <name> --remote root@<ip>` from a fleet machine; the picker there asks for the address). The fleet key is installed from `keys/fleet.key.age` (the route is already open, the clone needed it) → a fresh ssh host key is minted and its pubkey rewritten at `keys/hosts/<name>.pub` → secrets still decrypt, because the recipient set never mentioned the machine → nothing else generated |
 | L8 rename | manual: `git mv secrets/<old> secrets/<new>`, `git mv keys/hosts/<old>.pub keys/hosts/<new>.pub`, edit hostsFile, reinstall. No rekey — the recipients do not know the host's name |
 | L9 remove | `nixhold host remove [<name>]` — deletes the fleet entry, `hosts/<n>`, `secrets/<n>/` and `keys/hosts/<n>.pub`. No rekey: nothing was encrypted to that machine. It still *holds* the fleet key, though, so the verb ends by naming the consequence — if the hardware is not being wiped, `nixhold secret rotate` — and decommissioning the machine is the operator's job |
@@ -1837,9 +1837,10 @@ nixhold host remove [<name>] [--yes]
 nixhold deploy [<name>…|--all] [--mode switch|boot|test] [--dry-run] [--target <addr>]
                                                     no name: this machine; --all: every host it
                                                     can activate; several: in order
-nixhold update [--all]                              git pull → baseline eval → nix flake update
-                                                    → moved inputs → eval gate → deploy (same
-                                                    host rule); a failed gate restores the lock
+nixhold update [--all]                              git pull → new pin files → baseline eval →
+                                                    nix flake update → moved inputs and pins →
+                                                    eval gate → deploy (same host rule); a failed
+                                                    gate restores the lock and the pin files
 nixhold status [<name>] [--fleet]
 nixhold lint [--strict]
 nixhold logs [<host>] [<service>] [--lines N] [--since <when>] [--follow]
@@ -2091,13 +2092,15 @@ closure is in place, not that the checkouts it declares exist.
 ### `nixhold update`
 
 `git pull --ff-only` in the fleet root (skipped without an
-upstream), a baseline eval of every host, `nix flake update`, then
-the inputs that moved — read from the lock diff, `<input>: <old rev>
-→ <new rev>` — the eval gate, and a hand-off to `deploy` under its
-host rule: this machine, or every eligible host with `--all`. A run
-where neither the checkout nor an input moved stops after the
-baseline. The lock is never auto-committed; the verb ends with the
-commit command.
+upstream), the pins that have no file yet (see "Pins"), a baseline
+eval of every host, `nix flake update`, every pin resolved against
+its `latest`, then what moved: inputs from the lock diff, `<input>:
+<old rev> → <new rev>`, and pins by version, `<pin>: <old> → <new>`.
+Then the eval gate, and a hand-off to `deploy` under its host rule:
+this machine, or every eligible host with `--all`. A run where
+neither the checkout, an input nor a pin moved stops after the
+baseline. Neither the lock nor a pin file is auto-committed; the verb
+ends with the commit command.
 
 **The eval gate.** One `nix eval` per host per side, reading three
 things off the configuration: `system.build.toplevel.drvPath`,
@@ -2120,10 +2123,10 @@ kernel is the one state a deploy cannot see.
   touched. A host that fails there is broken by the checkout, not by
   an input, and the verb stops with that finding — restoring a lock
   that never moved would report a fix that fixed nothing.
-- A host that fails **after** the update fails the gate: the lock is
-  restored from the pre-update copy, the lock diff is printed beside
-  the error so the operator sees what moved, and the verb exits
-  non-zero before `deploy`. The fleet never carries a combination
+- A host that fails **after** the update fails the gate: the lock
+  and the pin files are restored from their pre-update copies, what
+  moved is printed beside the error, and the verb exits non-zero
+  before `deploy`. The fleet never carries a combination
   that does not evaluate. All inputs move or none: the verb has no
   per-input flag, because a held input is the diverged state lint
   flags on every later run (see "Inputs: who pins what").
@@ -2161,6 +2164,63 @@ and older than nixhold's pin is framework code on a base it was not
 written for (warn dev / error strict). The framework's lock is
 refreshed on its own cadence so the tested floor stays near the
 consumers (ROADMAP); until it is, "ahead" only grows.
+
+### Pins
+
+A **pin** is an upstream artifact the fleet builds from that no
+flake input carries: a vendor release published outside any
+Nix-readable channel. Its state is one committed JSON file, written
+by the CLI and read by Nix, the way `flake.lock` is state the
+operator moves and never authors. A module declares the pin where it
+consumes it, as it declares a secret:
+
+```nix
+nixhold.pins.claude-code = {
+  file = ./release.json;
+  latest = "https://downloads.claude.ai/claude-code-releases/latest";
+  manifest = "https://downloads.claude.ai/claude-code-releases/\${version}/manifest.json";
+};
+```
+
+`file` is the pin file, a path inside the fleet checkout. `latest` is
+a URL whose body is the current version string. `manifest` is the URL
+of the release manifest at a version, `${version}` substituted; its
+body is JSON with a `.version` field and is committed verbatim as
+`file`. `value` is derived on the option, the file parsed, so the
+declaring module reads `pin.value.version` and whatever else the
+manifest carries, and holds no version and no hash of its own. A
+declared pin whose file is absent throws when `value` is forced,
+naming `nixhold update`; the declaration itself evaluates, which is
+what lets `update` read it before the file exists.
+
+The option exists in the NixOS, darwin, Android and home-manager
+module sets. The framework's home wiring lifts the operator's
+home-manager declarations into the host's `nixhold.pins`, so the CLI
+reads one option per host and unions the declarations by name. A
+name declared on two hosts with different fields is a lint violation,
+as is a declared file that is missing, or one that parses with no
+`.version`. The file's store path is re-rooted to the worktree by the
+mechanism layout paths use, and a file outside the checkout is
+refused for the same reason.
+
+Kinds are a closed list of one: the manifest kind above. A
+`github-release` kind (latest release, asset URL, prefetched hash) is
+the ROADMAP's second member.
+
+`nixhold update` moves pins in the same run as the lock. A declared
+pin with no file yet is written before the baseline: there is no
+earlier state to gate against, and a checkout that declares a pin
+without its file does not build. After `nix flake update`, each pin
+is resolved again, `latest` then the manifest at that version, and
+when its `.version` differs from the file's the file is rewritten and
+the move reported beside the lock diff, `<pin>: <old> → <new>`. Pin
+files are snapshotted with the lock and restored with it when the
+gate fails. A run where only a pin moved still goes through the gate
+and hands off to `deploy`. No per-pin flag: all move or none, the
+rule inputs already have. What the gate cannot see is a manifest
+whose checksum does not match its binary; that surfaces as a
+fixed-output mismatch at the deploy build, and it is the vendor's
+inconsistency.
 
 ### `nixhold secret list`
 
@@ -2320,6 +2380,10 @@ script each under `cli/lint/rules/`:
   `guests`, `publicIp` or `publicFqdn`; every granted device path
   is under `/dev`; every `DeviceAllow` node in a guest's own units
   is within its grant (warn dev / error strict; see "Guests")
+- `16-pins`: a `nixhold.pins.<name>` declared on two hosts agrees
+  field for field; every declared pin file is inside the checkout,
+  exists in the worktree and parses with a `.version` (a missing
+  file names `nixhold update`). See "Pins"
 - every layout path (defaulted or overridden) exists in the
   worktree — a null `layout.ageIdentityWrapped` is not a path and
   is not checked; `layout.repoUrl` set with `secrets/identity.age`

@@ -81,8 +81,8 @@ nixhold deploy [<name>…|--all] # build + switch this machine, the names, or al
                                # operator user, whose sudo password is asked
                                # for once per host; a guest's name deploys
                                # the machine that runs it)
-nixhold update [--all]         # pull, update every input, eval-gate every host,
-                               # deploy this machine (or all)
+nixhold update [--all]         # pull, update every input and pin, eval-gate
+                               # every host, deploy this machine (or all)
 nixhold secret edit [<host>] [<name>]
                                # provision a missing secret, or edit one
 nixhold secret rekey           # re-encrypt to current recipients

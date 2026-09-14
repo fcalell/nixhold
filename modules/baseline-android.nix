@@ -14,6 +14,7 @@
     ./fleet
     ./fleet/derived.nix
     ./secrets
+    ./pins
     ./android
   ];
 }

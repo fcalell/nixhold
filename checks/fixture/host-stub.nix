@@ -33,6 +33,7 @@
     ./modules/fixtureweb.nix
     ./known-hosts-assertions.nix
     ./repositories.nix
+    ./pins.nix
     # The forker idiom, which is what the fixture stands in for: a
     # host imports the implementations of the services it enables.
     inputs.nixhold.modules.services.nixos.vaultwarden

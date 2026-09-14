@@ -17,6 +17,7 @@
     ./secrets
     ./secrets/env.nix
     ./secrets/nixos.nix
+    ./pins
     # Operator checkouts as fleet data: the env secret, the forge
     # ssh wiring, the direnv library and the clone step all follow
     # from one `nixhold.repositories` entry.

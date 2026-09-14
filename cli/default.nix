@@ -24,6 +24,8 @@ pkgs.writeShellApplication {
     gawk
     gnugrep
     jq
+    # `update` resolves each pin's `latest` and manifest over HTTP.
+    curl
     gum
     openssh
     age

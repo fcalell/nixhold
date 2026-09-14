@@ -78,7 +78,7 @@ through):
 
 | Item | Trigger | Intended shape |
 |---|---|---|
-| APK pins move with `nixhold update` | the first Android host whose APK lags its release by more than one `update` | for each `environment.systemPackages` entry whose URL is a GitHub release asset, `update` reads the latest release, rewrites the URL and hash, and the eval gate covers the android plans it already evaluates; a pin that is not a release asset stays a hand edit |
+| A `github-release` pin kind | the first Android host whose APK lags its release by more than one `update` | the second member of the pins' closed kind list (ARCHITECTURE "Pins"): `latest` is the forge's latest-release endpoint, the pin file records the asset URL and its prefetched hash, and the android plan the gate already evaluates reads them as `value`; the living-room APK moves from a hand-edited `fetchurl` to a declared pin |
 | `nixhold.deploy.network` option | operator wants a fleet-wide deploy path other than the tailnet | today the address is the tailnet entry of `derived.address.<host>` when it resolves, else the first non-null one; `--target` overrides |
 | `host rename` verb | the manual flow (L8) becomes a real pain | `git mv secrets/<old> secrets/<new>` + `git mv keys/hosts/<old>.pub …` + hostsFile edit + reinstall, in one verb. No rekey: recipients do not know the host's name |
 | Framework-managed remote builders | a consumer informs the design | `fleet.builders.<system>` — reserved, unclaimed |

@@ -133,6 +133,13 @@ in
       description = "the fleet's outbound SSH key (fleet peers, git forges, commit signing)";
     };
 
+    # A pin a home-manager module declares reaches the CLI through the
+    # host's option: the declared fields, lifted. `value` is derived on
+    # each side from the same file.
+    nixhold.pins = lib.mapAttrs (_: p: {
+      inherit (p) file latest manifest;
+    }) config.home-manager.users.${username}.nixhold.pins;
+
     home-manager = {
       useGlobalPkgs = lib.mkDefault true;
       useUserPackages = lib.mkDefault true;
@@ -141,7 +148,9 @@ in
       };
 
       users.${username} = hmArgs: {
-        imports = config.nixhold.home.extraModules;
+        # The fleet's home modules, over the option namespace a home
+        # module declares pins in.
+        imports = config.nixhold.home.extraModules ++ [ ../pins ];
 
         programs.ssh = {
           enable = lib.mkDefault true;

@@ -36,6 +36,8 @@ export NIX_CONFIG
 . "$NIXHOLD_LIB_ROOT/lib/provision.sh"
 # shellcheck source=lib/secrets.sh
 . "$NIXHOLD_LIB_ROOT/lib/secrets.sh"
+# shellcheck source=lib/pins.sh
+. "$NIXHOLD_LIB_ROOT/lib/pins.sh"
 # shellcheck source=lib/operator.sh
 . "$NIXHOLD_LIB_ROOT/lib/operator.sh"
 

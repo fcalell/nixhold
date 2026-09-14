@@ -39,10 +39,10 @@ nh_flake_source_path() {
   printf '%s' "$p"
 }
 
-# nh_reroot_layout <layout-key> <evaluated-path> -> the operator's
-# working-tree path for that layout value.
+# nh_reroot <option> <evaluated-path> -> the operator's working-tree
+# path for a path-valued option; <option> names it in the refusal.
 #
-# layout.* options are types.path, so they eval to read-only
+# Path options (layout.*, pins.*.file) eval to read-only
 # /nix/store/<hash>-source/<sub> paths (correct for the activation
 # side). The CLI must *write* there, so the fleet's OWN store prefix is
 # swapped back for $fleet_root. A store path belonging to another flake
@@ -50,8 +50,8 @@ nh_flake_source_path() {
 # re-rooting it under $fleet_root would read and write a path that
 # never existed, so refuse instead (exit 3, which lint reports as a
 # violation rather than as a probe failure).
-nh_reroot_layout() {
-  local key="$1" abspath="$2" root src rest store_root
+nh_reroot() {
+  local label="$1" abspath="$2" root src rest store_root
   root="$(nh_fleet_root)" || return 2
   case "$abspath" in
     "$root" | "$root"/*)
@@ -73,7 +73,7 @@ nh_reroot_layout() {
   # tree (a write between the calls re-hashes it), so a store root
   # whose flake.nix is byte-identical to ours is still ours.
   if [ "$store_root" != "$src" ] && ! cmp -s "$store_root/flake.nix" "$root/flake.nix"; then
-    nh_err "nixhold.layout.$key points into another flake input ($abspath); the CLI only writes inside the fleet checkout ($root)"
+    nh_err "$label points into another flake input ($abspath); the CLI only writes inside the fleet checkout ($root)"
     return 3
   fi
   if [ "$abspath" = "$store_root" ]; then
@@ -81,6 +81,12 @@ nh_reroot_layout() {
   else
     printf '%s/%s' "$root" "${abspath#"$store_root"/}"
   fi
+}
+
+# nh_reroot_layout <layout-key> <evaluated-path> — nh_reroot for a
+# `nixhold.layout.<key>` value.
+nh_reroot_layout() {
+  nh_reroot "nixhold.layout.$1" "$2"
 }
 
 # nh_worktree_layout_dir <layout-key> <fallback-subdir> -> the
