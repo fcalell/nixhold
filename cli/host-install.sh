@@ -3,7 +3,7 @@
 #
 # Two entry points, one phase sequence:
 #   --remote  drive the install over SSH from any fleet machine
-#             (nixos-anywhere with --build-on-remote: the target
+#             (nixos-anywhere with --build-on remote: the target
 #             builds its own closure).
 #   no flag   install THIS machine in place. Allowed only inside the
 #             installer environment, marked by the plain file
@@ -1080,7 +1080,7 @@ EOF
     }
 
     # 4. Install. The target builds its own closure
-    #    (--build-on-remote); nixos-facter writes the hardware report
+    #    (--build-on remote); nixos-facter writes the hardware report
     #    back to facter.json.
     nh_info "running nixos-anywhere against $name @ $remote"
     # nixos-anywhere drives its own ssh with UserKnownHostsFile=/dev/null
@@ -1094,7 +1094,7 @@ EOF
       --flake "$root#$name" \
       --generate-hardware-config nixos-facter "$facter_target" \
       --extra-files "$extra" \
-      --build-on-remote \
+      --build-on remote \
       --target-host "$remote" || rc=$?
     if [ "$rc" -eq 0 ]; then
       nh_ok "installed $name"

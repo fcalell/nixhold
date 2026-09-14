@@ -1930,7 +1930,7 @@ name and the macOS/MDM hostname routinely differ). Local iff
 `<name>` is this machine. Remote NixOS: `--target-host` **and**
 `--build-host` point at the target — **each machine builds its own
 closure**; the operator machine never builds foreign arches
-(applies to install too via `--build-on-remote`). The connection is
+(applies to install too via `--build-on remote`). The connection is
 the operator's, activation is `--elevate=sudo` on the target, and
 sudo asks: the verb passes `--ask-elevate-password`, which prompts
 on the operator's terminal and feeds the target's `sudo --stdin`
