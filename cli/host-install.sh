@@ -848,7 +848,53 @@ nh_darwin_install() {
   fi
 
   nh_ok "installed $name"
-  nh_info "next: nixhold deploy $name for every change after this"
+  nh_next_after_install "$name" darwin
+}
+
+# nh_next_after_install <name> <platform> — the closing steps for a
+# machine that was just imaged.
+#
+# "once <name> is on the tailnet" named a condition without the command
+# that reaches it, and which command that is, is declared: a host with
+# `nixhold.services.tailscale.authKeySecret` joins on activation, one
+# without joins by hand exactly once and nothing in the fleet will do
+# it for the operator. So the verb reads the host rather than making
+# the operator work out which case they are in (ARCHITECTURE
+# "Walkthrough shape": end with the next command).
+#
+# nix-darwin has no auth-key file at all — modules/services/tailscale/
+# darwin.nix asserts when one is set — so a Mac is always by hand, and
+# it switches in place rather than rebooting.
+nh_next_after_install() {
+  local name="$1" platform="$2" ts="" enabled="false" key="" n=1
+  ts="$(nh_host_eval "$name" "$platform" nixhold.services.tailscale 2>/dev/null)" || ts=""
+  if [ -n "$ts" ]; then
+    enabled="$(printf '%s' "$ts" | jq -r '.enable // false')"
+    key="$(printf '%s' "$ts" | jq -r '.authKeySecret // empty')"
+  fi
+
+  nh_info "next:"
+  if [ "$platform" != "darwin" ]; then
+    printf '  %d. %s reboots into its new system.\n' "$n" "$name" >&2
+    n=$((n + 1))
+  fi
+  if [ "$enabled" = "true" ] && [ -z "$key" ]; then
+    if [ "$platform" = "darwin" ]; then
+      printf '  %d. On this Mac, join the tailnet once (a Mac has no auth-key file):\n' "$n" >&2
+    else
+      printf '  %d. On %s itself — it declares no tailscale authKeySecret,\n     so it joins the tailnet by hand, once:\n' "$n" "$name" >&2
+    fi
+    printf '       sudo tailscale up\n' >&2
+    n=$((n + 1))
+  elif [ "$enabled" = "true" ]; then
+    printf '  %d. %s joins the tailnet itself on activation (authKeySecret "%s").\n' "$n" "$name" "$key" >&2
+    n=$((n + 1))
+  fi
+  printf '  %d. From here, for every change after this:\n       nixhold deploy %s\n' "$n" "$name" >&2
+  if [ "$enabled" = "true" ] && [ -n "$key" ]; then
+    printf '  A reinstall spends the committed key: if %s never appears, put a fresh\n' "$name" >&2
+    printf "  one in with 'nixhold secret edit %s %s', then deploy.\n" "$name" "$key" >&2
+  fi
 }
 
 cmd_host_install() {
@@ -1121,7 +1167,7 @@ EOF
     nh_commit_paths "$root" "host($name): install (disk + facter)" \
       "$hosts_file" "$facter_target" "$keys_dir/hosts/$name.pub"
     nh_push_if_installer "$root"
-    nh_info "next: once $name is on the tailnet, 'nixhold deploy $name' for every change after this"
+    nh_next_after_install "$name" "$platform"
   fi
   return "$rc"
 }

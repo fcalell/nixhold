@@ -1803,7 +1803,13 @@ stays the one-glance present/missing summary.
   omitted host is this machine, `--all` is every host it can
   activate, and naming is the confirmation.
 - Every verb prints its plan before the first write, commits what
-  it generated, and ends with the single next command.
+  it generated, and ends with the single next command. A
+  *condition* is not one: `host install` reads the machine it just
+  imaged (`nixhold.services.tailscale`) and closes with the steps
+  that host actually needs, because whether it joins the tailnet on
+  activation or by a one-time `sudo tailscale up` at its own
+  keyboard is declared — `authKeySecret` set or not, and never set
+  on darwin, which has no auth-key file.
 - Prompts default from what is already known: the arch of the
   machine being installed, the fleet's only network, the pinned
   nixpkgs release (`lib.trivial.release`) or nix-darwin's
