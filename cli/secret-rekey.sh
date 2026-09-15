@@ -1,8 +1,9 @@
 # nixhold secret rekey
 #
 # Re-encrypts everything this fleet holds to the CURRENT keys:
-#   secrets/**.age      → every operator recipient line + keys/fleet.pub
-#   keys/fleet.key.age  → the operator recipient lines alone
+#   secrets/**.age         → every operator recipient line + keys/fleet.pub
+#   keys/fleet.key.age     → the operator recipient lines alone
+#   keys/networks/<n>.age  → the operator recipient lines alone
 #
 # The recipient set does not vary per host and does not vary per
 # secret, so this verb is needed in exactly two situations: the
@@ -28,15 +29,23 @@
 # the passphrase here (single-file verbs still prefer the token).
 
 cmd_secret_rekey() {
-  local quiet=0
+  local quiet=0 msg="secrets: rekey to the fleet key"
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --quiet)
         quiet=1
         shift
         ;;
+      # The recipient change and the re-encryption it forces are one
+      # commit, so a verb that made the change describes it (`operator
+      # enrol|remove`); a commit holding one without the other is the
+      # half-done state those verbs exist to prevent.
+      --message)
+        msg="${2:-}"
+        shift 2
+        ;;
       -h | --help)
-        echo "Usage: nixhold secret rekey"
+        echo "Usage: nixhold secret rekey [--message <commit message>]"
         return 0
         ;;
       *)
@@ -89,12 +98,21 @@ cmd_secret_rekey() {
     fi
   done <<<"$ciphertexts"
 
-  # The fleet key's own wrapping: encrypted to the operator recipients
-  # and to nothing else, so an operator whose recipient list changed
-  # can still open it.
+  # The two files the fleet key is NOT a recipient of: encrypted to the
+  # operator recipients and to nothing else, so an operator whose
+  # recipient list changed can still open them.
+  local clients=() net
   if [ "$had_key" -eq 1 ]; then
     nh_rekey_fleet_key || failed=1
   fi
+  while IFS= read -r net; do
+    [ -n "$net" ] || continue
+    if nh_rekey_tailnet_client "$net"; then
+      clients+=("$(nh_tailnet_client_file "$net")")
+    else
+      failed=1
+    fi
+  done < <(nh_tailnet_client_networks)
 
   if [ "$failed" -ne 0 ]; then
     nh_err "rekeyed $count secret(s), but some were skipped — fix the warnings above and re-run"
@@ -103,33 +121,58 @@ cmd_secret_rekey() {
     nh_ok "rekeyed $count secret(s) to the operator recipients + $(nh_fleet_pub_line)"
   fi
 
-  local commit=("$keys_dir/fleet.key.age" "$keys_dir/fleet.pub" "$keys_dir/login.pub")
+  # The operator recipients are committed with the ciphertexts they
+  # were re-encrypted to: this verb can be what wrote that file
+  # (nh_fleet_key_ensure mints the identity on a fleet that has none),
+  # and `operator enrol|remove` is a line of it plus this walk.
+  local rcpt
+  rcpt="$(nh_operator_recipient_path)" || return 2
+  local commit=("$keys_dir/fleet.key.age" "$keys_dir/fleet.pub" "$keys_dir/login.pub" "$rcpt")
   [ "${#rekeyed[@]}" -eq 0 ] || commit+=("${rekeyed[@]}")
-  nh_commit_paths "$root" "secrets: rekey to the fleet key" "${commit[@]}"
+  [ "${#clients[@]}" -eq 0 ] || commit+=("${clients[@]}")
+  nh_commit_paths "$root" "$msg" "${commit[@]}"
   [ "$rc" -eq 0 ] || return "$rc"
   [ "$quiet" -eq 1 ] || nh_info "next: nixhold deploy — until a host has /etc/nixhold/fleet.key it decrypts nothing"
 }
 
 # nh_rekey_fleet_key — re-wrap keys/fleet.key.age to the operator
-# recipient lines as they are now. The one ciphertext the fleet key is
-# NOT a recipient of: it is what the operator hands to the hosts, so
-# only the operator's own seats may open it.
+# recipient lines as they are now. It is what the operator hands to the
+# hosts, so only the operator's own seats may open it.
 nh_rekey_fleet_key() {
-  local key rcpt plain
+  local key plain
   key="$(nh_fleet_key_file)" || return 1
   [ -f "$key" ] || return 0
-  rcpt="$(nh_operator_recipient_file)" || return 1
   plain="$(nh_fleet_key_plain)" || return 1
-  if ! age -R "$rcpt" -o "$key.tmp" "$plain"; then
-    rm -f "$key.tmp"
-    nh_warn "could not re-wrap $key to the current operator recipients — the original is untouched"
+  nh_rekey_operator_file "$key" "$plain"
+}
+
+# nh_rekey_tailnet_client <network> — the same re-wrap for a tailnet's
+# API client. It mints tailnet access and deletes nodes, which is why
+# no host is a recipient of it either.
+nh_rekey_tailnet_client() {
+  local net="$1" target plain
+  target="$(nh_tailnet_client_file "$net")" || return 1
+  plain="$(nh_tailnet_client_plain "$net")" || return 1
+  nh_rekey_operator_file "$target" "$plain"
+}
+
+# nh_rekey_operator_file <ciphertext> <plaintext> — write one of the
+# files encrypted to the operator lines ALONE back to those lines as
+# they are now. Encrypt to a sibling temp + rename, so a failure cannot
+# leave the fleet holding a truncated one.
+nh_rekey_operator_file() {
+  local target="$1" plain="$2" rcpt
+  rcpt="$(nh_operator_recipient_file)" || return 1
+  if ! age -R "$rcpt" -o "$target.tmp" "$plain"; then
+    rm -f "$target.tmp"
+    nh_warn "could not re-wrap $target to the current operator recipients — the original is untouched"
     return 1
   fi
-  if ! mv "$key.tmp" "$key"; then
-    rm -f "$key.tmp"
-    nh_warn "could not replace $key — the original is untouched"
+  if ! mv "$target.tmp" "$target"; then
+    rm -f "$target.tmp"
+    nh_warn "could not replace $target — the original is untouched"
     return 1
   fi
-  chmod 0644 "$key"
-  nh_stage_for_eval "$(nh_fleet_root)" "$key"
+  chmod 0644 "$target"
+  nh_stage_for_eval "$(nh_fleet_root)" "$target"
 }

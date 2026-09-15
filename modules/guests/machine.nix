@@ -34,6 +34,24 @@
 #     no udev of its own, and libudev reads the database there to find
 #     the cards and render nodes it may open.
 #
+# The container unit's own semantics are set here too, because they
+# follow from the shape above and not from the fleet that uses it.
+# nixpkgs' unit is Type=notify and raises the machine's end of the veth
+# in its post-start, which runs only once the guest signals ready, and
+# a guest that runs networkd's wait-online and tailscaled cannot reach
+# ready until that end is up. On a machine whose network manager
+# leaves `ve-*` alone (every NetworkManager seat) that is a deadlock
+# the unit cuts at its start timeout, on repeat. So the unit counts as
+# started the moment nspawn is, and its post-start waits for the veth
+# to exist before nixpkgs' script raises it.
+# What restarts it is then the boundary (the bind mounts, the device
+# grant, the tun device, the veth addresses, the nspawn flags), and
+# what reloads it is the guest's closure alone: nixpkgs' ExecReload
+# runs the new system's switch-to-configuration inside the running
+# guest, restarting only the guest units that changed, where a restart
+# halts and boots the guest. Any deploy moves the closure, so the two
+# must not share one trigger list.
+#
 # A machine with guests never sleeps: suspend and hibernate are off
 # and the lid and power key do nothing, mkDefault so a host can take
 # the decision back. The seat's idle policy for the screen is its own.
@@ -100,9 +118,78 @@ let
         PrivateDevices = false;
       };
     };
+
+  # container@<guest>: nixpkgs' unit, with the start path and the
+  # change semantics this framework needs (see the header).
+  containerUnit =
+    guest: g:
+    let
+      c = config.containers.${guest};
+    in
+    {
+      # The boundary. Everything here defines the nspawn instance
+      # itself, and half of it (the nspawn flags the bind mounts
+      # render, the two addresses) reaches the unit only through
+      # /etc/nixos-containers/<guest>.conf, which is not the unit file,
+      # so it needs a trigger to be noticed at all. mkForce because
+      # nixpkgs' own list holds the guest's closure, which belongs
+      # below.
+      restartTriggers = lib.mkForce [
+        (builtins.toJSON {
+          inherit (c)
+            bindMounts
+            allowedDevices
+            enableTun
+            hostAddress
+            localAddress
+            extraFlags
+            ;
+        })
+      ];
+      # The closure. A changed X-Reload-Triggers and an otherwise
+      # unchanged unit file is switch-to-configuration's one reload
+      # case; `reloadIfChanged` would instead make EVERY unit change a
+      # reload, including the boundary above.
+      reloadTriggers = [ c.path ];
+
+      serviceConfig = {
+        Type = lib.mkForce "simple";
+        ExecStartPost = lib.mkBefore [
+          (pkgs.writeShellScript "nixhold-guest-${guest}-wait-veth" ''
+            for _ in $(seq 1 100); do
+              ${pkgs.iproute2}/bin/ip link show ve-${guest} >/dev/null 2>&1 && exit 0
+              sleep 0.2
+            done
+            echo "nixhold: ve-${guest} did not appear" >&2
+            exit 1
+          '')
+        ];
+      };
+    }
+    // lib.optionalAttrs (cards g != [ ]) {
+      wants = [ "nixhold-guest-${guest}-devices.service" ];
+      after = [ "nixhold-guest-${guest}-devices.service" ];
+    };
 in
 {
   config = lib.mkIf (mine != { }) {
+    assertions = [
+      {
+        # The CLI names /var/lib/nixos-containers/<guest> directly:
+        # `deploy` reads the guest's first ssh host key out of it and
+        # `host remove` prints it as the state the operator keeps or
+        # wipes. nixpkgs drops the "nixos-" prefix below this
+        # stateVersion, and the CLI would then be reading a path that
+        # does not exist.
+        assertion = lib.versionAtLeast config.system.stateVersion "22.05";
+        message = "nixhold guests: ${fleet.selfName} runs guests at system.stateVersion ${config.system.stateVersion}, but nixpkgs keeps container state under /var/lib/containers below 22.05 and the CLI reads /var/lib/nixos-containers/<guest>. Raise the machine's system.stateVersion to 22.05 or later.";
+      }
+    ]
+    ++ lib.mapAttrsToList (address: guests: {
+      assertion = lib.length guests == 1;
+      message = "nixhold guests: ${lib.concatStringsSep " and " guests} are both guests of ${fleet.selfName} and both derive the veth pair ${address}. The /24 comes from a hash of the guest's name, so the resolution is to rename one of them: 'nixhold host remove <guest>' and 'nixhold host add' under a new name.";
+    }) (lib.groupBy (guest: mine.${guest}.hostAddress) (lib.attrNames mine));
+
     containers = lib.mapAttrs (guest: g: {
       autoStart = true;
       privateNetwork = true;
@@ -150,13 +237,7 @@ in
       lib.mapAttrs' (
         guest: g: lib.nameValuePair "nixhold-guest-${guest}-devices" (deviceUnit guest g)
       ) withCards
-      // lib.mapAttrs' (
-        guest: _:
-        lib.nameValuePair "container@${guest}" {
-          wants = [ "nixhold-guest-${guest}-devices.service" ];
-          after = [ "nixhold-guest-${guest}-devices.service" ];
-        }
-      ) withCards;
+      // lib.mapAttrs' (guest: g: lib.nameValuePair "container@${guest}" (containerUnit guest g)) mine;
 
     # A card that appears after boot: resolve again, live.
     services.udev.extraRules = lib.concatMapStrings (guest: ''

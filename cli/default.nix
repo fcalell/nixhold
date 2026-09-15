@@ -37,8 +37,13 @@ pkgs.writeShellApplication {
     # drawer before it commits to that route.
     age-plugin-fido2-hmac
     libfido2
-    # The framework-declared console password secret's generator.
+    # Generators of the shipped secrets run in this process: the
+    # console password's hash, syncthing's GUI password, and the
+    # syncthing identity — whose `public` command derives the device
+    # ID from the same binary that minted the key.
     mkpasswd
+    openssl
+    syncthing
     rsync
     nix
     git

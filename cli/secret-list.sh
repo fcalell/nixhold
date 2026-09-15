@@ -198,6 +198,19 @@ nh_secret_list_keys() {
     rc=1
   fi
 
+  # The optional second file the fleet key never opens: with one
+  # committed, a host on that tailnet joins with a key the CLI minted
+  # rather than one the operator pasted.
+  local net
+  while IFS= read -r net; do
+    [ -n "$net" ] || continue
+    if [ -f "$keys_dir/networks/$net.age" ]; then
+      printf '  %-16s %s\n' "tailnet $net" "API client committed — auth keys are minted"
+    else
+      printf '  %-16s %s\n' "tailnet $net" "no API client — auth keys are pasted from the admin console (nixhold secret edit network/$net)"
+    fi
+  done < <(nh_tailnet_networks 2>/dev/null)
+
   n="$(nh_pubkey_lines "$keys_dir/login.pub" 2>/dev/null | grep -c . || true)"
   if [ "${n:-0}" -gt 0 ]; then
     printf '  %-16s %s\n' "login keys" "$n in keys/login.pub"

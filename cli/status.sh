@@ -2,10 +2,13 @@
 #
 # Reads declared services, their expose endpoints and the secret
 # manifest from the fleet eval, plus ONE live line for a single host:
-# the state of its nixhold-* provisioning units (lib/provision.sh),
-# because that is the one runtime fact the declarations cannot
-# answer — whether the machine reached what it declares. Everything
-# else runtime lives in `nixhold logs` and `systemctl status`, and
+# the state of its nixhold-* provisioning units and of the
+# `nixhold.checks` the fleet declares (lib/provision.sh), because that
+# is the one runtime fact the declarations cannot answer — whether the
+# machine reached what it declares. The verb never prompts, so a
+# darwin check whose daemon only root may list is a word on that line
+# rather than a password prompt. Everything else runtime lives in
+# `nixhold logs` and `systemctl status`, and
 # `--fleet` stays declaration-only. No <name> means this machine.
 
 cmd_status() {
@@ -112,7 +115,7 @@ nh_status_host() {
 # here, never a failure of the verb.
 nh_status_provisioning() {
   local host="$1" platform="$2" local_host=0 target="" state="" rc=0
-  [ "$(nh_deploy_self 2>/dev/null || true)" = "$host" ] && local_host=1
+  [ "$(nh_deploy_self)" = "$host" ] && local_host=1
   if [ "$platform" = "nixos" ] && [ "$local_host" -ne 1 ]; then
     local user addr
     user="$(nh_host_eval "$host" nixos nixhold.identity.username 2>/dev/null | jq -r '.')" || user=""
@@ -129,6 +132,7 @@ nh_status_provisioning() {
     2) printf 'unreachable' ;;
     3) printf 'no user session yet (units run at the first login)' ;;
     4) printf 'read it on %s itself (launchd)' "$host" ;;
+    5) printf 'unreadable (%s)' "$(tr '\n' ' ' <"$(nh_provision_err)")" ;;
     *) printf '?' ;;
   esac
 }

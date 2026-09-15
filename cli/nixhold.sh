@@ -40,6 +40,8 @@ export NIX_CONFIG
 . "$NIXHOLD_LIB_ROOT/lib/pins.sh"
 # shellcheck source=lib/operator.sh
 . "$NIXHOLD_LIB_ROOT/lib/operator.sh"
+# shellcheck source=lib/tailnet.sh
+. "$NIXHOLD_LIB_ROOT/lib/tailnet.sh"
 
 # One process-wide exit path: wipes the scratch root (the fleet key,
 # freshly minted host keys, the clone key, unwrapped identities) and
@@ -76,8 +78,14 @@ Daily:
 Secrets:
   secret list [<host>] [--fleet]    No host: the fleet inventory and its keys.
   secret edit [<host>] [<name>]     Provision a missing secret, or edit one.
+  secret show [<host>] <name>       Print one secret to stdout.
   secret rekey                      Re-encrypt every secret to the current keys.
   secret rotate                     New fleet key, rekey, then deploy it out.
+
+Operator:
+  operator enrol [<label>]          Enrol a FIDO2 token: login key + age recipient.
+  operator remove <line>            Retire a seat's lines, rekey, commit.
+  operator check                    Open the fleet key over every committed route.
 
 Framework:
   iso [--flash <device>]            Build (and write) the fleet installer image.
@@ -145,7 +153,7 @@ main() {
       sub="$1"
       shift
       case "$sub" in
-        list | edit | rekey | rotate)
+        list | edit | show | rekey | rotate)
           . "$NIXHOLD_LIB_ROOT/secret-$sub.sh"
           cmd_secret_"${sub}" "$@"
           ;;
@@ -155,6 +163,27 @@ main() {
           ;;
         *)
           nh_err "unknown 'secret' subcommand: $sub"
+          exit 1
+          ;;
+      esac
+      ;;
+    operator)
+      shift
+      # A group, not a verb: a bare 'operator' is someone asking what
+      # is under it.
+      if [ "$#" -eq 0 ]; then
+        usage
+        exit 0
+      fi
+      sub="$1"
+      shift
+      case "$sub" in
+        enrol | remove | check)
+          . "$NIXHOLD_LIB_ROOT/operator-$sub.sh"
+          cmd_operator_"$sub" "$@"
+          ;;
+        *)
+          nh_err "unknown 'operator' subcommand: $sub"
           exit 1
           ;;
       esac

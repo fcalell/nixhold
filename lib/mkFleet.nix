@@ -1,7 +1,7 @@
 # mkFleet — single forker-facing entrypoint.
 #
 # Signature locked in ARCHITECTURE "Fleet contract — mkFleet":
-#   { inputs, identity, networks, hosts, layout ? { } }
+#   { inputs, identity, networks, hosts, sync ? { }, layout ? { } }
 #
 # Reads no files from disk (principle 14). Dispatches per arch
 # family — separate builders for NixOS, Darwin and Android, no
@@ -16,6 +16,7 @@
   identity,
   networks,
   hosts,
+  sync ? { },
   layout ? { },
 }:
 let
@@ -52,7 +53,7 @@ let
   resolvedLayout = layoutDefaults // layout;
 
   fleetView = {
-    inherit hosts;
+    inherit hosts sync;
     network = networks;
   };
 
@@ -106,23 +107,40 @@ let
     ++ host.modules;
 
   # A guest ("Guests") is a host of the roster like any other, and its
-  # machine's `containers.<guest>` is built from the same module list
-  # with the same specialArgs, so the container's system is the
-  # guest's own configuration — nixpkgs' container module evaluates
-  # it where it needs the guest's config (its warnings read it), and
-  # a pure eval of one list is one closure. Everything else about the
-  # boundary — the veth, the tun device, the fleet key, the device
-  # grant — is rendered by modules/guests/machine.nix from the roster,
-  # not here: this is the one thing that needs the guest's module
-  # list, which only mkFleet holds.
+  # machine's `containers.<guest>.path` is the toplevel of the guest's
+  # own `nixosConfigurations.<guest>`: the very store path the flake
+  # exports, so machine and guest are one system built once.
+  # `containers.<guest>.config` is the other spelling and not this one,
+  # because nixpkgs merges that option through
+  # `nixos/lib/eval-config.nix` while a flake host goes through
+  # `nixpkgs.lib.nixosSystem`, and the two entrypoints do not agree
+  # (`nixosSystem` adds `nixpkgs.flake.source`), so the machine would
+  # carry a second, different system under the guest's name.
+  #
+  # `config` is defined all the same, because nixpkgs reads it for
+  # every container whether or not it is set: `cfg.config.nix.enable &&
+  # cfg.config.nix.daemon.enable` in nixos-containers.nix's assertions,
+  # asking whether the container needs a nix daemon the machine does
+  # not run. The defaults answer that correctly for a guest, which runs
+  # no daemon of its own and reaches the machine's nix-daemon socket,
+  # so what is set is only the stateVersion nixpkgs would otherwise
+  # warn about once per eval. The guest's module list here would be
+  # exactly the second eval `path` exists to avoid. That definition
+  # carries a `path` of its own, hence the mkForce; `specialArgs`, which
+  # feeds nothing but the second eval, is left off.
+  #
+  # Everything else about the boundary (the veth, the tun device, the
+  # fleet key, the device grant) is rendered by
+  # modules/guests/machine.nix from the roster, not here: this is the
+  # one thing that needs the guest's own eval, which only mkFleet holds.
   # A name under `guests` that is no roster host renders nothing, so
   # the fleet still evaluates and lint rule 15 is what reports it.
   guestContainers =
     host:
     lib.mapAttrsToList (guest: _: {
       containers.${guest} = {
-        specialArgs = nixosSpecialArgs guest;
-        config.imports = nixosModules guest hosts.${guest};
+        path = lib.mkForce nixosConfigurations.${guest}.config.system.build.toplevel;
+        config.system.stateVersion = nixosConfigurations.${guest}.config.system.stateVersion;
       };
     }) (lib.filterAttrs (guest: _: hosts ? ${guest}) (host.guests or { }));
 

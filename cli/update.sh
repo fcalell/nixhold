@@ -145,9 +145,13 @@ cmd_update() {
     fi
   fi
   nh_update_disarm
-  local files
+  local files what=""
   files="$(nh_update_commit_files "$root" "$moved" "$tmp/pins" "$new_pins")"
-  [ -z "$files" ] || nh_info "commit what moved:  git -C $root commit -m 'flake: update inputs' $files"
+  # The subject names what actually moved: the lock, the pin files, or
+  # both.
+  [ -z "$moved" ] || what="inputs"
+  if [ -n "$moved_pins" ] || [ -n "$new_pins" ]; then what="${what:+$what and }pins"; fi
+  [ -z "$files" ] || nh_info "commit what moved:  git -C $root commit -m 'flake: update $what' $files"
 
   . "$NIXHOLD_LIB_ROOT/deploy.sh"
   if [ "$all" -eq 1 ]; then
@@ -197,12 +201,16 @@ nh_pins_bootstrap() {
     [ -e "$file" ] && continue
     mkdir -p "$(dirname "$file")" || return 1
     version="$(nh_pin_fetch "$name" "$(printf '%s' "$decl" | jq -r '.latest')" "$(printf '%s' "$decl" | jq -r '.manifest')" "$file")" || return 1
+    # The baseline eval that follows reads the checkout as a git flake,
+    # which omits untracked files: a pin written and not staged is a
+    # pin the gate cannot see.
+    nh_stage_for_eval "$(nh_fleet_root)" "$file"
     printf '%s: (new) → %s\n' "$name" "$version"
   done
 }
 
 # nh_pins_move <snapshot-dir> — resolve every declared pin against
-# its `latest`; a file whose version differs is snapshotted and
+# its `latest`; a file whose manifest differs is snapshotted and
 # rewritten. Prints "<name>: <old> → <new>" per move.
 nh_pins_move() {
   local snap="$1" pins name decl file old new fetched
@@ -214,7 +222,10 @@ nh_pins_move() {
     old="$(nh_pin_version "$file")"
     fetched="$snap/$name.new"
     new="$(nh_pin_fetch "$name" "$(printf '%s' "$decl" | jq -r '.latest')" "$(printf '%s' "$decl" | jq -r '.manifest')" "$fetched")" || return 1
-    [ "$new" != "$old" ] || continue
+    # The whole manifest, canonicalised: an upstream that re-cuts a
+    # release moves its hashes and keeps its version.
+    if jq -S . "$fetched" | cmp -s - <(jq -S . "$file" 2>/dev/null); then continue; fi
+    [ "$new" != "$old" ] || new="$new (re-cut)"
     cp "$file" "$snap/$name.before" || return 1
     printf '%s\t%s\n' "$name" "$file" >>"$snap/index"
     cp "$fetched" "$file" || return 1

@@ -85,8 +85,15 @@ nixhold update [--all]         # pull, update every input and pin, eval-gate
                                # every host, deploy this machine (or all)
 nixhold secret edit [<host>] [<name>]
                                # provision a missing secret, or edit one
+nixhold secret show [<host>] <name>
+                               # print one secret to stdout
 nixhold secret rekey           # re-encrypt to current recipients
 nixhold secret rotate          # new fleet key, then deploy it everywhere
+nixhold operator enrol [<label>]
+                               # enrol a FIDO2 token: an ssh login key and
+                               # an age recipient, both committed, then rekey
+nixhold operator remove <line> # retire a seat's lines, rekey, commit
+nixhold operator check         # open the fleet key over every committed route
 nixhold status [<name>]        # services + endpoints + secret status
 nixhold lint [--strict]        # convention / invariant checks
 nixhold logs [<host>] [<unit>] # journalctl over the tailnet
@@ -105,8 +112,10 @@ nixhold logs [<host>] [<unit>] # journalctl over the tailnet
    layout), runs disko + `nixos-facter`, and commits the disk and
    `facter.json`.
 3. Join the tailnet: either set
-   `nixhold.services.tailscale.authKeySecret` (bootstrap a pre-auth
-   key → auto-join on activation) or run `tailscale up` once on the box.
+   `nixhold.services.tailscale.authKeySecret` (a pre-auth key → auto-join
+   on activation, minted by the install itself once the tailnet's API
+   client is committed with `nixhold secret edit network/<network>`) or
+   run `tailscale up` once on the box.
 4. `nixhold deploy web` for subsequent changes.
 
 Darwin hosts are already-running macOS — run `nixhold host install

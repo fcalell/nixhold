@@ -39,52 +39,8 @@ nh_flake_source_path() {
   printf '%s' "$p"
 }
 
-# nh_reroot <option> <evaluated-path> -> the operator's working-tree
-# path for a path-valued option; <option> names it in the refusal.
-#
-# Path options (layout.*, pins.*.file) eval to read-only
-# /nix/store/<hash>-source/<sub> paths (correct for the activation
-# side). The CLI must *write* there, so the fleet's OWN store prefix is
-# swapped back for $fleet_root. A store path belonging to another flake
-# input (a private secrets repo, say) has no working tree here at all:
-# re-rooting it under $fleet_root would read and write a path that
-# never existed, so refuse instead (exit 3, which lint reports as a
-# violation rather than as a probe failure).
-nh_reroot() {
-  local label="$1" abspath="$2" root src rest store_root
-  root="$(nh_fleet_root)" || return 2
-  case "$abspath" in
-    "$root" | "$root"/*)
-      printf '%s' "$abspath"
-      return 0
-      ;;
-    /nix/store/*) ;;
-    *)
-      # Not a store path and not under the checkout: an operator-set
-      # absolute path, used verbatim.
-      printf '%s' "$abspath"
-      return 0
-      ;;
-  esac
-  rest="${abspath#/nix/store/}"
-  store_root="/nix/store/${rest%%/*}"
-  src="$(nh_flake_source_path)" || src=""
-  # The metadata probe and the eval can land on two copies of the same
-  # tree (a write between the calls re-hashes it), so a store root
-  # whose flake.nix is byte-identical to ours is still ours.
-  if [ "$store_root" != "$src" ] && ! cmp -s "$store_root/flake.nix" "$root/flake.nix"; then
-    nh_err "$label points into another flake input ($abspath); the CLI only writes inside the fleet checkout ($root)"
-    return 3
-  fi
-  if [ "$abspath" = "$store_root" ]; then
-    printf '%s' "$root"
-  else
-    printf '%s/%s' "$root" "${abspath#"$store_root"/}"
-  fi
-}
-
-# nh_reroot_layout <layout-key> <evaluated-path> — nh_reroot for a
-# `nixhold.layout.<key>` value.
+# nh_reroot_layout <layout-key> <evaluated-path> — nh_reroot
+# (lib/run.sh) for a `nixhold.layout.<key>` value.
 nh_reroot_layout() {
   nh_reroot "nixhold.layout.$1" "$2"
 }
@@ -237,6 +193,43 @@ nh_secret_declarers() {
   return "$rc"
 }
 
+# nh_secret_resolve_name <name> <verb> — which host to reach <name>
+# through, as "<host>\t<scope>" on stdout. The lone-argument form of
+# `secret edit` and `secret show` both resolve here. A fleet-scoped
+# secret has ONE ciphertext, so any declarer is the same file and the
+# first is taken. A host-scoped one is a file per host: exactly one
+# declarer resolves, several open a picker (and, with nobody to ask,
+# are listed rather than guessed at). <verb> appears in the messages
+# only, so each verb names itself in the command it prints back.
+nh_secret_resolve_name() {
+  local name="$1" verb="$2" rows fleet hosts count
+  rows="$(nh_secret_declarers "$name")" || true
+  if [ -z "$rows" ]; then
+    nh_err "'$name' is neither a host in this fleet nor a secret any host declares — 'nixhold secret list' shows the inventory"
+    return 1
+  fi
+  fleet="$(printf '%s\n' "$rows" | awk -F'\t' '$2 == "fleet" { print $1; exit }')"
+  if [ -n "$fleet" ]; then
+    printf '%s\tfleet' "$fleet"
+    return 0
+  fi
+  hosts="$(printf '%s\n' "$rows" | awk -F'\t' 'NF { print $1 }' | sort -u)"
+  count="$(printf '%s\n' "$hosts" | grep -c .)"
+  if [ "$count" -eq 1 ]; then
+    printf '%s\thost' "$hosts"
+    return 0
+  fi
+  if ! nh_tty; then
+    nh_err "'$name' is declared on several hosts ($(printf '%s' "$hosts" | paste -sd' ' -)) and each has its own ciphertext — name the host: nixhold secret $verb <host> $name"
+    return 1
+  fi
+  local pick
+  # shellcheck disable=SC2086 # host names, split on purpose
+  pick="$(gum choose --header "'$name' on which host?" $hosts)" || return 1
+  [ -n "$pick" ] || return 1
+  printf '%s\thost' "$pick"
+}
+
 # The worktree inputs of the recipient set. Probed once per shell: each
 # costs a nix eval, and a provisioning walk validates once per secret.
 # A subshell inherits the memo but cannot export it back, so a caller
@@ -352,6 +345,71 @@ nh_login_pub_default_from_identity() {
   nh_ok "authorized the fleet identity in $out — every host and the ISO let that key in"
   root="$(nh_fleet_root)" || return 0
   nh_stage_for_eval "$root" "$out"
+}
+
+
+# ---------------------------------------------------------------------
+# The public half of a secret.
+#
+# A secret may declare `public = { file; command; }`: a half the fleet
+# COMMITS, because a peer's eval has to read it (the syncthing device
+# ID is the one consumer today — every other host's device list is
+# rendered from `keys/syncthing/<host>.id`). The CLI runs the command
+# on the plaintext it just minted or pasted, which is the only moment
+# that plaintext exists outside a ciphertext, and writes the result
+# under `keys/`. Nothing here knows what the half IS: the declaring
+# module owns both the path and the command, so the CLI never branches
+# on a secret's name.
+
+# nh_secret_public_file <secrets-json> <name> — where that secret's
+# public half lands in the worktree, or nothing at all for a secret
+# that declares none.
+nh_secret_public_file() {
+  local file keys_dir
+  file="$(printf '%s' "$1" | jq -r --arg n "$2" '.[$n].public.file // ""')"
+  [ -n "$file" ] || return 0
+  keys_dir="$(nh_worktree_keys_dir)" || return 1
+  printf '%s/%s' "$keys_dir" "$file"
+}
+
+# nh_secret_public_write <secrets-json> <name> <plaintext-file> — derive
+# the public half and stage it. A no-op for a secret without the field.
+# Non-zero when the half was wanted and could not be written; callers
+# treat that the way they treat keys/login.pub — reported, not fatal to
+# the ciphertext that was just encrypted, and fixable by re-running
+# `nixhold secret edit <host> <name>`.
+nh_secret_public_write() {
+  local json="$1" name="$2" plain="$3" cmd out
+  out="$(nh_secret_public_file "$json" "$name")" || return 1
+  [ -n "$out" ] || return 0
+  cmd="$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].public.command // ""')"
+  if [ -z "$cmd" ]; then
+    nh_err "$name declares public.file but no public.command — $out NOT written"
+    return 1
+  fi
+  mkdir -p "$(dirname "$out")" || return 1
+  # Module-declared config, run in this process for the same reason a
+  # generator is: bash may not be on the CLI's runtime PATH. The
+  # plaintext arrives on stdin, so the command is never handed the path
+  # of the scratch buffer.
+  if ! { eval "$cmd"; } <"$plain" >"$out.tmp"; then
+    rm -f "$out.tmp"
+    nh_err "deriving the public half of $name failed — $out NOT written"
+    return 1
+  fi
+  if [ ! -s "$out.tmp" ]; then
+    rm -f "$out.tmp"
+    nh_err "the public half of $name came out empty — $out NOT written"
+    return 1
+  fi
+  mv "$out.tmp" "$out" || {
+    rm -f "$out.tmp"
+    nh_err "could not replace $out"
+    return 1
+  }
+  chmod 0644 "$out" 2>/dev/null || true
+  nh_ok "wrote the public half of $name to $out"
+  nh_stage_for_eval "$(nh_fleet_root)" "$out"
 }
 
 # ---------------------------------------------------------------------

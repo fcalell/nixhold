@@ -36,10 +36,22 @@
 
 cmd_host_add() {
   local name="" install_target="" on_machine=""
+  # Kept verbatim for the handover: this verb also runs as `host
+  # install`'s "new host…" picker answer, where the operator's own argv
+  # is that other verb (lib/run.sh).
+  local -a argv=("$@")
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --install) install_target="$2"; shift 2 ;;
-      --on) on_machine="${2:-}"; shift 2 ;;
+      --install)
+        install_target="${2:-}"
+        [ -n "$install_target" ] || { nh_err "--install needs <user>@<ip>"; return 1; }
+        shift 2
+        ;;
+      --on)
+        on_machine="${2:-}"
+        [ -n "$on_machine" ] || { nh_err "--on needs <machine>"; return 1; }
+        shift 2
+        ;;
       -h | --help)
         cat <<'EOF'
 Usage: nixhold host add [<name>] [--install <user>@<ip>] [--on <machine>]
@@ -63,7 +75,7 @@ EOF
   nh_require_cmd gum jq nix age age-keygen
   local root
   root="$(nh_fleet_root)" || return 1
-  nh_reexec_at_fleet_pin "$root"
+  nh_reexec_at_fleet_pin "$root" host add "${argv[@]}"
 
   if [ -z "$name" ]; then
     name="$(nh_prompt_input "Name for the new host")" || name=""

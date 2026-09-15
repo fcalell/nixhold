@@ -8,10 +8,22 @@
 # knows for it: a scratch known_hosts under the process scratch root
 # plus StrictHostKeyChecking=yes.
 #
-# Trust-on-first-use survives only where the fleet has nothing to pin
-# to: a host whose key it has never seen (a machine adopted with `host
-# key`), and the installer ISO, whose host key is random per boot —
-# `host install --remote` therefore passes no --host at all.
+# Where the fleet has nothing to pin to there are two policies, and
+# which one applies is said at the call site rather than inferred from
+# the absence of --host:
+#   no flag       a fleet host whose key the repo has never seen (a
+#                 machine adopted with `host key`): trust on first use,
+#                 which records the key in the operator's known_hosts
+#                 so the second contact is verified against the first.
+#   --installer   the installer ISO, whose host key is minted on every
+#                 boot: unpinnable AND not worth recording. Written to
+#                 the operator's known_hosts it would be the key the
+#                 next boot of that same address contradicts, and the
+#                 install after it would die on the first `lsblk`. The
+#                 connection therefore keeps no record at all —
+#                 UserKnownHostsFile=/dev/null with
+#                 StrictHostKeyChecking=no, which is what
+#                 nixos-anywhere does on the same wire.
 
 # nh_ssh_pin_keys <host> — the pubkey lines the fleet is willing to
 # accept from <host>, one per line; non-zero when it knows none.
@@ -71,20 +83,26 @@ nh_ssh_pin_opts() {
 }
 
 # Run a command on a remote host, exit non-zero on failure.
-# Usage: nh_ssh user@host [--host <fleet-host>] -- cmd args...
+# Usage: nh_ssh user@host [--host <fleet-host>|--installer] -- cmd args...
 #
 # --host names the FLEET host the target is expected to be, which is
 # what makes the connection pinnable; without it (or when the fleet
 # holds no key for that host) the host key is accepted on first use,
-# and said so.
+# and said so. --installer says the other end is a booted installer
+# and no fleet host at all (see the policy at the top of this file);
+# the two are exclusive.
 nh_ssh() {
-  local target="$1" host="" kh hostpart rc=0 pinrc=0
+  local target="$1" host="" installer=0 kh hostpart rc=0 pinrc=0
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --host)
         host="${2:-}"
         shift 2
+        ;;
+      --installer)
+        installer=1
+        shift
         ;;
       --)
         shift
@@ -94,6 +112,11 @@ nh_ssh() {
     esac
   done
   hostpart="${target##*@}"
+
+  if [ -n "$host" ] && [ "$installer" -eq 1 ]; then
+    nh_err "nh_ssh: --host and --installer are exclusive — a fleet host is pinned, an installer is not recorded"
+    return 1
+  fi
 
   if [ -n "$host" ]; then
     kh="$(nh_ssh_known_hosts "$hostpart" "$host")" || pinrc=$?
@@ -121,6 +144,12 @@ nh_ssh() {
       nh_info "$hostpart was pinned to $host's committed key — if ssh reported a host key mismatch, the machine runs a key the fleet does not know; check its fingerprint out of band, then 'nixhold host key $host' records the machine's live key as keys/hosts/$host.pub"
     fi
     return "$rc"
+  fi
+
+  if [ "$installer" -eq 1 ]; then
+    ssh -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null \
+      -o StrictHostKeyChecking=no "$target" "$@"
+    return
   fi
 
   nh_info "no committed host key for ${host:-$hostpart} — accepting $hostpart's key on first use"
@@ -259,10 +288,10 @@ nh_rsudo() {
 EOF
 }
 
-# nh_ssh_sudo <target> [--host <fleet-host>] -- <snippet>
+# nh_ssh_sudo <target> [--host <fleet-host>|--installer] -- <snippet>
 #
-# Run <snippet> on <target> with `nh_rsudo` available to it. Pins the
-# host key exactly as nh_ssh does (--host).
+# Run <snippet> on <target> with `nh_rsudo` available to it. Applies
+# the same host-key policy as nh_ssh, from the same two flags.
 #
 # STDIN of this function becomes the snippet's stdin, after the
 # password line is consumed by the preamble — pass `</dev/null` when
@@ -270,12 +299,17 @@ EOF
 # hand it a terminal: the forwarder would block on it.
 nh_ssh_sudo() {
   local target="$1" host="" snippet pw=""
+  local -a keyargs=()
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --host)
         host="${2:-}"
         shift 2
+        ;;
+      --installer)
+        keyargs=(--installer)
+        shift
         ;;
       --)
         shift
@@ -297,14 +331,15 @@ nh_ssh_sudo() {
       ;;
   esac
 
-  local hostargs=()
-  [ -n "$host" ] && hostargs=(--host "$host")
+  # Appended, not assigned: a caller that passed both flags reaches
+  # nh_ssh's exclusivity check rather than having one silently win.
+  [ -n "$host" ] && keyargs+=(--host "$host")
 
   # Process substitution, not a pipe into nh_ssh: under `pipefail` a
   # forwarder that takes SIGPIPE when the remote exits early would turn
   # a successful run into a failure.
   local rc=0
-  nh_ssh "$target" "${hostargs[@]}" -- "$(nh_sudo_preamble_remote)
+  nh_ssh "$target" "${keyargs[@]}" -- "$(nh_sudo_preamble_remote)
 $snippet" < <(
     printf '%s\n' "$pw"
     cat

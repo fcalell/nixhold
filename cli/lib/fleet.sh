@@ -230,6 +230,29 @@ nh_set_host_field() {
   fi
 }
 
+# nh_deploy_self — the fleet host this machine is; non-zero when it is
+# none of them. Match by hostname, and on a Mac fall back to the
+# fleet's only darwin host — the fleet name and the macOS/MDM hostname
+# routinely differ (especially before the first switch).
+#
+# Here rather than in a verb: the dispatcher sources one verb plus
+# every library, and `deploy`, `status` and anything else that asks
+# "am I this host?" all need it.
+nh_deploy_self() {
+  local here macs
+  here="$(nh_hostname)"
+  if nh_all_hosts | grep -qx -- "$here"; then
+    printf '%s' "$here"
+    return 0
+  fi
+  [ "$(uname -s)" = "Darwin" ] || return 1
+  macs="$(nh_hosts darwin | cut -d' ' -f1)"
+  case "$macs" in
+    "" | *$'\n'*) return 1 ;;
+  esac
+  printf '%s' "$macs"
+}
+
 # nh_deploy_addr <host> — how the CLI reaches <host>: its address on
 # the tailscale-typed network when that resolves, else the first
 # non-null address on any other network. Empty when nothing resolves.

@@ -134,6 +134,7 @@ read from disk. A minimal fork passes only `inputs`, `identity`,
 | `layout` (optional) | CLI filesystem contract; every field defaults from `inputs.self`: `secrets` → `/secrets`, `hostsFile` → `/hosts.nix`, `modulesDir` → `/modules`, `profilesDir` → `/profiles`, `hostsDir` → `/hosts`, `keysDir` → `/keys`, `ageRecipient` → `/keys/operator.pub` (the operator recipient *list*, one age recipient per line), `ageIdentityWrapped` → `/keys/operator.age` when that file exists and `null` when it does not (`nullOr path`; see "Operator routes"). `repoUrl` is the one non-derivable field — a bare `owner/repo` slug (github.com assumed, cloned over SSH with the fleet's `identity` key), typed to reject URL schemes and a `.git` suffix since both the remote and `programs.nixhold.fleetDir` are built out of it; required to build the installer ISO, unused otherwise. Defaulting is computed values off `self`, not filesystem discovery (principle 14 intact) |
 | `networks` | `{ <name> = { type, magicDnsSuffix?, domain? }; }` |
 | `hosts` | `{ <name> = { arch, profile, modules, networks?, disk?, serial?, publicIp?, publicFqdn?, guests? }; }`; `arch` names the family the builder dispatches on, `aarch64-android` included (see "Android hosts"); `guests` names the hosts this machine runs as containers (see "Guests") |
+| `sync` (optional) | `{ <folder> = { <host> = { path, type?, versioning? }; }; }`: the syncthing topology, a folder's path and role on every host that carries it (see "Syncthing: identity and topology are fleet data"). Cross-host by nature, so it sits here beside `networks` and not on a host |
 
 Rules:
 
@@ -178,7 +179,11 @@ Rules:
   `fixture-mobile`),
   which is what catches contract
   drift per commit. Every shipped profile is drawn by a host there:
-  a profile nothing builds is a profile nothing checks.
+  a profile nothing builds is a profile nothing checks. The fixture
+  is eval-only, so what a unit does when it runs has a VM check of
+  its own: `vm-oneshots` (x86_64-linux) boots the framework's cert
+  and backup oneshots against a stub `tailscale`, a shipped service
+  and a fleet-shaped producer.
 - `profile` is a Nix value (attr reference), never a string. Typos
   fail at eval. No name-resolution layer anywhere.
 - Platform module bundles are single exports
@@ -314,14 +319,32 @@ unit merges it and names each exception as the systemd key set to
 its permissive value beside the reason: `PrivateDevices = false`
 with a `DeviceAllow` for a GPU, `MemoryDenyWriteExecute = false` for
 a JIT, `ReadWritePaths` for a directory written outside the state
-directory, `CAP_CHOWN` in the bounding set for a copier that hands
-files to another uid. The framework's own oneshots
-(`tailscale-caddy-cert`, `caddy-tls-reload`, `backup-taskchampion`)
-take it; nixpkgs-owned units keep nixpkgs' hardening. A unit whose
-sandbox is a second copy of the block is the failure the set exists
-to end, and lint rule `14-service-hardening` reports every unit
-defined outside nixpkgs that runs a command and carries no
-`NoNewPrivileges`.
+directory, `CAP_DAC_READ_SEARCH` in the bounding set for a copier
+reading a directory closed to root's own uid. The framework's own
+oneshots (`tailscale-caddy-cert`, `caddy-tls-reload`,
+`backup-taskchampion`) take it; nixpkgs-owned units keep nixpkgs'
+hardening. A unit whose sandbox is a second copy of the block is the
+failure the set exists to end, and lint rule `14-service-hardening`
+reports every unit defined outside nixpkgs that runs a command and
+carries no `NoNewPrivileges`.
+
+**What the set means at uid 0.** `CapabilityBoundingSet` bounds the
+effective and permitted sets too (systemd.exec(5)), so a unit at uid
+0 that takes the set holds no capability: it reads and writes only
+what any user could, which is what the owner and mode bits of
+another uid's files say. A copier or fetcher therefore either runs
+as the owning user (`tailscale-caddy-cert` is `User = caddy`, and
+tailscaled issues the node cert to that uid through
+`services.tailscale.permitCertUid`) or names the capabilities it
+needs, each with its reason (`backup-taskchampion` reads a
+`DynamicUser`'s state directory with `CAP_DAC_READ_SEARCH` and
+`CAP_DAC_OVERRIDE`, and hands the `-shm` sqlite creates back to the
+database's owner with `CAP_CHOWN`). Capabilities are not the whole
+grant: `SystemCallFilter` drops `@privileged`, and a filtered
+syscall is SIGSYS rather than EPERM, so a unit that keeps a
+capability out of that group adds the group back (`@chown` beside
+`CAP_CHOWN`). Both halves are runtime facts an eval cannot see,
+which is what the `vm-oneshots` check exists for.
 
 **Per-host home-manager**: `nixhold.home.extraModules` (list of
 deferred modules), wired into
@@ -410,8 +433,10 @@ activation step cannot:
   key or the forge is not there, and is re-run every 30 s until it
   exits 0, after which `on-failure` never restarts it. On NixOS the
   retry is bounded by the unit's start limit (`StartLimitBurst=60`
-  in `StartLimitIntervalSec=1h`: thirty minutes, then `failed` until
-  the next login, deploy, or hour); launchd retries unbounded
+  in `StartLimitIntervalSec=1h`: thirty minutes, then `failed` for as
+  long as the user manager lives — nothing re-triggers it but the
+  next login or the next deploy, which resets and starts the
+  `nixhold-*` units for exactly that reason); launchd retries unbounded
   (`KeepAlive.SuccessfulExit = false`, `ThrottleInterval = 30`).
   `KeepAlive.NetworkState` is not used: Apple documents it as no
   longer implemented.
@@ -429,9 +454,38 @@ activation step cannot:
   and what `nixhold status <host>` shows (see both), instead of a
   warning in a boot-time journal.
 
-The first consumer is `nixhold.repositories` (next section); the
-rendering lives there until a second framework consumer exists
-(ROADMAP: the shared unit-rendering helper).
+One renderer, `lib/provisioning.nix`, turns `{ description;
+script; done?; after?; scope; }` (the unit's name is the attribute
+the caller keys it under) into the systemd unit (exec, on-failure
+every 30 s, the bounded start limit, `ConditionPathExists=!done`
+when a marker is named) and the launchd agent
+(`KeepAlive.SuccessfulExit = false`, `ThrottleInterval = 30`, the
+script gating on the marker), so its two consumers cannot drift on
+the retry shape. `nixhold.repositories` (next section) renders
+user-scope units through it, one per checkout.
+
+**Checks are units too.** `nixhold.checks.<name> = { script;
+after?; }` is the second consumer: a system-scope unit
+`nixhold-check-<name>` (a launchd daemon on darwin) that runs the
+script after the units it names, retries on the same shape, has no
+done marker because a check is re-run by every deploy, and stays
+inactive once it passes. It is where "verify once after deploy"
+belongs: the evidence a check reads (a socket's group, a row in a
+database, what a daemon logged at start) is on the host, so the
+check runs there, under root or the `user` it names, inside the
+framework hardening set (`systemd.services.nixhold-check-<name>`
+is the escape hatch), and its state is what `deploy` prints after
+activation and what `status`'s live line shows. Nothing is read
+over the network that the unit read already, and nothing is a
+dashboard (see "`nixhold status`"). Starting a system-scope unit
+needs root, so on a remote NixOS host a deploy that finds check
+units asks sudo once more (once per CLI process: `nixos-rebuild`
+owns its own prompt and its answer cannot be reused), and a fleet
+with no checks is never asked; on a Mac `status` reads the daemons
+with `sudo -n` and prints `checks: needs sudo` when refused.
+A fleet's checks are its own: the framework renders the unit and
+reads its state, the script is the fleet's assertion about its
+services.
 
 **The closure over the network.** A thing that can be a store path
 is one. A binary fetched at activation time is the wrong answer
@@ -487,13 +541,19 @@ keeps its own `~` expansion, against the same home.
 | one HM `programs.ssh.settings."<forge host>"` per **distinct** forge host | the url's host, parsed from scp-like `user@host:path` and `ssh://user@host/path` (https urls get none), and github.com for the fleet repo itself whenever `layout.repoUrl` is set — the checkout the CLI clones is no declared repository, but its forge takes the same key, so a host that declares nothing still reaches the fleet as the fleet. `IdentityFile = "~/.ssh/<key secret>"; IdentitiesOnly = true;`, `mkDefault`, gated on that secret's `active` — and **no `User`**: the url carries it. Every repository on one forge host names the same `key` (assertion) |
 | `nixhold.secrets.identity-<key>` | for every `key` a repository names other than `ed25519`: `sshKey = true`, `sshKeyType = <key>`, and `mkDefault` fleet scope, `category = "framework"`, owner user, `required = false` — the same posture as `identity` |
 | `~/.config/direnv/lib/nixhold.sh` | an HM `xdg.configFile` direnv library, emitted only under `mkIf programs.direnv.enable` (the framework never enables direnv). For the directory being loaded it finds the declared repository path containing `$PWD` (longest prefix wins, `~` expanded) and `dotenv_if_exists`es that repository's decrypted age path |
-| a provisioning unit per repository, on a host with `nixhold.home.checkouts` | `nixhold-repo-<name>`: a systemd user service (NixOS) or launchd agent (darwin), per "Provisioning". Its script clones the url to `path` when `path` is absent (an ssh url first checks that the repository's key file is readable and exits 1, a retry, when it is not), then writes the managed empty `.envrc` when there is none, appends it to `<path>/.git/info/exclude` once, and `direnv allow`s when direnv is available. That `.envrc` is the done marker: `ConditionPathExists=!<path>/.envrc` |
+| a provisioning unit per repository, on a host with `nixhold.home.checkouts` | `nixhold-repo-<name>`: a systemd user service (NixOS) or launchd agent (darwin), per "Provisioning". Its script (`modules/repositories/checkout.nix`, a function of the repository so a check runs the same one) clones the url to `path` when `path` is absent (an ssh url first checks that the repository's key file is readable and exits 1, a retry, when it is not), then — testing again, because the clone may have brought one — writes the managed `.envrc` when there is none, appending it to `<path>/.git/info/exclude` once unless the repository tracks a file of that name, and `direnv allow`s when direnv is available. That `.envrc`, the repository's own or the managed one, is the done marker: `ConditionPathExists=!<path>/.envrc` |
 
 **The first clone is not TOFU.** Both baselines pin github.com's
 published SSH host keys in `programs.ssh.knownHosts` (see Host-key
 trust), so the activation step below authenticates the forge
 against a committed key on a host that has never talked to it.
-A forge the framework does not pin is the operator's to add.
+A forge the framework does not pin is the operator's to add, and an
+assertion is what asks: every forge host a declared repository
+reaches over ssh has a `programs.ssh.knownHosts` entry (its attribute
+name or one of its `hostNames`), or the fleet does not evaluate. An
+unpinned forge is otherwise a unit that fails `Host key verification
+failed` every 30 s until its start limit, which is a fleet-data
+mistake wearing a runtime failure's clothes.
 
 **The clone is a unit, on the seat.** A declaration is fleet-wide:
 the secret, the forge block and the direnv library reach every
@@ -720,15 +780,43 @@ one exception is Windows' loader when a Windows installation is
 found on a *non-target* disk (an NTFS partition with
 `Windows/System32`, read the same read-only way): the install
 reads `EFI/Microsoft` off the old ESP before disko and puts it on
-the new one before the loader is installed beside it — in place on
-the ISO, through `--extra-files` over ssh — and systemd-boot lists
+the new one the moment there is one, before the closure is built
+and long before the loader is installed beside it. That is a
+`tar -x` into `/mnt/boot/EFI` in place on the ISO, and the same
+tar streamed over ssh on the `--remote` path, which splits
+nixos-anywhere into `--phases kexec,disko` and `--phases
+install,reboot` to open the window (the second run names no kexec
+phase, so it reuses the installer the first one left running,
+`/mnt` still mounted). `--extra-files` is the wrong carrier for
+this one file: nixos-anywhere applies those inside the install
+phase, after the remote build, and a build that fails after disko
+is exactly the case that would leave the erased ESP empty with the
+only copy of the loader in a scratch directory the run wipes on
+its way out. systemd-boot lists
 Windows on its own, since it recognises that loader on its own
 ESP. Nothing on the target disk survives, so a Windows there goes
 with its loader and the picker names it among what is erased; no
 other loader is carried, since none is one systemd-boot would
-show and none says where its OS lives. And when a Windows ESP sits
-on a *non-target* disk the picker prints the one line that
-chainloads it, `boot.loader.systemd-boot.windows.<n>.efiDeviceHandle`.
+show and none says where its OS lives.
+
+A Windows the install is about to *keep* that it cannot read stops
+the install, because "no NTFS holding Windows" is the same answer
+as "no Windows" and that answer is what decides the carry: taken
+on faith it erases the ESP and leaves a Windows still on the
+machine unbootable. Two cases, both on a disk other than the
+target and both reported with what to do:
+`FSTYPE=BitLocker`, where no mount looks inside the volume at all
+(suspend BitLocker in Windows, reboot, re-run), and an NTFS
+partition that refuses a read-only mount, which is Fast Startup or
+hibernation leaving a dirty log ntfs3 will not touch (shut Windows
+down with Fast Startup off, then re-run). Neither decays into the
+warn-and-confirm path, and nothing has been erased when either
+fires. On the target disk both are ignored: that disk goes either
+way.
+
+When a Windows ESP sits on a *non-target* disk the picker prints
+the one line that chainloads it,
+`boot.loader.systemd-boot.windows.<n>.efiDeviceHandle`.
 The handle is readable only from the UEFI shell (`map -c`), so it
 is operator-set in the host module and the framework wraps
 nothing; the firmware boot menu works with no configuration at
@@ -787,14 +875,23 @@ the guest's.
 
 **The guest is a full host.** `mkFleet` emits the guest's
 `nixosConfigurations.<guest>` exactly as before, so lint and status
-read it like any host, and adds to the machine's configuration
-`containers.<guest>` built from the same module list with the same
-`specialArgs`. One list, one closure: the machine's closure contains
-the guest's system, which is how NixOS containers work, and the
-guest's own attribute is the same configuration read from the top
-(nixpkgs' container module evaluates the list itself where it reads
-the guest's config, so the machine's eval carries the guest's; a
-pure eval of one list gives one system). The guest runs its own
+read it like any host, and points the machine's
+`containers.<guest>.path` at that host's own
+`config.system.build.toplevel`. One eval, one closure: the machine's
+closure contains the very store path the flake exports under the
+guest's name, and `nixhold deploy <machine>` and a build of
+`.#nixosConfigurations.<guest>` are the same derivation. The other
+spelling, `containers.<guest>.config`, is not this one: nixpkgs merges
+that option through `nixos/lib/eval-config.nix` where a flake host
+goes through `nixpkgs.lib.nixosSystem`, and the two entrypoints
+disagree, so one module list would build two systems and the machine
+would run the one nothing else names. `config` is set all the same,
+to the guest's `system.stateVersion` and nothing more, because
+nixpkgs reads the option for every container whether or not it is
+defined (an assertion asking whether the container needs a nix daemon
+the machine does not run, which for a guest reaching the machine's
+nix-daemon socket the defaults answer); that definition carries a
+`path` of its own, which the framework's `mkForce` overrides. The guest runs its own
 tailscaled and is its own tailnet node under its own name, so
 `derived.address.<guest>` resolves the way it does for any host,
 sshd inside the guest is pinned by `keys/hosts/<guest>.pub`, and
@@ -823,7 +920,13 @@ machine's configuration renders all three from the roster entry:
 
 - **Network.** A private veth pair whose two ends are derived once
   for both sides (`derived.guests.<guest>.{hostAddress,localAddress}`,
-  a `10.233.<n>.0/24` per guest in name order), masqueraded by the
+  one `10.233.<n>.0/24` per guest with `<n>` the first 32 bits of the
+  guest's name hashed into 1..254; a position in the sorted list of
+  guests would renumber every guest that sorts after a newly added
+  one, moving live veths and the routes through them on a deploy that
+  was meant to add a host, and two guests of one machine landing on
+  the same `<n>` is an eval assertion naming both and asking for a
+  rename), masqueraded by the
   machine; no uplink interface is named, since a seat machine
   roams. The guest's tun device and the network capability
   tailscaled needs. A NetworkManager machine leaves `ve-*`
@@ -844,7 +947,12 @@ machine's configuration renders all three from the roster entry:
 - **State.** The guest's root is the machine's
   `/var/lib/nixos-containers/<guest>`. A backup copy a guest's
   service publishes lands under the guest's own root and leaves
-  over the guest's transport, so "Backups" is unchanged.
+  over the guest's transport, so "Backups" is unchanged. That path is
+  the CLI's too: `deploy` reads the guest's first ssh host key out of
+  it, and `host remove <guest>` prints it as the state the repo does
+  not own and does not delete. So a machine with guests asserts
+  `system.stateVersion >= 22.05`, below which nixpkgs drops the
+  `nixos-` from the directory's name.
 
 **Devices are granted, then disclaimed.** Hardware is the machine's
 to hand out, so the grant is on the machine's entry: `devices`
@@ -872,6 +980,33 @@ guest's own unit that names a device in its hardening exceptions
 (`DeviceAllow`) that the grant does not hold is a lint finding, so
 a guest cannot silently want what its machine never gave.
 
+**The container unit starts and changes on the framework's terms.**
+nixpkgs' `container@<guest>` is `Type=notify` and raises the machine's
+end of the veth in its post-start, which runs only once the guest
+signals ready, and a guest that runs networkd's wait-online and
+tailscaled cannot reach ready until that end is up. On a machine whose
+network manager leaves `ve-*` alone, which every `desktopLinux` seat
+is, that is a deadlock the unit cuts at its start timeout, on repeat.
+So the unit is `Type=simple`, started the moment nspawn is, and its
+post-start waits for the veth to exist before nixpkgs' script raises
+it. What the operator loses is the unit as a readiness signal, which
+`deploy` buys back below.
+
+What restarts the unit is the boundary: the bind mounts, the device
+grant, the tun device, the veth addresses and the nspawn flags, hashed
+into the one `restartTriggers` entry the framework forces, since half
+of them reach the unit only through `/etc/nixos-containers/<guest>.conf`
+and would otherwise change nothing the unit file shows. What reloads
+it is the guest's closure, as the one `reloadTriggers` entry: a changed
+`X-Reload-Triggers` over an otherwise unchanged unit file is
+switch-to-configuration's reload case, and the unit's `ExecReload`
+runs the new system's switch-to-configuration inside the running
+guest, restarting only the guest units that changed. Every deploy
+moves the closure, so a shared trigger list would halt and boot the
+guest on each one; `reloadIfChanged` is the same mistake from the
+other side, turning a boundary change into a reload inside the old
+nspawn instance.
+
 **A machine with guests never sleeps.** Suspend and hibernate are
 off and the lid and power key do nothing, set from the roster
 (`mkDefault`, principle 4) the moment `guests` is non-empty. A seat
@@ -885,21 +1020,38 @@ naming the machine, and the install picker does not offer a guest.
 machine of its arch to run it on — its own hardware, or that
 machine as a container (`--on <machine>` answers it) — writes the
 machine's `guests` entry, asks it no public address and ends with
-the machine's deploy rather than the install question. `host
-remove` drops the guest from every machine that named it. `status`
-reads the guest's declaration side as any
+the machine's deploy rather than the install question. After a
+machine activates, `deploy` asks each of its guests what it reached
+(`systemctl is-system-running --machine <guest> --wait`, capped at
+120 s and preceded by a wait for the machine transport, which a guest
+started seconds ago does not answer on yet) and prints the word;
+`running` and `degraded` pass, anything else fails the deploy and
+prints the guest's own errors. That is what a `Type=simple` unit no
+longer says on its own. `host remove` drops the guest from every
+machine that named it, and names
+`/var/lib/nixos-containers/<guest>` as the operator's to keep or
+wipe. `status` reads the guest's declaration side as any
 host's and marks it `guest of <machine>` in `--fleet`. Lint rule
 `15-guests`: a guest is named by at most one machine, its `arch` is
 its machine's, the machine is NixOS, the guest carries no `disk`,
 `guests`, `publicIp` or `publicFqdn`, every granted path is under
-`/dev`, and every `DeviceAllow` node in a guest's own units is
-within the grant (warn dev / error strict).
+`/dev`, no path is a DRM card node (a card node carries DRM master;
+the render node beside it is what a guest takes), no sound card is
+granted to two guests of one machine, no NixOS host is left with
+neither a machine that names it nor a disk of its own (what `host
+remove <machine>` leaves of its guests), and every `DeviceAllow` node
+in a guest's own units is within the grant (warn dev / error strict).
 
 Checks: `fixture-desktop` names `fixture-guest` under `guests` with
-one render node and one sound card, so building the desktop builds
-the guest's system through `containers.fixture-guest.path`; the
-desktop stub asserts the machine side of the boundary, the guest
-stub the guest side.
+one render node and one sound card, and the desktop stub asserts that
+`containers.fixture-guest.path` IS the guest host's own toplevel, so
+building the desktop builds exactly the derivation
+`.#nixosConfigurations.fixture-guest` names; the desktop stub carries
+the machine side of the boundary, the guest stub the guest side. Both
+are eval-only, so the start path (the unit's Type, the veth wait, and
+a guest that reaches a system state behind them) is verified by
+`vm-guest` (`checks/vm/guest.nix`), which boots a NetworkManager
+machine and one guest whose own readiness waits on the veth.
 
 **Performance is native.** A container shares the machine's
 kernel: a guest process opens the same device node through the
@@ -1056,11 +1208,13 @@ repo, under `layout.keysDir` (`keys/`) and `layout.secrets`
 | `keys/fleet.pub` | its recipient line | public |
 | `keys/login.pub` | ssh login pubkeys, one per line: authorized for the operator on every host and for root on the ISO (see "Login keys") | public |
 | `keys/hosts/<host>.pub` | that machine's ssh host pubkey, for `known_hosts` pinning only. Random per install, never a recipient, never escrowed | public |
+| `keys/syncthing/<host>.id` | that host's syncthing device ID, the public half of its `syncthing-identity` secret, written by `secret edit` through the secret's `public` field; every peer's device list is rendered from these | public |
+| `keys/networks/<network>.age` | the API client of a `tailscale`-typed network (`client_id` and `client_secret`, one `KEY=value` per line). Optional: its presence is what turns on minted auth keys (see "The tailnet's API client"). It can mint tailnet access and delete nodes, and no host needs it, so it is the second file the fleet key never opens | the operator lines alone |
 | `secrets/<name>.age` | a fleet-scoped ciphertext | operator lines + `fleet.pub` |
 | `secrets/<host>/<name>.age` | a host-scoped ciphertext | operator lines + `fleet.pub` |
 
-`keys/fleet.key.age` is the only file encrypted to the operator
-lines *alone*. On every host the key lands as
+`keys/fleet.key.age` and `keys/networks/<network>.age` are the
+only files encrypted to the operator lines *alone*. On every host the key lands as
 `/etc/nixhold/fleet.key` (root, 0400) next to
 `/etc/nixhold/fleet.pub` (0444, the public recipient line) — so a
 verb can ask which key a machine holds with one `cat`, without
@@ -1102,6 +1256,8 @@ Fields:
 | `sshKey` | marks an SSH private key: generated at provisioning unless the operator chooses to paste one, `.pub` derived at HM activation via `ssh-keygen -y` (failure is loud) | false |
 | `sshKeyType` | the algorithm the default generator mints: `ed25519`, or `rsa` (4096 bits) for a forge that cannot take ed25519. Read only with `sshKey` | `ed25519` |
 | `unit` | NixOS only: `systemd.services.<unit>.serviceConfig.EnvironmentFile += [ <age path> ]`, gated on `active`. Mutually exclusive with `homePath`/`sshKey` (assertion) — systemd reads the file as root, a home symlink is the operator's | null |
+| `public` | `{ file; command; }` or null: a public half the fleet commits. After every write (a mint, a paste, an edit), `secret edit` pipes the plaintext through `command` and writes its stdout to `<keysDir>/<file>`, staged and committed with the ciphertext. Peers read the file at eval as a layout-path exception, like every committed pubkey. One consumer today, `syncthing-identity` (the device ID); the field is generic because a branch on a secret's name in the CLI is the shape the rule "names never carry behaviour" forbids | null |
+| `tailscaleAuthKey` | the name of a `tailscale`-typed network, or null: a typed mint like `sshKey`. When the fleet commits that network's API client, `secret edit` mints the content through the API instead of a shell generator (single-use, pre-authorized, tagged, one-hour expiry); without the client the secret is operator-typed as before. Set by the tailscale module on its `<authKeySecret>` declaration, never by an operator | null |
 
 The framework derives per-entry: the ciphertext's checkout location
 `sourceFile` (scope + name; existence checks and messages only)
@@ -1137,7 +1293,8 @@ are declared by the framework, so a forker never writes them:
 | `identity` | secrets baseline, both platforms | **fleet scope**, `sshKey = true`, `required = false`. The fleet's single outbound ssh key: `IdentityFile` on every fleet-peer and forge matchBlock, git signing key, the credential the installer ISO clones the fleet repo with, and — on a fleet that lists nothing else — the line `keys/login.pub` is seeded with when the CLI mints it. One ed25519 key per fleet, by construction rather than by assertion; the one second outbound key the framework mints is `identity-rsa`, declared by a repository whose forge cannot take ed25519 (see "One outbound key, and a named exception") |
 | `env` | secrets baseline, both platforms | fleet scope, owner user (0600), `required = false`. Sourced into every operator shell by system-level shell init on both platforms (`set -a; . <path>; set +a`, guarded on readability), gated on `active`. Its blast radius is every process the operator starts from a login shell — editor, browser, build, assistant — so it holds what genuinely belongs to the whole seat; anything narrower goes in a repository's own env, which direnv loads only inside that checkout |
 | `adb` | android baseline, every Android host | **fleet scope**, owner root, `required = true`, generator `ssh-keygen -t rsa -b 2048 -m PKCS8`: the one key every Android device is paired with. Deploy hands it to adb as `ADB_VENDOR_KEYS`; a NixOS host that drives a device itself imports the same declaration as `modules.infra.adbKey` to have it placed (see "Android hosts") |
-| `<authKeySecret>` | tailscale service when the option is set | host scope, owner root, 0400, `category = "service"`; the join unit retries on failure every 30 s, so a late network or a slow control plane converges and only a spent key stays failed |
+| `<authKeySecret>` | tailscale service when the option is set | host scope, owner root, 0400, `category = "service"`, `tailscaleAuthKey` naming the host's one tailscale network (an assertion: a host on two tailnets has to say which one joins unattended); the join unit retries on failure every 30 s, so a late network or a slow control plane converges and only a spent key stays failed. With the network's API client committed, `host install` and the first deploy of a guest re-mint it (see "The tailnet's API client"), so the committed ciphertext is a spent key between installs and never something the operator pasted |
+| `syncthing-identity` | syncthing service | host scope, owner `syncthing`, required, generator `syncthing generate` (the key and the certificate, one PEM file), `public` writing the device ID to `keys/syncthing/<host>.id`. The identity is a secret rather than a per-install mint like the ssh host key because every peer's folder config pins it: a wipe that lost it would re-pair every peer (see "Syncthing: identity and topology are fleet data") |
 
 The framework knowing the literal names `identity` and `env` does
 not violate "names never carry behavior" — that rule is about
@@ -1311,9 +1468,20 @@ alone.
 
 **Three fleets, one code path.** Passphrase only (the shape every
 fleet starts as), token only, or both. Adding or removing an
-operator recipient is an edit to the recipients file plus one
-`nixhold secret rekey` — there is no enrollment verb because there
-is nothing for it to do. With both routes committed, the security
+operator recipient is a line in the recipients file plus one
+`nixhold secret rekey`, and the `nixhold operator` verbs are that
+edit done whole: `enrol` mints the token's two credentials (a
+resident, PIN-gated `ed25519-sk` login key and an
+`age1fido2-hmac1…` recipient), appends the ssh line to
+`keys/login.pub` and the age line to `keys/operator.pub`, rekeys
+and commits; `remove <line>` is the reverse; `check` opens
+`keys/fleet.key.age` over each committed route in turn and names
+the one that fails. The verbs exist because the by-hand flow is
+easy to half-do: a recipient line added and no rekey is a route
+the fleet advertises and no ciphertext opens, and a login line
+appended on one machine and never deployed is a token that opens
+nothing. Setting the PIN, the touches and the forge registration
+stay the operator's. With both routes committed, the security
 boundary for whoever holds both stays "repo + passphrase": the
 token adds a route, not a wall, and it is worth having for the
 machines where the operator would rather touch a key than type a
@@ -1416,7 +1584,14 @@ MagicDNS name, so on tailscale networks the vhost is always
 lives in the caddy infra module, emitted only when tailscale HTTP
 endpoints exist: a oneshot (`tailscale cert` into
 `/var/lib/caddy/tls` after tailscaled is up), a weekly persistent
-renewal timer (90-day certs), and a path unit reloading caddy.
+renewal timer (90-day certs), and a path unit reloading caddy. The
+oneshot runs as the caddy user, staging the pair in a 0700 directory
+of its own and moving the key in last: the directory it fills is
+caddy's, and the hardening set leaves a root unit without the
+capabilities to write into it or hand anything over (see "One
+hardening set"). `services.tailscale.permitCertUid` is that same
+uid, since tailscaled checks the peer of the socket the cert is
+asked for on.
 Tailnet vhosts use `tls <cert> <key>` + `auto_https
 disable_redirects`; internet vhosts use caddy ACME. Apps that can't
 live under a subpath set their own base-path option or expose on an
@@ -1566,14 +1741,98 @@ daemon would gain read on every other service's copies for a bit
 only the oneshot needs), a default ACL granting the group read for a
 writer that is the daemon itself, and on a named unit a 0027 umask
 plus a post-run chmod for a copier that preserves the 0600 modes of
-what it copies. The directory line lives under tmpfiles `10-<name>`
-with its fields forced, because nixpkgs' vaultwarden creates the
-same directory under that name. The producer, its timer and the
+what it copies (that chmod walks a setgid tree, so the same unit
+gets `RestrictSUIDSGID = false`: a symbolic chmod preserving the bit
+is a chmod setting it). The directory line lives under tmpfiles
+`10-<name>` with its fields forced, because nixpkgs' vaultwarden
+creates the same directory under that name. The module is imported
+by the NixOS baseline rather than the server profile — the data is a
+service's, so a `desktopLinux` host that sets `backup.dir` publishes
+the same way a server does. The producer, its timer and the
 transport off the box stay the service's: vaultwarden's producer is
 nixpkgs' `backup-vaultwarden`, taskchampion's is its own oneshot
-(sqlite `.backup`, the rest `cp -a`), Navidrome's is its scheduler.
+(sqlite `.backup`, the rest `cp -r`), Navidrome's is its scheduler.
 A fleet-local service publishes the same record, which is the
 plugin seam in use.
+
+**A backup that did not happen is a failed unit.** A named oneshot's
+second `ExecStartPost` fails the unit unless something under `dir`
+was written in the last ten minutes, because the failure mode of
+every producer here is exiting 0 with nothing copied: a source
+directory that is not there yet, a guard that swallowed an EACCES,
+a database the daemon has not created. The signal is the unit's
+failed state, which the box keeps until someone reads it
+(`systemctl --failed`, `nixhold logs <host> backup-<name>`);
+`nixhold status` shows a host's *provisioning* units and not this
+one. Nothing here alerts — an observability stack is out of scope at
+this scale (see "Logs & observability posture").
+
+**Retention belongs to the receiver.** Every producer but Navidrome
+overwrites one copy per night, and none of them rotates: keeping
+older generations is the same decision as keeping them off the box,
+and both are the transport's. The transport here is syncthing, and
+the policy is the `versioning` field of the receiving host's entry
+in `mkFleet { sync }` (below). A producer that grew its own
+rotation would be a second retention policy for the receiver to
+disagree with.
+
+**Syncthing: identity and topology are fleet data.** A host's
+eval cannot see which other hosts enable syncthing (principle 13),
+so what peers with what is declared once, on `mkFleet`:
+
+```nix
+sync.backups = {
+  homelab = { path = "/var/lib/backups"; type = "sendonly"; };
+  desktop = { path = "/srv/sync/backups"; type = "receiveonly";
+              versioning = { type = "staggered"; params.maxAge = "31536000"; }; };
+  mac     = { path = "/Users/op/Sync/backups"; type = "receiveonly";
+              versioning = { type = "staggered"; params.maxAge = "31536000"; }; };
+};
+```
+
+Each host's module reads its own entries: its folders are the ones
+naming it, its devices the union of the other hosts across those
+folders, each device's ID the committed `keys/syncthing/<peer>.id`
+and its address `tcp://<derived.address.<peer>.<tailnet>>:22000`,
+since discovery stays off and the sync ports open on the tailscale
+interface alone. `overrideDevices` and `overrideFolders` are true:
+the GUI browses and shows folder state, and a device or folder
+added there is reverted at the next restart. A host named in
+`sync` whose `nixhold.services.syncthing.enable` is false fails an
+assertion naming the folder; a peer with no committed `.id` fails
+one naming the file and the verb that writes it. `type` defaults to
+`sendreceive`, `versioning` to none.
+
+The identity behind the device ID is the `syncthing-identity`
+secret (see "Framework-declared secrets"): the key and certificate
+syncthing minted, one PEM file, split into `configDir` by a step
+before `syncthing-init` copies its config in. A host key is a
+per-install mint because it only identifies; this one is a secret
+because every peer's folder config pins it, so a guest whose state
+was wiped comes back as the same device and every peer resumes.
+`secret edit` writes the device ID beside the ciphertext through
+the secret's `public` field, and a peer's eval reads it there.
+
+The NixOS implementation runs the daemon as its service uid with
+folders under `/srv/sync` (above). The darwin implementation is a
+home-manager launchd agent under the operator's uid, folders under
+the operator's home, GUI on localhost only: a Mac is a seat, its
+syncthing holds the operator's own copies, and no service uid
+exists to hold them for the operator. Both implementations read
+the same `sync` data, and the folder path is the one place the two
+differ, which is why the path is per host in the declaration.
+
+**vaultwarden's signups follow its database.** `SIGNUPS_ALLOWED`
+is a start-time setting with no runtime toggle, so the module
+decides it at start: an `ExecStartPre` counts `users` in the sqlite
+database (no database is zero) and writes `SIGNUPS_ALLOWED=true`
+or `false` to `$RUNTIME_DIRECTORY/first-run.env`, appended as the
+last `EnvironmentFile` so it overrides the config. Signups are open
+while the vault has no account and closed from the first restart
+after one exists, which the fleet's own deploy is. The window is
+gated by tailnet identity like every request to the vhost; a
+second account registered inside it is a tailnet member's, and the
+restart after registering is the runbook's one line.
 
 **An app that has to know its own origin** reads
 `nixhold.infra.url.<service>.<endpoint>` — the resolved
@@ -1627,6 +1886,37 @@ GUI and no auth-key file, so joining is a one-time
 `sudo tailscale up` and `authKeySecret` is asserted null on darwin.
 No firewall knob either: the option the NixOS side sets is a NixOS
 option, and macOS opens nothing for a client.
+
+**The tailnet's API client.** A headless host joins with a
+pre-auth key, and the framework mints that key itself when the
+fleet commits the network's OAuth client at
+`keys/networks/<network>.age` (scopes `auth_keys` and
+`devices:core`, the tag `tag:nixhold` it may issue keys under,
+which is the one `tagOwners` line the operator writes in the
+tailnet policy once). The file's presence decides the flow, the
+way the operator-route files do: with it, `host install <name>`
+and the first deploy of a guest whose state directory is absent
+delete the tailnet node named `<name>` when one exists (the name
+must be free, since the vhost, the cert and the deploy address all
+key on it), mint a single-use, pre-authorized, one-hour, tagged
+key, and write it as the host's `<authKeySecret>` ciphertext like
+any secret; `secret edit <host> <name>` re-mints on demand.
+Without it, the secret is pasted from the admin console as before.
+The key never passes through a browser or a clipboard, its life is
+the hour the install takes, and the committed ciphertext holds a
+spent key from then on, so nothing is revoked by hand. The
+credential is encrypted to the operator lines alone (see "The
+committed files"): it mints tailnet access, and the fleet key's
+"any host reads every secret" trade-off stops short of that.
+
+A key minted by an OAuth client tags the node, and a tagged node is
+the right shape for a server: its node key never expires, MagicDNS,
+`tailscale cert` and sshd work as for any node, and the identity
+gate treats it as a server, not a source. The seats stay on a
+one-time `sudo tailscale up`: their tailnet identity is the
+operator's login, which is what the identity gate admits, and a
+tagged seat would be refused by it. Turning MagicDNS and HTTPS
+certificates on by API is not part of this (see Rejected).
 
 **sshd exposure follows the topology.**
 `nixhold.services.openssh` (the hardened preset: key-only,
@@ -1801,7 +2091,7 @@ untouched (ISO is NixOS-only).
 
 ## CLI
 
-One bash CLI, 15 verbs. Access: bare `nixhold` post-install
+One bash CLI, 19 verbs. Access: bare `nixhold` post-install
 (`programs.nixhold.enable`, default on) or `nix run .#nixhold --
 <verb>` pre-install. No separate installer apps, no
 per-subcommand flake apps.
@@ -1848,9 +2138,16 @@ nixhold secret list [<host>] [--fleet]              no host: the fleet inventory
                                                     a host: its declared secrets by category
 nixhold secret edit [<host>] [<name>]               missing: provision; present: edit; a lone
                                                     non-host argument resolves across the fleet
+nixhold secret show [<host>] <name>                 print one plaintext over the operator route
+                                                    (both: `network/<name>` is that tailnet's
+                                                    API client, keys/networks/<name>.age)
 nixhold secret rekey                                re-encrypt everything to the current
                                                     operator lines + fleet key
 nixhold secret rotate                               new fleet key → rekey → "next: nixhold deploy"
+nixhold operator enrol [<label>]                    a token: login key + age recipient, both
+                                                    files written, rekey, commit
+nixhold operator remove <line>                      the reverse: drop the lines, rekey, commit
+nixhold operator check                              open the fleet key over every committed route
 nixhold service new <name>
 nixhold iso [--flash <device>]
 ```
@@ -1917,12 +2214,26 @@ Notable shapes:
   can be older or newer than the framework modules the host is
   about to be built from. So a verb that **cloned a checkout in
   this process** re-runs itself at that checkout's pin —
-  `nix run path:<checkout>#nixhold`, which resolves because
-  `mkFleet` re-exports the framework's `apps`. The image's copy is
+  `nix run <checkout>#nixhold`, which resolves because
+  `mkFleet` re-exports the framework's `apps`. The checkout goes in
+  as a plain flake ref, not `path:<checkout>`: a work tree is a git
+  flake, and `path:` would copy all of it (`.git`, every `result`
+  symlink) into the store a second time. The image's copy is
   a bootstrap: route, clone, hand over.
-  - Only after a clone this process made. A steady-state run is
-    already on its fleet's pin, and a dev run out of a framework
-    checkout must not be silently swapped for the fleet's.
+  - Only after a clone this process made, and only when the store
+    paths differ. The gate compares `$NIXHOLD_SELF` with the
+    checkout's own `packages.<system>.nixhold`, so it measures the
+    derivation, not the revision. A fleet follows its own nixpkgs
+    into the framework, which makes the fleet's CLI a different
+    build from `nix run github:fcalell/nixhold#nixhold` even at the
+    same framework rev: a Mac bootstrap always hands over. The ISO
+    is the case that matches and continues in place, since its CLI is
+    built under the fleet's own pkgs (`lib/installer-iso.nix`), so
+    an image written from the pin the checkout still holds is that
+    same store path. Sources run directly export no
+    `$NIXHOLD_SELF` at all and never hand over: a dev run out of a
+    framework checkout must not be silently swapped for the
+    fleet's.
   - The clone is recorded as a file under the process scratch root,
     not a shell variable: `nh_clone_fleet` runs inside
     `$(nh_fleet_root)`, whose assignments a subshell throws away.
@@ -2030,15 +2341,21 @@ host, a guest's marked `guest of <machine>`, and declaration-only.
 An Android host shows its plan: packages with versions, removals,
 settings, launcher, owner. One live line, `provisioning:`, for a
 single NixOS or darwin host: the state of its `nixhold-*` units
-(see "Provisioning"), read over the same pinned connection `deploy`
-uses (`systemctl --user` on NixOS, `launchctl list` on this Mac):
-`ok`, the failed and retrying units by name, or `unreachable`; a
+(see "Provisioning"), read on this machine when the host is this
+machine (the same test `deploy` makes, so both verbs answer it the
+same way) and otherwise over the connection `deploy` uses
+(`systemctl --user` and `systemctl` for the system-scope checks on
+NixOS, `launchctl list` on this Mac):
+`ok`, the failed and retrying units by name, `unreachable`, or what
+the read said when it failed for any other reason; a
 host being down never fails the verb. This is the one live probe,
 and it exists because a provisioning unit's failure is otherwise a
 line in a boot-time journal nobody reads: the point of
 provisioning-as-units is that a verb can answer "did the machine
-reach what it declares". Anything richer is `nix eval` /
-`nixos-option` / `nixhold logs`. Never a dashboard.
+reach what it declares", and a `nixhold.checks` unit is the same
+answer for what the fleet asserts about its services (see
+"Provisioning"). Anything richer is `nix eval` / `nixos-option` /
+`nixhold logs`. Never a dashboard.
 
 ### `nixhold deploy`
 
@@ -2080,10 +2397,20 @@ missing or differs from `keys/fleet.pub`, decrypt
 rekey, ever: a host added to the fleet inherits `env` and every
 shared repository env because it holds the key those ciphertexts
 were already written to, so declaring the repository and deploying
-is the whole flow. After activation the verb reads the host's
-`nixhold-*` provisioning units and prints any that are failed or
-retrying (the read `status` makes): activation succeeding says the
-closure is in place, not that the checkouts it declares exist.
+is the whole flow. A guest deployed for the first time (its state
+directory absent on the machine) gets its tailnet auth key
+re-minted first when the network's API client is committed (see
+"The tailnet's API client"): the guest has no install step, so
+this is its install. After activation, on a NixOS host, the verb
+resets and starts the `nixhold-*` units, user scope and the
+system-scope checks alike — sd-switch starts only what
+the closure changed, so the deploy that fixes a unit's cause is what
+has to run it again, and a unit that is done skips on its condition.
+A launchd agent needs no such kick: its `KeepAlive` retries
+unbounded. Then the verb reads those units and prints them (the read
+`status` makes), `failed` and `retrying` as warnings and a unit still
+running as a line of its own: activation succeeding says the closure
+is in place, not that the checkouts it declares exist.
 `--dry-run` runs `nixos-rebuild dry-build` (darwin:
 `check`). Tradeoffs accepted: tiny VPSes may struggle building
 (substituters cover most); power users escape to raw `nixos-rebuild
@@ -2095,12 +2422,13 @@ closure is in place, not that the checkouts it declares exist.
 upstream), the pins that have no file yet (see "Pins"), a baseline
 eval of every host, `nix flake update`, every pin resolved against
 its `latest`, then what moved: inputs from the lock diff, `<input>:
-<old rev> → <new rev>`, and pins by version, `<pin>: <old> → <new>`.
+<old rev> → <new rev>`, and pins by manifest, `<pin>: <old> → <new>`.
 Then the eval gate, and a hand-off to `deploy` under its host rule:
 this machine, or every eligible host with `--all`. A run where
 neither the checkout, an input nor a pin moved stops after the
 baseline. Neither the lock nor a pin file is auto-committed; the verb
-ends with the commit command.
+ends with the commit command, its subject naming what moved (inputs,
+pins, or both).
 
 **The eval gate.** One `nix eval` per host per side, reading three
 things off the configuration: `system.build.toplevel.drvPath`,
@@ -2208,11 +2536,15 @@ Kinds are a closed list of one: the manifest kind above. A
 the ROADMAP's second member.
 
 `nixhold update` moves pins in the same run as the lock. A declared
-pin with no file yet is written before the baseline: there is no
-earlier state to gate against, and a checkout that declares a pin
-without its file does not build. After `nix flake update`, each pin
-is resolved again, `latest` then the manifest at that version, and
-when its `.version` differs from the file's the file is rewritten and
+pin with no file yet is written before the baseline, and staged
+(`git add --intent-to-add`), because the baseline evaluates the
+checkout as a git flake and a git flake does not see an untracked
+file: there is no earlier state to gate against, and a checkout that
+declares a pin without its file does not build. After `nix flake
+update`, each pin is resolved again, `latest` then the manifest at
+that version, and when the fetched manifest differs from the file's
+— canonicalised, so an upstream that re-cuts a release under the same
+version still counts as a move — the file is rewritten and
 the move reported beside the lock diff, `<pin>: <old> → <new>`. Pin
 files are snapshotted with the lock and restored with it when the
 gate fails. A run where only a pin moved still goes through the gate
@@ -2280,7 +2612,31 @@ A write to the `identity` secret seeds `keys/login.pub` from its
 derived pubkey when that file is missing or empty — so a fleet
 that never thinks about login keys still authorizes the one key it
 has. A fleet that already lists keys there is left alone; the line
-is appended by hand, and deployed.
+is appended by hand, and deployed. A secret with a `public` field
+gets the same treatment generically: after the mint or the paste
+the plaintext goes through the field's command and the result is
+written under `keys/`, staged with the ciphertext, so the public
+half is never a step the operator remembers. A `tailscaleAuthKey`
+secret whose network has a committed API client is minted through
+that client instead of a generator, and the verb opens the operator
+route for it, since the client is encrypted to the operator lines
+alone; the mint deletes no node, only `host install` and a guest's
+first deploy do. The client itself is written by `secret edit
+network/<name>` (a `client_id=` / `client_secret=` template in the
+editor, encrypted to the operator lines alone, the recipient set
+the fleet key uses), read back by `secret show network/<name>`,
+listed in `secret list`'s keys tree and re-encrypted by `secret
+rekey` beside the fleet key. Lint checks that each
+`keys/networks/<n>.age` names a declared tailscale network and is
+tracked; its recipient set is not readable from the file (age
+stanzas carry no fingerprint), so `operator check` is the proof.
+
+### `nixhold secret show`
+
+One plaintext to stdout over the operator route, nothing logged and
+nothing written: the way to read a credential the framework minted
+and a human types somewhere else, such as the syncthing GUI
+password. The arguments resolve as `secret edit`'s do.
 
 Scope changes only the path (`secrets/<name>.age` for fleet,
 `secrets/<host>/<name>.age` for host). The recipient set is the
@@ -2310,9 +2666,10 @@ mints the fleet key first when `keys/fleet.key.age` is missing —
 which is what makes it the migration path for a fleet laid out for
 per-host recipients — and seeds `keys/login.pub` from the
 `identity` pubkey when that file is absent. It is the verb an
-operator-recipient change ends with: adding or dropping a line in
-`keys/operator.pub` and rekeying is the whole enrollment story.
-Nothing else calls for it — not a host joining, not one leaving.
+operator-recipient change ends with, and `nixhold operator
+enrol|remove` is that change with the rekey inside it (see "Three
+fleets, one code path"). Nothing else calls for it — not a host
+joining, not one leaving.
 
 `rotate` is rekey with a new fleet key in front: generate,
 re-encrypt everything to it, and end with the one next command,
@@ -2382,8 +2739,9 @@ script each under `cli/lint/rules/`:
   is within its grant (warn dev / error strict; see "Guests")
 - `16-pins`: a `nixhold.pins.<name>` declared on two hosts agrees
   field for field; every declared pin file is inside the checkout,
-  exists in the worktree and parses with a `.version` (a missing
-  file names `nixhold update`). See "Pins"
+  exists in the worktree, is tracked by git (an untracked file is
+  invisible to eval) and parses with a `.version` (a missing file
+  names `nixhold update`). See "Pins"
 - every layout path (defaulted or overridden) exists in the
   worktree — a null `layout.ageIdentityWrapped` is not a path and
   is not checked; `layout.repoUrl` set with `secrets/identity.age`
@@ -2618,6 +2976,22 @@ Network:
   Foundation kept: a future `controlServer` field →
   `--login-server`. Revisit on sovereignty demand / 100+ devices
   / free-tier changes.
+- **The API client turning MagicDNS and HTTPS certificates on**:
+  once per tailnet, and the `dns` scope widens a credential that
+  already mints tailnet access, for a switch the operator flips
+  once. `host install` may check the setting (ROADMAP); it does not
+  set it.
+- **Seats joining by a minted key**: a key from an OAuth client
+  tags the node, and a tagged node carries no login, so the seat
+  would be refused by the identity gate it exists to pass. The
+  one-time `sudo tailscale up` is what makes a seat the operator.
+- **The API client as a `secrets/` entry**: every ciphertext there
+  is written to the fleet key, and this one must not be.
+- **Checks read over the network by `status`** (a
+  `nixhold.status.checks` list the verb runs over ssh): a second
+  live probe that re-reads what a unit on the host already knows,
+  against "one live line". A check is a unit and the line reports
+  it.
 
 Install & deploy:
 

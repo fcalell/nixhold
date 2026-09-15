@@ -119,6 +119,27 @@ let
           '';
         };
 
+        tailscaleAuthKey = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          description = ''
+            Name of a `tailscale`-typed network in
+            `nixhold.fleet.network`, marking this secret as that
+            tailnet's pre-auth key. A typed mint like `sshKey`: when
+            the fleet commits the network's API client at
+            `<layout.keysDir>/networks/<network>.age`, `nixhold
+            secret edit` mints the content through the Tailscale API
+            (single-use, pre-authorized, tagged, one-hour expiry)
+            instead of running `generator`, and `nixhold host
+            install` — a guest's first `nixhold deploy` — re-mints it
+            after deleting the tailnet node of that name. Without the
+            client the secret is operator-typed, pasted from the
+            admin console. Set by the tailscale service module on its
+            `authKeySecret` declaration, never by an operator.
+          '';
+          example = "tailnet";
+        };
+
         scope = mkOption {
           type = types.enum [
             "host"
@@ -220,6 +241,49 @@ let
             means operator-typed.
           '';
           example = "openssl rand -base64 32";
+        };
+
+        public = mkOption {
+          type = types.nullOr (
+            types.submodule {
+              options = {
+                file = mkOption {
+                  type = types.str;
+                  description = ''
+                    Where the public half is committed, relative to
+                    `layout.keysDir`. `nixhold secret edit` creates
+                    the parent directories, stages the file and
+                    commits it with the ciphertext.
+                  '';
+                  example = "syncthing/homelab.id";
+                };
+                command = mkOption {
+                  type = types.str;
+                  description = ''
+                    Shell command deriving the public half: the
+                    plaintext on stdin, the file's content on
+                    stdout. Run by the CLI on the mint or the paste,
+                    never at eval.
+                  '';
+                  example = "ssh-keygen -y -f /dev/stdin";
+                };
+              };
+            }
+          );
+          default = null;
+          description = ''
+            A public half of this secret the fleet commits, so a
+            peer's eval can read it: after a mint or a paste,
+            `nixhold secret edit` pipes the plaintext through
+            `command` and writes the result to
+            `<layout.keysDir>/<file>`. Peers read that file as a
+            layout-path exception, like every other committed
+            pubkey. Declared by the module that needs the public
+            half (the syncthing identity's device ID is the one
+            consumer today); the field is generic because the CLI
+            branching on a secret's name is what "names never carry
+            behaviour" forbids.
+          '';
         };
 
         required = mkOption {
@@ -440,6 +504,23 @@ in
         message = ''
           nixhold.secrets.${name}: sshKey marks an operator-owned
           key; it requires owner = "user" (got owner = "${s.owner}").
+        '';
+      }
+      {
+        assertion =
+          s.tailscaleAuthKey == null
+          ||
+            (config.nixhold.fleet.network.${s.tailscaleAuthKey} or null) != null
+            && config.nixhold.fleet.network.${s.tailscaleAuthKey}.type == "tailscale";
+        message = ''
+          nixhold.secrets.${name}: tailscaleAuthKey =
+          "${s.tailscaleAuthKey}" names no `tailscale`-typed network
+          of nixhold.fleet.network (this fleet declares
+          ${
+            lib.concatStringsSep ", " (
+              lib.attrNames (lib.filterAttrs (_: n: n.type == "tailscale") config.nixhold.fleet.network)
+            )
+          }).
         '';
       }
       {

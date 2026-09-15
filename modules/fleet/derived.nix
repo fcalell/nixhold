@@ -17,12 +17,19 @@ in
 
     publicHosts = lib.attrNames (lib.filterAttrs (_: h: h.publicIp != null) fleet.hosts);
 
-    # One row per guest, from the machine entries that name it. The
-    # veth addresses come from the guest's index in the sorted list
-    # of every guest: 10.233.<index+1>.1 on the machine, .2 in the
-    # guest — the range nixpkgs' own container examples use, one /24
-    # per guest, and the same value on both sides of the boundary
+    # One row per guest, from the machine entries that name it. Each
+    # guest gets one /24 out of 10.233.0.0/16, the range nixpkgs' own
+    # container examples use: 10.233.<octet>.1 on the machine and .2
+    # in the guest, the same value on both sides of the boundary
     # because both read it here.
+    #
+    # <octet> is derived from the guest's NAME: the first 32 bits of
+    # its sha256 folded into 1..254. A position in the sorted list of
+    # guests would renumber every guest that sorts after a newly added
+    # one, moving live veths, their routes and the machine's NAT on a
+    # deploy that was meant to add a host. Two guests of one machine
+    # whose names land on the same octet is an eval assertion in
+    # modules/guests/machine.nix.
     guests =
       let
         rows = lib.concatMap (
@@ -39,17 +46,25 @@ in
         # the machines are walked in name order, so it is the first
         # machine's.
         byGuest = lib.listToAttrs rows;
-        names = lib.attrNames byGuest;
+        hexValue = lib.listToAttrs (
+          lib.imap0 (i: c: lib.nameValuePair c i) (lib.stringToCharacters "0123456789abcdef")
+        );
+        octet =
+          guest:
+          1
+          + lib.mod (lib.foldl' (acc: c: acc * 16 + hexValue.${c}) 0 (
+            lib.stringToCharacters (builtins.substring 0 8 (builtins.hashString "sha256" guest))
+          )) 254;
       in
       lib.mapAttrs (
         guest: row:
         let
-          index = lib.lists.findFirstIndex (n: n == guest) 0 names;
+          n = toString (octet guest);
         in
         row
         // {
-          hostAddress = "10.233.${toString (index + 1)}.1";
-          localAddress = "10.233.${toString (index + 1)}.2";
+          hostAddress = "10.233.${n}.1";
+          localAddress = "10.233.${n}.2";
         }
       ) byGuest;
 

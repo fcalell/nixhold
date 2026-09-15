@@ -36,6 +36,11 @@ let
   committedRecipients = lines ./keys/operator.pub;
   committedLoginKeys = lines ./keys/login.pub;
   committedFleetPub = lib.removeSuffix "\n" (builtins.readFile ./keys/fleet.pub);
+  # Stands in for a forge's published host key: nothing here ever
+  # connects, and knownHosts only ever writes the line out.
+  fixtureForgeKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFixtureForgeHostKeyAAAAAAAAAAAAAAAAAAAAAAA";
+  pinnedHost =
+    host: lib.any (e: lib.elem host e.hostNames) (lib.attrValues config.programs.ssh.knownHosts);
 in
 {
   # Five repositories, chosen for what they distinguish:
@@ -57,6 +62,20 @@ in
     legacy = {
       url = "ssh://APKAFIXTURE@git-codecommit.fixture.invalid/v1/repos/legacy";
       key = "rsa";
+    };
+  };
+
+  # The two forges the framework does not pin itself ("The first clone
+  # is not TOFU"), pinned the two ways the assertion in
+  # modules/repositories accepts: under the forge's own attribute
+  # name, and under a name of its own with the host in `hostNames` —
+  # how github.com's three published keys are committed, which is why
+  # no repository here has to pin github.com.
+  programs.ssh.knownHosts = {
+    "git.fixture.invalid".publicKey = fixtureForgeKey;
+    fixture-codecommit = {
+      hostNames = [ "git-codecommit.fixture.invalid" ];
+      publicKey = fixtureForgeKey;
     };
   };
 
@@ -156,6 +175,17 @@ in
     {
       assertion = !(sshBlocks ? "example.invalid");
       message = "fixture: an https repository URL must not produce an ssh matchBlock";
+    }
+    {
+      # "The first clone is not TOFU": this host evaluates at all only
+      # because every forge it reaches over ssh is pinned — github.com
+      # by the baseline, the other two by the operator above. The https
+      # repository is the counter-case: no forge, so no pin, and the
+      # assertion must not ask for one. (An unpinned ssh forge failing
+      # the eval is checks/forge-pin.nix.)
+      assertion =
+        pinnedHost "github.com" && !(pinnedHost "example.invalid") && !(sshBlocks ? "example.invalid");
+      message = "fixture: github.com must be pinned by the baseline and the https forge pinned by nobody, got ${builtins.toJSON (lib.attrNames config.programs.ssh.knownHosts)}";
     }
     {
       assertion =

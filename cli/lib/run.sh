@@ -141,9 +141,9 @@ nh_clone_fleet() {
   nh_ok "cloned fleet to $dir"
 }
 
-# nh_reexec_at_fleet_pin <fleet-root> — hand the rest of this run to
-# the CLI this fleet pins, per ARCHITECTURE "The installing CLI is the
-# fleet's".
+# nh_reexec_at_fleet_pin <fleet-root> [verb arg…] — hand the rest of
+# this run to the CLI this fleet pins, per ARCHITECTURE "The installing
+# CLI is the fleet's".
 #
 # A bare machine is always reached by a CLI from somewhere other than
 # the fleet's lock: the one the installer ISO baked (the fleet's pin
@@ -158,8 +158,20 @@ nh_clone_fleet() {
 # not be silently swapped for the fleet's. A child rather than `exec`,
 # because the dispatcher's EXIT trap owns the scratch root and `exec`
 # would leave the plaintext in it behind.
+#
+# What is replayed defaults to what the operator typed ($_NH_ARGV). A
+# verb reached from ANOTHER verb's picker passes its own argv instead:
+# `host install`'s picker dispatches `host add`, and replaying "host
+# install" there would open the same picker again in the child.
+#
+# `$root` as a flake ref rather than `path:$root`, as every other verb
+# writes it: the checkout is a git work tree, and `path:` copies all of
+# it — `.git`, every `result` symlink — into the store a second time.
 nh_reexec_at_fleet_pin() {
   local root="$1" pinned="" system="" rc=0
+  shift
+  local -a argv=("$@")
+  [ "${#argv[@]}" -gt 0 ] || argv=("${_NH_ARGV[@]}")
   [ -z "${NIXHOLD_REEXEC:-}" ] || return 0
   nh_cloned_this_process || return 0
   # Sources run directly have no package path to compare, so there is
@@ -168,20 +180,20 @@ nh_reexec_at_fleet_pin() {
 
   system="$(nh_system)" || return 0
   pinned="$(nix eval --raw --no-warn-dirty \
-    "path:$root#packages.$system.nixhold.outPath" 2>/dev/null)" || {
+    "$root#packages.$system.nixhold.outPath" 2>/dev/null)" || {
     nh_warn "could not read the CLI $root pins — continuing on this one"
     return 0
   }
   [ "$pinned" != "$NIXHOLD_SELF" ] || return 0
 
   nh_info "this CLI is not the one $root pins — re-running there"
-  nh_info "  nix run path:$root#nixhold -- ${_NH_ARGV[*]}"
+  nh_info "  nix run $root#nixhold -- ${argv[*]}"
   # NIXHOLD_BOOTSTRAPPED carries "the checkout was cloned into the
   # framework's default directory" across: the child's own clone step
   # finds it already there, and would otherwise skip the relocation to
   # the host's own fleetDir.
   NIXHOLD_REEXEC=1 NIXHOLD_BOOTSTRAPPED="${_NH_BOOTSTRAPPED:-0}" \
-    nix run --no-warn-dirty "path:$root#nixhold" -- "${_NH_ARGV[@]}" || rc=$?
+    nix run --no-warn-dirty "$root#nixhold" -- "${argv[@]}" || rc=$?
   exit "$rc"
 }
 
@@ -527,6 +539,53 @@ nh_stage_for_eval() {
   git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
   git -C "$root" add --intent-to-add -- "$@" 2>/dev/null ||
     nh_warn "git add of the generated files failed — 'git add' them before evaluating"
+}
+
+# nh_reroot <option> <evaluated-path> -> the operator's working-tree
+# path for a path-valued option; <option> names it in the refusal.
+# The re-rooting primitive both layout paths (lib/secrets.sh) and pin
+# files (lib/pins.sh) are resolved through, so it sits with the other
+# fleet-root helpers.
+#
+# Path options (layout.*, pins.*.file) eval to read-only
+# /nix/store/<hash>-source/<sub> paths (correct for the activation
+# side). The CLI must *write* there, so the fleet's OWN store prefix is
+# swapped back for $fleet_root. A store path belonging to another flake
+# input (a private secrets repo, say) has no working tree here at all:
+# re-rooting it under $fleet_root would read and write a path that
+# never existed, so refuse instead (exit 3, which lint reports as a
+# violation rather than as a probe failure).
+nh_reroot() {
+  local label="$1" abspath="$2" root src rest store_root
+  root="$(nh_fleet_root)" || return 2
+  case "$abspath" in
+    "$root" | "$root"/*)
+      printf '%s' "$abspath"
+      return 0
+      ;;
+    /nix/store/*) ;;
+    *)
+      # Not a store path and not under the checkout: an operator-set
+      # absolute path, used verbatim.
+      printf '%s' "$abspath"
+      return 0
+      ;;
+  esac
+  rest="${abspath#/nix/store/}"
+  store_root="/nix/store/${rest%%/*}"
+  src="$(nh_flake_source_path)" || src=""
+  # The metadata probe and the eval can land on two copies of the same
+  # tree (a write between the calls re-hashes it), so a store root
+  # whose flake.nix is byte-identical to ours is still ours.
+  if [ "$store_root" != "$src" ] && ! cmp -s "$store_root/flake.nix" "$root/flake.nix"; then
+    nh_err "$label points into another flake input ($abspath); the CLI only writes inside the fleet checkout ($root)"
+    return 3
+  fi
+  if [ "$abspath" = "$store_root" ]; then
+    printf '%s' "$root"
+  else
+    printf '%s/%s' "$root" "${abspath#"$store_root"/}"
+  fi
 }
 
 # nh_hostname -> this machine's short hostname. `uname -n` rather than

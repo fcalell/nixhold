@@ -55,14 +55,30 @@ cmd_secret_edit() {
     cat <<'EOF'
 Usage: nixhold secret edit [<host>] [<name>]
 
-  <host> <name>   that secret on that host.
-  one argument    a host name opens its walk; anything else is a
-                  secret name, resolved across the fleet.
-  no argument     pick a host.
+  <host> <name>     that secret on that host.
+  one argument      a host name opens its walk; anything else is a
+                    secret name, resolved across the fleet.
+  network/<name>    that tailscale network's API client, the credential
+                    auth keys are minted through.
+  no argument       pick a host.
 EOF
     return 0
   fi
   nh_require_cmd age jq nix
+
+  # `network/<name>` is not a secret at all: it is the API client of a
+  # tailscale-typed network, a key file with no host (see "The
+  # tailnet's API client"). Resolved before anything else, so the
+  # argument never reaches the fleet-wide secret lookup.
+  if [ -z "${2:-}" ] && [ -n "${1:-}" ]; then
+    local net netrc=0
+    net="$(nh_tailnet_client_arg "$1")" || netrc=$?
+    [ "$netrc" -ne 2 ] || return 1
+    if [ "$netrc" -eq 0 ]; then
+      nh_tailnet_client_edit "$net"
+      return $?
+    fi
+  fi
 
   if [ -n "${2:-}" ]; then
     host="$1"
@@ -71,7 +87,7 @@ EOF
     if nh_host_platform "$1" >/dev/null 2>&1; then
       host="$1"
     else
-      resolved="$(nh_secret_resolve_name "$1")" || return 1
+      resolved="$(nh_secret_resolve_name "$1" edit)" || return 1
       host="${resolved%%$'\t'*}"
       name="$1"
     fi
@@ -150,41 +166,6 @@ EOF
   nh_secret_edit_one "$host" "$json" "$sdir" "$name"
 }
 
-# nh_secret_resolve_name <name> — which host to edit <name> through,
-# as "<host>\t<scope>" on stdout. A fleet-scoped secret has ONE
-# ciphertext, so any declarer is the same file and the first is taken.
-# A host-scoped one is a file per host: exactly one declarer resolves,
-# several open a picker (and, with nobody to ask, are listed rather
-# than guessed at).
-nh_secret_resolve_name() {
-  local name="$1" rows fleet hosts count
-  rows="$(nh_secret_declarers "$name")" || true
-  if [ -z "$rows" ]; then
-    nh_err "'$name' is neither a host in this fleet nor a secret any host declares — 'nixhold secret list' shows the inventory"
-    return 1
-  fi
-  fleet="$(printf '%s\n' "$rows" | awk -F'\t' '$2 == "fleet" { print $1; exit }')"
-  if [ -n "$fleet" ]; then
-    printf '%s\tfleet' "$fleet"
-    return 0
-  fi
-  hosts="$(printf '%s\n' "$rows" | awk -F'\t' 'NF { print $1 }' | sort -u)"
-  count="$(printf '%s\n' "$hosts" | grep -c .)"
-  if [ "$count" -eq 1 ]; then
-    printf '%s\thost' "$hosts"
-    return 0
-  fi
-  if ! nh_tty; then
-    nh_err "'$name' is declared on several hosts ($(printf '%s' "$hosts" | paste -sd' ' -)) and each has its own ciphertext — name the host: nixhold secret edit <host> $name"
-    return 1
-  fi
-  local pick
-  # shellcheck disable=SC2086 # host names, split on purpose
-  pick="$(gum choose --header "'$name' on which host?" $hosts)" || return 1
-  [ -n "$pick" ] || return 1
-  printf '%s\thost' "$pick"
-}
-
 # nh_secret_provision <host> <secrets-json> <secrets-dir> <name…> —
 # encrypt each named secret for the first time. Exit codes: 0 every
 # secret provisioned or skipped on purpose, 1 at least one failed.
@@ -215,8 +196,8 @@ nh_secret_provision() {
   # Iterated over "$@", not a here-string-fed `read` loop: a redirect
   # on the loop would hand $EDITOR (and the gate prompt) a stdin that
   # is not the operator's terminal.
-  local added=0 failed=0 rc idx=0 target scope generator template desc sshkey choice
-  local written=()
+  local added=0 failed=0 rc idx=0 target scope generator template desc sshkey choice tsnet
+  local written=() public=() pubfile
   for name in "$@"; do
     idx=$((idx + 1))
     scope="$(nh_secret_scope "$json" "$name")"
@@ -236,11 +217,25 @@ nh_secret_provision() {
     desc="$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].description // ""')"
     sshkey="$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].sshKey // false')"
     sshkeytype="$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].sshKeyType // "ed25519"')"
+    # A tailnet auth key is minted through the network's API client
+    # when the fleet commits one; without it the secret is
+    # operator-typed and its description says where to get a key.
+    tsnet="$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].tailscaleAuthKey // ""')"
+    [ -z "$tsnet" ] || [ -f "$(nh_tailnet_client_file "$tsnet")" ] || tsnet=""
     nh_info "[$idx/$total] $name${desc:+ — $desc}"
+    # The client is opened HERE, for the reason the recipient probes
+    # are: the per-secret subshell below inherits the memo but cannot
+    # write it back, so the operator route would be re-picked, and
+    # re-prompted, inside each one.
+    if [ -n "$tsnet" ] && ! nh_tailnet_client_plain "$tsnet" >/dev/null; then
+      nh_err "the '$tsnet' API client did not open — $name was NOT provisioned"
+      failed=1
+      continue
+    fi
     # An SSH key may already exist and be registered elsewhere:
     # offer to adopt it rather than mint a replacement. Pasting is
     # the editor path; Esc skips the secret.
-    if [ -n "$generator" ] && [ "$sshkey" = "true" ] && nh_tty; then
+    if [ -z "$tsnet" ] && [ -n "$generator" ] && [ "$sshkey" = "true" ] && nh_tty; then
       choice="$(nh_prompt_choose "$host/$name is an SSH key:" \
         "generate a new $sshkeytype key" "paste an existing private key")" || choice=""
       case "$choice" in
@@ -252,7 +247,9 @@ nh_secret_provision() {
           ;;
       esac
     fi
-    if [ -n "$generator" ]; then
+    if [ -n "$tsnet" ]; then
+      nh_info "  minting a single-use key through the '$tsnet' tailnet's API client (no editor)"
+    elif [ -n "$generator" ]; then
       nh_info "  running its generator (no editor; it may prompt)"
     else
       nh_info "  opening $(nh_editor_cmd) — save content to encrypt, save EMPTY to skip"
@@ -279,7 +276,10 @@ nh_secret_provision() {
       chmod 600 "$tmp"
 
       nh_recipients_file "$rfile" || exit 1
-      if [ -n "$generator" ]; then
+      if [ -n "$tsnet" ]; then
+        key="$(nh_tailnet_mint_key "$tsnet" "$host")" || exit 1
+        printf '%s\n' "$key" >"$tmp"
+      elif [ -n "$generator" ]; then
         # The generator is operator-declared config; run it in this
         # already-isolated subshell rather than spawning an external
         # interpreter (bash may not be on the CLI's runtime PATH).
@@ -331,11 +331,20 @@ nh_secret_provision() {
       if [ "$name" = "identity" ]; then
         nh_login_pub_default_from_identity "$tmp" || true
       fi
+      # A secret that declares a public half gets it written here, from
+      # the same plaintext, before the buffer goes: it is committed
+      # beside the ciphertext so every OTHER host's eval can read it.
+      nh_secret_public_write "$json" "$name" "$tmp" || true
     ) || rc=$?
     case "$rc" in
       0)
         added=$((added + 1))
         written+=("$target")
+        # Recomputed rather than carried out of the subshell, which
+        # returns an exit code and nothing else. Empty for a secret
+        # that declares no public half.
+        pubfile="$(nh_secret_public_file "$json" "$name")" || pubfile=""
+        [ -z "$pubfile" ] || public+=("$pubfile")
         ;;
       2) ;; # skipped on purpose (empty content), already warned
       *) failed=1 ;;
@@ -349,7 +358,7 @@ nh_secret_provision() {
     # The fleet's commit hook caps a header at 60 characters, so a batch
     # whose names overflow it commits as a count instead.
     [ "${#header}" -le 60 ] || header="secrets($host): provision $added secret(s)"
-    local commit=("${written[@]}")
+    local commit=("${written[@]}" "${public[@]}")
     [ -z "$keys_dir" ] || commit+=("$keys_dir/login.pub" "$keys_dir/fleet.key.age" "$keys_dir/fleet.pub")
     nh_commit_paths "$root" "$header" "${commit[@]}"
   elif [ "$failed" -eq 0 ]; then
@@ -367,9 +376,21 @@ nh_secret_provision() {
 # Checked explicitly rather than through errexit: -e is ignored in a
 # subshell whose exit code the caller tests.
 nh_secret_edit_one() {
-  local host="$1" json="$2" sdir="$3" name="$4" target scope
+  local host="$1" json="$2" sdir="$3" name="$4" target scope tsnet
   scope="$(nh_secret_scope "$json" "$name")"
   target="$(nh_secret_file "$sdir" "$host" "$name" "$scope")"
+  # A committed auth key is a SPENT key: the host joined with it, and
+  # it was single-use. Asking to edit one is asking for a new one, so a
+  # network whose API client the fleet commits re-mints instead of
+  # opening an editor on something that cannot work again.
+  tsnet="$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].tailscaleAuthKey // ""')"
+  if [ -n "$tsnet" ] && [ -f "$(nh_tailnet_client_file "$tsnet")" ]; then
+    nh_info "$host/$name is minted through the '$tsnet' tailnet's API client — replacing the spent key with a fresh single-use one"
+    nh_tailnet_write_key "$tsnet" "$host" "$target" >/dev/null || return 1
+    nh_commit_paths "$(nh_fleet_root)" "secrets($host): re-mint $name" "$target"
+    nh_info "next: nixhold deploy $host"
+    return 0
+  fi
   (
     set -euo pipefail
     # One 0700 dir so the buffer can carry an identifying name
@@ -407,6 +428,11 @@ nh_secret_edit_one() {
     }
     nh_ok "updated $target"
     local paths=("$target")
+    local pubfile
+    if nh_secret_public_write "$json" "$name" "$tmp"; then
+      pubfile="$(nh_secret_public_file "$json" "$name")" || pubfile=""
+      [ -z "$pubfile" ] || paths+=("$pubfile")
+    fi
     if [ "$name" = "identity" ]; then
       nh_login_pub_default_from_identity "$tmp" || true
       local login

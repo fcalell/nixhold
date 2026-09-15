@@ -17,9 +17,12 @@
 # the rest, and the verb reports the failed set at the end. A guest
 # ("Guests") is deployed by deploying its machine: the name resolves
 # to the machine, the plan line says so, and --all names machines
-# only, their guests coming with them. The first deploy that starts a
-# guest records the ssh host key it minted as keys/hosts/<guest>.pub,
-# as `host install` does for a machine it images.
+# only, their guests coming with them. A guest has no install step, so
+# its FIRST deploy is one: the tailnet auth key of a guest with no
+# state directory on the machine is re-minted before the build, and the
+# first deploy that starts it records the ssh host key it minted as
+# keys/hosts/<guest>.pub, as `host install` does for a machine it
+# images.
 #
 # Before the build: required secrets with no ciphertext are
 # provisioned, then the host is made to hold the fleet key. That check
@@ -126,25 +129,6 @@ EOF
   [ "${#names[@]}" -eq 1 ] || nh_ok "deployed: ${names[*]}"
 }
 
-# nh_deploy_self — the fleet host this machine is; non-zero when it is
-# none of them. Match by hostname, and on a Mac fall back to the
-# fleet's only darwin host — the fleet name and the macOS/MDM hostname
-# routinely differ (especially before the first switch).
-nh_deploy_self() {
-  local here macs
-  here="$(nh_hostname)"
-  if nh_all_hosts | grep -qx -- "$here"; then
-    printf '%s' "$here"
-    return 0
-  fi
-  [ "$(uname -s)" = "Darwin" ] || return 1
-  macs="$(nh_hosts darwin | cut -d' ' -f1)"
-  case "$macs" in
-    "" | *$'\n'*) return 1 ;;
-  esac
-  printf '%s' "$macs"
-}
-
 # nh_deploy_eligible — the hosts this machine can activate, one per
 # line: every NixOS host (the target builds its own closure), every
 # Android host (this machine builds the plan and drives adb), plus a
@@ -208,6 +192,119 @@ $snippet" 2>/dev/null)" || live=""
     nh_ok "$guest's ssh host pubkey is recorded as keys/hosts/$guest.pub"
     nh_commit_paths "$root" "host($guest): pubkey" "$keys_dir/hosts/$guest.pub"
   done
+}
+
+# nh_deploy_guest_authkeys <machine> <local> <target> — the guests of
+# this machine that have never run, and the tailnet auth key each of
+# them needs to join. A guest has no install step, so its first deploy
+# IS its install: the node of its name is deleted and a fresh
+# single-use key minted and committed before the build (see "The
+# tailnet's API client"). A guest whose state directory exists is
+# never touched — its node is live, and deleting it would cut the
+# machine off from a host that is running.
+#
+# /var/lib/nixos-containers is 0755, so the probe escalates nothing and
+# a routine deploy still prompts for no password. A directory that
+# cannot be read at all leaves the guest alone: only a definite "no"
+# means never-installed.
+nh_deploy_guest_authkeys() {
+  local machine="$1" local_host="$2" target="$3" guest snippet out root
+  local fresh=() written=() p rc=0
+  while IFS= read -r guest; do
+    [ -n "$guest" ] || continue
+    snippet="test -d /var/lib/nixos-containers/$guest && echo yes || echo no"
+    if [ "$local_host" -eq 1 ]; then
+      out="$(sh -c "$snippet" 2>/dev/null)" || out=""
+    else
+      out="$(nh_ssh "$target" --host "$machine" -- "$snippet" </dev/null 2>/dev/null)" || out=""
+    fi
+    [ "$out" = "no" ] && fresh+=("$guest")
+  done < <(nh_host_guests "$machine")
+  [ "${#fresh[@]}" -gt 0 ] || return 0
+
+  root="$(nh_fleet_root)" || return 1
+  for guest in "${fresh[@]}"; do
+    nh_info "$guest has never run on $machine — this deploy is its install: re-minting its tailnet auth key"
+    out="$(nh_tailnet_remint "$guest" nixos --delete-node)" || {
+      nh_err "could not re-mint $guest's tailnet auth key — it would come up off the tailnet"
+      rc=1
+      continue
+    }
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      written+=("$p")
+    done <<<"$out"
+  done
+  [ "${#written[@]}" -eq 0 ] || nh_commit_paths "$root" "secrets: tailnet keys for ${fresh[*]}" "${written[@]}"
+  return "$rc"
+}
+
+# nh_deploy_guest_health <machine> <local> <target> — one line per
+# guest of the machine, and non-zero when any of them did not come up.
+#
+# The container unit is Type=simple ("Guests"), so an active unit says
+# nspawn was exec'd and nothing about the system inside it: a guest
+# that never reached its default target would leave the deploy looking
+# clean. `systemctl is-system-running --wait` inside the guest is the
+# answer: it blocks until the guest's initial transaction settles, so
+# it doubles as the wait, and its word is what the summary carries.
+# `running` and `degraded` pass; a degraded guest is one failed unit,
+# which `nixhold status <guest>` is the verb for. Anything else is a
+# failed deploy, with the guest's own errors printed under it. The
+# 120 s cap is the deploy's, not systemd's: `--wait` has none.
+#
+# The machine transport is what it waits for first. `--machine` reaches
+# the guest's bus, which does not exist for the first seconds of a
+# guest that activation started moments ago, and `systemctl` says
+# "no such file or directory" rather than waiting for it.
+nh_deploy_guest_health() {
+  local machine="$1" local_host="$2" target="$3" guest word snippet
+  local guests=() bad=()
+  while IFS= read -r guest; do
+    [ -n "$guest" ] && guests+=("$guest")
+  done < <(nh_host_guests "$machine")
+  [ "${#guests[@]}" -gt 0 ] || return 0
+
+  # Cached in THIS shell, as in nh_deploy_capture_guest_keys: the reads
+  # below run in command substitutions and would each ask again.
+  if [ "$local_host" -ne 1 ]; then
+    case "${target%%@*}" in
+      root) ;;
+      *) nh_sudo_password_ensure "$target" || return 0 ;;
+    esac
+  fi
+
+  for guest in "${guests[@]}"; do
+    # `exec` so that the timeout's signal reaches systemctl itself once
+    # the transport is up, rather than the shell that waited for it.
+    snippet="nh_rsudo timeout 120 sh -c 'until systemctl --machine $guest show --property=Version >/dev/null 2>&1; do sleep 2; done; exec systemctl is-system-running --machine $guest --wait'"
+    if [ "$local_host" -eq 1 ]; then
+      word="$(sh -c "$(nh_sudo_preamble_local)
+$snippet" 2>/dev/null)" || true
+    else
+      word="$(nh_ssh_sudo "$target" --host "$machine" -- "$snippet" </dev/null 2>/dev/null)" || true
+    fi
+    # `is-system-running` exits non-zero for every word but `running`,
+    # and prints nothing at all when timeout killed it or the guest has
+    # no bus to ask.
+    case "${word:-unreachable}" in
+      running | degraded)
+        nh_ok "guest $guest: $word"
+        ;;
+      *)
+        bad+=("$guest")
+        nh_err "guest $guest: ${word:-unreachable} — it did not finish booting on $machine"
+        snippet="nh_rsudo journalctl -M $guest -b -p err -n 20"
+        if [ "$local_host" -eq 1 ]; then
+          sh -c "$(nh_sudo_preamble_local)
+$snippet" 2>&1 || true
+        else
+          nh_ssh_sudo "$target" --host "$machine" -- "$snippet" </dev/null 2>&1 || true
+        fi
+        ;;
+    esac
+  done
+  [ "${#bad[@]}" -eq 0 ] || return 1
 }
 
 # nh_deploy_host <name> <mode> <dry-run> <target> — one host.
@@ -281,6 +378,9 @@ nh_deploy_host() {
     nixos)
       nh_require_cmd nixos-rebuild
       [ "$dry_run" -eq 1 ] && args=(dry-build)
+      # A guest that has never run joins the tailnet with a key minted
+      # here, before the build that creates it.
+      [ "$dry_run" -eq 1 ] || nh_deploy_guest_authkeys "$name" "$local_host" "$target" || return 1
       if [ "$local_host" -eq 1 ]; then
         (cd "$root" && sudo nixos-rebuild "${args[@]}" --flake ".#$name")
       else
@@ -321,9 +421,16 @@ nh_deploy_host() {
       fi
       # The guests this machine started for the first time.
       [ "$dry_run" -eq 1 ] || nh_deploy_capture_guest_keys "$name" "$local_host" "$target"
-      # Activation put the closure in place; the provisioning units
-      # say whether the host reached what it declares.
+      # Activation put the closure in place; a unit that gave up
+      # before this deploy fixed its cause is restarted, user scope
+      # and the system-scope checks alike (a check is meant to run
+      # again on every deploy), and then those units say whether the
+      # host reached what it declares and whether what it declares
+      # works.
+      [ "$dry_run" -eq 1 ] || nh_provision_kick "$name" nixos "$local_host" "$target"
       [ "$dry_run" -eq 1 ] || nh_provision_report "$name" nixos "$local_host" "$target"
+      # And each guest says whether it booted at all.
+      [ "$dry_run" -eq 1 ] || nh_deploy_guest_health "$name" "$local_host" "$target" || return 1
       ;;
     darwin)
       # darwin deploys are always local — so gate on the OS, not on
@@ -343,8 +450,13 @@ nh_deploy_host() {
       [ "$dry_run" -eq 1 ] && args=(check)
       # nix-darwin requires root for switch (since the 25.05-era
       # activation refactor), same as the NixOS path.
+      # No kick here: a launchd agent's KeepAlive retries unbounded,
+      # so a cause this deploy fixed is picked up within the throttle.
       (cd "$root" && sudo darwin-rebuild "${args[@]}" --flake ".#$name")
-      [ "$dry_run" -eq 1 ] || nh_provision_report "$name" darwin 1
+      # sudo-ok: the checks are launchd daemons and only root is
+      # shown the system domain. This verb has just elevated on this
+      # terminal, so the read costs no prompt of its own.
+      [ "$dry_run" -eq 1 ] || nh_provision_report "$name" darwin 1 "" 1
       ;;
     *)
       nh_err "unsupported arch for $name: $arch"

@@ -23,6 +23,10 @@
     # ssh wiring, the direnv library and the clone step all follow
     # from one `nixhold.repositories` entry.
     ./repositories
+    # What the fleet asserts about its own services, one launchd
+    # daemon each ("Provisioning": Checks are units too).
+    ./checks
+    ./checks/darwin.nix
     ./cli
     ./home
     ./home/darwin.nix

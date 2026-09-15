@@ -81,6 +81,72 @@ let
     };
   };
 
+  # One host's share of one synced folder: where the folder lives on
+  # that machine and what it does with it. The topology is fleet data
+  # because no host's eval can see another's service enables
+  # (principle 13), and the path is per host because the two
+  # implementations put folders in different places — a NixOS daemon's
+  # /srv/sync, a Mac's operator home (see "Syncthing: identity and
+  # topology are fleet data").
+  syncMemberSubmodule = types.submodule {
+    options = {
+      path = mkOption {
+        type = types.str;
+        description = ''
+          Absolute path of the folder on this host.
+        '';
+        example = "/srv/sync/backups";
+      };
+
+      type = mkOption {
+        type = types.enum [
+          "sendreceive"
+          "sendonly"
+          "receiveonly"
+        ];
+        default = "sendreceive";
+        description = ''
+          This host's role in the folder: a producer is `sendonly`,
+          an archive is `receiveonly`, and `sendreceive` (the
+          default) is a folder both ends edit.
+        '';
+      };
+
+      versioning = mkOption {
+        type = types.nullOr (
+          types.submodule {
+            options = {
+              type = mkOption {
+                type = types.str;
+                description = ''
+                  Syncthing versioning strategy: `trashcan`,
+                  `simple`, `staggered` or `external`. Validated by
+                  the syncthing module the value is rendered into.
+                '';
+                example = "staggered";
+              };
+              params = mkOption {
+                type = types.attrsOf types.str;
+                default = { };
+                description = "Parameters of that strategy, as syncthing names them.";
+                example = {
+                  maxAge = "31536000";
+                };
+              };
+            };
+          }
+        );
+        default = null;
+        description = ''
+          How this host keeps older generations of what it
+          receives. Retention belongs to the receiver: no producer
+          in the fleet rotates its own copies, so a folder's
+          history is whatever the hosts holding it declare here.
+        '';
+      };
+    };
+  };
+
   hostSubmodule = types.submodule (
     { name, config, ... }:
     let
@@ -231,6 +297,42 @@ in
         Per-network definitions. Network *names* are
         forker-chosen (`tailnet`, `public`); network *types*
         are the framework enum (`tailscale`, `internet`).
+      '';
+    };
+
+    sync = mkOption {
+      type = types.attrsOf (types.attrsOf syncMemberSubmodule);
+      default = { };
+      description = ''
+        The syncthing topology, keyed `<folder>.<host>`: which
+        hosts carry a folder, where each keeps it and what it does
+        with it. Cross-host by nature — a host's eval cannot see
+        which other hosts enable syncthing — so it is declared once
+        on `mkFleet`, beside `networks`, and each host's syncthing
+        module reads its own entries out of it (see
+        "Syncthing: identity and topology are fleet data").
+
+        Every host named here must be a key in `hosts` and must
+        enable `nixhold.services.syncthing`; both are assertions of
+        the syncthing module.
+      '';
+      example = lib.literalExpression ''
+        {
+          backups = {
+            homelab = {
+              path = "/var/lib/backups";
+              type = "sendonly";
+            };
+            desktop = {
+              path = "/srv/sync/backups";
+              type = "receiveonly";
+              versioning = {
+                type = "staggered";
+                params.maxAge = "31536000";
+              };
+            };
+          };
+        }
       '';
     };
 

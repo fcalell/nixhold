@@ -1,10 +1,17 @@
 # Rule: every pin (ARCHITECTURE "Pins") has one declaration across the
-# fleet, a file inside the checkout that exists in the worktree, and
-# a file that parses with a `.version`. The declaration evaluates with
-# the file absent (that is what lets `update` write it), so a missing
-# file otherwise fails late: at the first build that forces `value`.
+# fleet, a file inside the checkout that exists in the worktree and is
+# tracked by git, and a file that parses with a `.version`. The
+# declaration evaluates with the file absent (that is what lets
+# `update` write it), so a missing file otherwise fails late: at the
+# first build that forces `value`.
 
+root="$(nh_fleet_root)" || exit 2
 worst=0
+
+is_tracked() {
+  git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  git -C "$root" ls-files --error-unmatch -- "$1" >/dev/null 2>&1
+}
 
 pins="$(nh_fleet_pins)" || {
   echo "VIOLATION: the pins are not declared consistently across hosts (see the error above)"
@@ -33,6 +40,10 @@ for name in $names; do
     echo "VIOLATION: nixhold.pins.$name has no file at $p — 'nixhold update' writes it"
     worst=3
     continue
+  fi
+  if ! is_tracked "$p"; then
+    echo "VIOLATION: ${p#"$root"/} is not tracked by git — nix eval cannot see an untracked file, so the pin $name reads as missing on every host ('git add' it)"
+    worst=3
   fi
   v="$(jq -r '.version // empty' "$p" 2>/dev/null)" || v=""
   if [ -z "$v" ]; then

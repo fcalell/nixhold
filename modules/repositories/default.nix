@@ -86,7 +86,15 @@ let
   # every entry of a host agree, so the head is the answer.
   forgeSecret = entries: secrets.${keySecretName (lib.head entries).key};
 
+  # A forge whose host key this host already holds. `hostNames`
+  # defaults to the attribute name, so it answers both spellings —
+  # the framework's own github.com entries are keyed by key type and
+  # name the host there.
+  pinnedForge =
+    host: lib.any (e: lib.elem host e.hostNames) (lib.attrValues config.programs.ssh.knownHosts);
+
   expandHome = import ../../lib/expand-home.nix;
+  provisioning = import ../../lib/provisioning.nix { inherit lib; };
   repositoriesPath = config.nixhold.home.repositoriesPath;
 
   repoSubmodule = types.submodule (
@@ -204,6 +212,20 @@ in
             }). The ssh block is per forge host, so every repository
             on it must name the same `key`.
           '';
+        }) forges
+        # The first clone is not TOFU: a forge with no committed host
+        # key is a checkout unit that fails `Host key verification
+        # failed` every 30 s, so it is an eval error here instead.
+        ++ lib.mapAttrsToList (host: entries: {
+          assertion = pinnedForge host;
+          message = ''
+            nixhold.repositories: the forge ${host} (${
+              lib.concatMapStringsSep ", " (e: e.name) entries
+            }) is reached over ssh and no host key is pinned for it, so
+            the first clone would have nothing to authenticate it
+            against. Set programs.ssh.knownHosts."${host}".publicKey to
+            the key that forge publishes.
+          '';
         }) forges;
     }
 
@@ -286,108 +308,44 @@ in
             }
           '';
 
-          # The checkout script one provisioning unit runs. Exit 0 is
-          # done; any other exit is "not yet" and the unit retries
-          # (the network, the key, the forge: each is a retry, never a
-          # silent skip). The managed .envrc is the done marker, tested
-          # here as well as in the unit's condition, because launchd
-          # has no start condition.
+          # The script the unit runs, in ./checkout.nix so the check
+          # that exercises it against a local origin builds the same
+          # one. Only an ssh URL needs the outbound key; an https clone
+          # must not wait for one.
           checkoutScript =
             name: r:
-            let
+            import ./checkout.nix {
+              inherit pkgs name;
+              inherit (r) url;
               dir = expand r.path;
-              # Only an ssh URL needs the key; an https clone must not
-              # wait for one.
-              needsKey = forgeHost r.url != null;
-              keySecret = secrets.${keySecretName r.key};
-            in
-            pkgs.writeShellScript "nixhold-repo-${name}" ''
-              set -euo pipefail
-              # A unit's PATH is the manager's, not a login shell's, and
-              # git spawns ssh by name.
-              export PATH=${
-                lib.makeBinPath [
-                  pkgs.git
-                  pkgs.openssh
-                  pkgs.coreutils
-                  pkgs.gnugrep
-                ]
-              }:$PATH
-              repo=${lib.escapeShellArg dir}
-              [ ! -e "$repo/.envrc" ] || exit 0
-              if [ ! -e "$repo" ]; then
-                ${lib.optionalString needsKey ''
-                  if [ ! -r "$HOME/${keySecret.homePath}" ]; then
-                    echo "nixhold: ~/${keySecret.homePath} is not readable yet — ${name} waits for it" >&2
-                    exit 1
-                  fi
-                ''}
-                git clone ${lib.escapeShellArg r.url} "$repo"
-              fi
-              # An .envrc is what makes direnv load at all; nixhold only
-              # ever creates a missing one, never touches the
-              # repository's own, and never pulls. Written last: it is
-              # the marker, so a failure before it is a retry.
-              if [ -d "$repo/.git" ]; then
-                mkdir -p "$repo/.git/info"
-                grep -qxF '.envrc' "$repo/.git/info/exclude" 2>/dev/null \
-                  || echo '.envrc' >> "$repo/.git/info/exclude"
-              fi
-              echo '# managed by nixhold: repository env is loaded by ~/.config/direnv/lib/nixhold.sh' > "$repo/.envrc"
-              ${lib.optionalString direnvEnabled ''
-                ${pkgs.direnv}/bin/direnv allow "$repo" || {
-                  rm -f "$repo/.envrc"
-                  exit 1
-                }
-              ''}
-            '';
+              keyHomePath = if forgeHost r.url == null then null else secrets.${keySecretName r.key}.homePath;
+              direnv = direnvEnabled;
+            };
 
-          # One unit per repository, per ARCHITECTURE "Provisioning".
-          # The user manager has no network-online.target, so the
-          # dependency on the network is the retry: on-failure every
-          # 30 s, bounded on NixOS by the start limit (an hour's worth,
-          # then `failed` until the next login or deploy), unbounded
-          # under launchd, which has no start limit. Type=exec rather
-          # than oneshot: home-manager's sd-switch waits for the start
-          # job of a newly wanted unit, and a oneshot's lasts the whole
-          # clone. KeepAlive.NetworkState is deliberately absent: Apple
-          # documents it as no longer implemented.
+          # One unit per repository, per ARCHITECTURE "Provisioning",
+          # rendered by lib/provisioning.nix: the retry that waits for
+          # the network, the key and the forge is the same one every
+          # provisioning unit takes, and the managed `.envrc` is the
+          # marker that makes a later login cost one condition check.
+          checkoutUnit =
+            name: r:
+            provisioning {
+              description = "nixhold: check out repository ${name}";
+              script = checkoutScript name r;
+              done = "${expand r.path}/.envrc";
+            };
           checkoutUnits = lib.optionalAttrs config.nixhold.home.checkouts (
             if pkgs.stdenv.hostPlatform.isDarwin then
               {
-                launchd.agents = lib.mapAttrs' (name: r: {
-                  name = "nixhold-repo-${name}";
-                  value = {
-                    enable = true;
-                    config = {
-                      ProgramArguments = [ "${checkoutScript name r}" ];
-                      RunAtLoad = true;
-                      KeepAlive.SuccessfulExit = false;
-                      ThrottleInterval = 30;
-                    };
-                  };
-                }) repos;
+                launchd.agents = lib.mapAttrs' (
+                  name: r: lib.nameValuePair "nixhold-repo-${name}" (checkoutUnit name r).launchd
+                ) repos;
               }
             else
               {
-                systemd.user.services = lib.mapAttrs' (name: r: {
-                  name = "nixhold-repo-${name}";
-                  value = {
-                    Unit = {
-                      Description = "nixhold: check out repository ${name}";
-                      ConditionPathExists = "!${expand r.path}/.envrc";
-                      StartLimitIntervalSec = "1h";
-                      StartLimitBurst = 60;
-                    };
-                    Service = {
-                      Type = "exec";
-                      ExecStart = "${checkoutScript name r}";
-                      Restart = "on-failure";
-                      RestartSec = 30;
-                    };
-                    Install.WantedBy = [ "default.target" ];
-                  };
-                }) repos;
+                systemd.user.services = lib.mapAttrs' (
+                  name: r: lib.nameValuePair "nixhold-repo-${name}" (checkoutUnit name r).systemd
+                ) repos;
               }
           );
         in

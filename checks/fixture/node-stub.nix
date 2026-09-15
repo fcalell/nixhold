@@ -14,6 +14,11 @@
 # branches are covered by the other two hosts, and an endpoint here
 # would open 443 and blur what these assertions are about.
 #
+# It is also where the tailnet auth key is declared: the host is on
+# exactly one tailscale-typed network, which is what the mint needs to
+# name, and the assertion below is what keeps `tailscaleAuthKey` wired
+# from the service option through to the secret the CLI reads.
+#
 # It declares no repository either, which makes it the one host that
 # shows whether the fleet repo's own forge block is derived from
 # `layout.repoUrl` rather than riding on a declared repository that
@@ -34,6 +39,10 @@ in
   # no report to point at: opt out of the facter guard.
   nixhold.hardware.facterReport = null;
 
+  # The throwaway ciphertext at ./secrets/fixture-node/tailscale.age
+  # stands in for a minted key; nothing decrypts at eval.
+  nixhold.services.tailscale.authKeySecret = "tailscale";
+
   assertions = [
     {
       assertion = !config.services.openssh.openFirewall;
@@ -50,6 +59,14 @@ in
     {
       assertion = !config.services.fail2ban.enable;
       message = "fixture-node: fail2ban is enabled on a host with no internet-typed network — there is nothing reaching sshd for it to ban";
+    }
+    {
+      assertion = config.nixhold.secrets.tailscale.tailscaleAuthKey == "tailnet";
+      message = "fixture-node: the tailscale auth-key secret must name the host's one tailscale-typed network, so the CLI knows which tailnet to mint through — got ${builtins.toJSON config.nixhold.secrets.tailscale.tailscaleAuthKey}";
+    }
+    {
+      assertion = config.services.tailscale.authKeyFile == config.age.secrets.tailscale.path;
+      message = "fixture-node: services.tailscale.authKeyFile is not the declared secret's decrypted path";
     }
     {
       assertion =

@@ -37,12 +37,72 @@
 # keysDir (itself fallback-aware).
 nh_operator_recipient_file() {
   local f
-  f="$(nh_worktree_layout_file ageRecipient 2>/dev/null)" ||
-    f="$(nh_worktree_keys_dir)/operator.pub" || return 2
+  f="$(nh_operator_recipient_path)" || return 2
   if [ ! -f "$f" ]; then
     nh_ensure_operator_identity || return 1
   fi
   printf '%s' "$f"
+}
+
+# nh_operator_recipient_path -> the same path, existing or not, with
+# nothing generated when it is missing. `operator enrol` appends the
+# token's recipient to this file, and that is exactly the case that
+# must not be handed a freshly generated passphrase identity first.
+nh_operator_recipient_path() {
+  local f
+  f="$(nh_worktree_layout_file ageRecipient 2>/dev/null)" ||
+    f="$(nh_worktree_keys_dir)/operator.pub" || return 2
+  printf '%s' "$f"
+}
+
+# nh_operator_append_line <file> <line> — append one key line to a
+# committed list (the operator recipients, keys/login.pub). Both files
+# are hand-edited, and one whose last line has no newline after it
+# would otherwise swallow the appended line into itself.
+nh_operator_append_line() {
+  local f="$1" line="$2"
+  mkdir -p "$(dirname "$f")" || return 1
+  if [ -s "$f" ] && [ -n "$(tail -c 1 "$f")" ]; then
+    printf '\n' >>"$f" || return 1
+  fi
+  printf '%s\n' "$line" >>"$f" || {
+    nh_err "could not append to $f"
+    return 1
+  }
+  chmod 0644 "$f"
+}
+
+# nh_operator_route_decrypt <route> <ciphertext> <out> — decrypt over
+# ONE named route ("token" or "passphrase") rather than the one
+# nh_age_pick_route settled on for this process. `operator check` is
+# the only caller and the only verb that should be one: everywhere
+# else the route is whatever the recipients file and the USB port say,
+# and trying the other one after a failure is a fallback nothing takes
+# silently. Neither stdin nor stderr is redirected, since the plugin's
+# PIN prompt and its "touch your token" ride this process's terminal,
+# so a failed attempt is reported by age itself, above the caller's
+# own line. <out> exists only on success.
+nh_operator_route_decrypt() {
+  local route="$1" src="$2" out="$3" idfile
+  case "$route" in
+    token)
+      age -d -j "$NIXHOLD_AGE_PLUGIN_NAME" -o "$out" "$src" || {
+        rm -f "$out"
+        return 1
+      }
+      ;;
+    passphrase)
+      idfile="$(nh_operator_identity_file)" || return 1
+      age -d -i "$idfile" -o "$out" "$src" || {
+        rm -f "$out"
+        return 1
+      }
+      ;;
+    *)
+      nh_err "nh_operator_route_decrypt: unknown route '$route'"
+      return 1
+      ;;
+  esac
 }
 
 # nh_ensure_operator_identity — the fleet's first need for the

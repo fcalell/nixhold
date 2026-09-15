@@ -18,6 +18,11 @@
 # `hosts/<name>/` goes too: a host that has left the roster has no
 # module, and a successor is a new `host add`. The verb asks first
 # (unless --yes), so a module worth keeping is copied out before.
+#
+# A guest's state is not the repo's ("Guests"): its whole root sits on
+# its machine under /var/lib/nixos-containers/<name>, service databases
+# and node keys included. The verb prints that path as an operator step
+# and touches nothing there, the same trade as the fleet key above.
 
 cmd_host_remove() {
   local name="" yes=0
@@ -62,10 +67,12 @@ cmd_host_remove() {
   # probe evals the fleet, and the worktree helpers (not raw
   # nh_layout) are required because layout.* eval to read-only
   # /nix/store source paths.
-  local secrets_dir keys_dir hosts_dir
+  local secrets_dir keys_dir hosts_dir machine
   secrets_dir="$(nh_worktree_secrets_dir)" || return 1
   keys_dir="$(nh_worktree_keys_dir)" || return 1
   hosts_dir="$(nh_worktree_hosts_dir)" || return 1
+  # Read here too: once the entry is gone, so is the answer.
+  machine="$(nh_host_machine "$name" 2>/dev/null || true)"
 
   nh_info "remove $name: its entry in hosts.nix, $hosts_dir/$name, $secrets_dir/$name, $keys_dir/hosts/$name.pub"
   if [ "$yes" -ne 1 ] && ! nh_prompt_confirm "Remove $name from the fleet?"; then
@@ -121,4 +128,7 @@ cmd_host_remove() {
   nh_commit_paths "$root" "host($name): remove" \
     "$hosts_file" "$hosts_dir/$name" "$secrets_dir/$name" "$keys_dir/hosts/$name.pub"
   nh_warn "$name still holds the fleet key at /etc/nixhold/fleet.key — if that machine is not being wiped, run 'nixhold secret rotate' (new fleet key, every secret re-encrypted) and then 'nixhold deploy'"
+  if [ -n "$machine" ]; then
+    nh_warn "$name was a guest of $machine and its whole root is still there, at $machine:/var/lib/nixos-containers/$name — the vault database, the syncthing keys and the tailscale node key among them. Nothing here deletes it: copy out what you want, then 'sudo rm -rf /var/lib/nixos-containers/$name' on $machine"
+  fi
 }

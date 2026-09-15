@@ -5,163 +5,203 @@
 #
 # Consumed from the framework flake's `checks.<system>` output.
 { inputs, self }:
-self.lib.mkFleet {
-  # The fixture stands in for a forker repo. A real forker's flake
-  # resolves `inputs.nixhold` from `inputs.nixhold.url`; here the
-  # framework is testing itself, so we synthesize that self-input:
-  # the framework's own outputs (`self`) carrying its own `inputs`
-  # (so `inputs.nixhold.inputs.<dep>` and
-  # `inputs.nixhold.<platform>Modules.nixhold` both resolve).
-  inputs = inputs // {
-    # mkFleet roots the layout defaults at `inputs.self`; a forker's
-    # self is their fleet repo, so the fixture substitutes its own
-    # directory — that is what makes the defaults resolve to the
-    # keys/ and secrets/ trees committed beside this file. It is a
-    # store path of its own, exactly like a real `self` — see
-    # ./self.nix for why that shape matters.
-    self = import ./self.nix;
-    nixhold = self // {
-      inputs = inputs;
+let
+  fleet = self.lib.mkFleet {
+    # The fixture stands in for a forker repo. A real forker's flake
+    # resolves `inputs.nixhold` from `inputs.nixhold.url`; here the
+    # framework is testing itself, so we synthesize that self-input:
+    # the framework's own outputs (`self`) carrying its own `inputs`
+    # (so `inputs.nixhold.inputs.<dep>` and
+    # `inputs.nixhold.<platform>Modules.nixhold` both resolve).
+    inputs = inputs // {
+      # mkFleet roots the layout defaults at `inputs.self`; a forker's
+      # self is their fleet repo, so the fixture substitutes its own
+      # directory — that is what makes the defaults resolve to the
+      # keys/ and secrets/ trees committed beside this file. It is a
+      # store path of its own, exactly like a real `self` — see
+      # ./self.nix for why that shape matters.
+      self = import ./self.nix;
+      nixhold = self // {
+        inputs = inputs;
+      };
+    };
+
+    identity = {
+      username = "fixture";
+      fullName = "Fixture User";
+      email = "fixture@example.invalid";
+    };
+
+    # Every path is left to the defaults on purpose — that is the
+    # primary path a forker takes. Only the non-derivable field is set.
+    layout.repoUrl = "example/fleet";
+
+    # Login keys are fleet DATA, not an argument: the fixture commits
+    # `keys/login.pub` with three lines — two `ed25519-sk` token pubkeys
+    # (a fleet whose every host trusts one token is a fleet one lost
+    # token locks the operator out of) and the pubkey of the throwaway
+    # `identity` key committed at `secrets/identity.age`, which is the
+    # line the CLI seeds the file with on a fleet that carries no token.
+    # `derived.operatorAuthorizedKeys` is exactly those three lines —
+    # asserted in ./repositories.nix. Real pubkeys (ssh-keygen parses
+    # them); no token exists, and nothing here ever authenticates.
+
+    networks = {
+      tailnet = {
+        type = "tailscale";
+        magicDnsSuffix = "fixture.ts.net";
+      };
+      public = {
+        type = "internet";
+        domain = "fixture.example.invalid";
+      };
+    };
+
+    # The syncthing topology: one folder, the three shapes an entry
+    # takes (a producer, an archive that keeps history, an archive on
+    # the other platform) and the two implementations that render it.
+    # fixture-server is the only host whose nightly backups exist, so
+    # it is the one sending; retention is the receivers' (see
+    # "Retention belongs to the receiver").
+    sync.backups = {
+      fixture-server = {
+        path = "/var/lib/backups";
+        type = "sendonly";
+      };
+      fixture-desktop = {
+        path = "/srv/sync/backups";
+        type = "receiveonly";
+        versioning = {
+          type = "staggered";
+          params.maxAge = "31536000";
+        };
+      };
+      fixture-mac = {
+        path = "/Users/fixture/Sync/backups";
+        type = "receiveonly";
+      };
+    };
+
+    hosts = {
+      # `disk` set: the framework renders the shipped disko layout and
+      # the loader/zram defaults that go with it. `publicFqdn` is left
+      # to its default (`<host>.<domain>`, since `public` is the one
+      # internet network); `networks` is spelled out because the host is
+      # on more than the tailscale default.
+      fixture-server = {
+        arch = "x86_64-linux";
+        profile = self.profiles.server;
+        modules = [ ./host-stub.nix ];
+        networks = [
+          "tailnet"
+          "public"
+        ];
+        disk = "/dev/disk/by-id/fixture-root";
+        publicIp = "203.0.113.10";
+      };
+
+      # The internet-facing half of the caddy coverage. It is a host of
+      # its own because caddy's listener is not per-interface: a host
+      # that serves an internet endpoint may not also serve
+      # unauthenticated tailnet ones (assertion in modules/infra/caddy.nix),
+      # so fixture-server keeps the tailnet branches and this one carries
+      # the ACME vhost.
+      # No `disk`: the custom-layout path, with ./hardware-stub.nix
+      # standing in for an operator's own `disko.devices`.
+      fixture-gateway = {
+        arch = "x86_64-linux";
+        profile = self.profiles.server;
+        modules = [ ./gateway-stub.nix ];
+        networks = [
+          "tailnet"
+          "public"
+        ];
+      };
+
+      # The tailnet-ONLY NixOS host, and the only one of the three that
+      # takes the framework's default SSH posture: both hosts above are
+      # members of `public`, so both take the internet branch of the
+      # openssh module (sshd opened fleet-wide, fail2ban on). `networks`
+      # is left to its default — every tailscale-typed network — which is
+      # exactly the shape a fleet host normally has. ./node-stub.nix
+      # asserts the resulting firewall scoping.
+      fixture-node = {
+        arch = "x86_64-linux";
+        profile = self.profiles.server;
+        modules = [ ./node-stub.nix ];
+        disk = "/dev/disk/by-id/fixture-node-root";
+      };
+
+      # The desktopLinux host. Every other NixOS fixture host draws the
+      # `server` profile, so without this one the desktop profile's
+      # defaults — the session entry, the wayland environment, the
+      # portal and audio stack — are shipped and built nowhere.
+      # It is also the fixture's machine with a guest ("Guests"): the
+      # grant below is one render node and one sound card, so both
+      # branches of the machine-side module are rendered.
+      fixture-desktop = {
+        arch = "x86_64-linux";
+        profile = self.profiles.desktopLinux;
+        modules = [
+          ./desktop-stub.nix
+          # The guest's standalone toplevel, so the stub can assert the
+          # machine's `containers.fixture-guest.path` IS it. Only the
+          # caller of mkFleet holds both sides of that equality; from
+          # inside the machine's eval the guest's own configuration is
+          # not reachable.
+          {
+            _module.args.guestToplevel = fleet.nixosConfigurations.fixture-guest.config.system.build.toplevel;
+          }
+        ];
+        disk = "/dev/disk/by-id/fixture-desktop-root";
+        guests.fixture-guest.devices = [
+          "/dev/dri/renderD128"
+          "/dev/snd/by-id/usb-Fixture_Card_0001-00"
+        ];
+      };
+
+      # The guest: a server-profile host whose entry says nothing about
+      # where it runs — no `disk`, since the hardware is
+      # fixture-desktop's. `networks` left to its default.
+      fixture-guest = {
+        arch = "x86_64-linux";
+        profile = self.profiles.server;
+        modules = [ ./guest-stub.nix ];
+      };
+
+      # `networks` left to its default: every tailscale-typed network.
+      # `identity` is fleet-scoped, so this host activates the SAME
+      # committed throwaway ciphertext as fixture-server (nothing
+      # decrypts at eval) — which is what lets the darwin half of the
+      # repository/ssh/signing wiring be exercised without a second key.
+      fixture-mac = {
+        arch = "aarch64-darwin";
+        profile = self.profiles.workstationDarwin;
+        # The darwin side of the host-key pinning check: from here
+        # fixture-server is a peer *with* a committed host key.
+        modules = [
+          ./mac-stub.nix
+          ./known-hosts-assertions.nix
+          ./repositories.nix
+          ./checks.nix
+        ];
+      };
+
+      # The Android hosts, one per shipped profile. `networks` left to
+      # its default, so each gets a tailnet address like any host; the
+      # `adb` key they declare (fleet scope, required) is the throwaway
+      # ciphertext at ./secrets/adb.age.
+      fixture-kiosk = {
+        arch = "aarch64-android";
+        profile = self.profiles.kiosk;
+        modules = [ ./kiosk-stub.nix ];
+      };
+      fixture-mobile = {
+        arch = "aarch64-android";
+        profile = self.profiles.mobile;
+        modules = [ ./mobile-stub.nix ];
+      };
     };
   };
-
-  identity = {
-    username = "fixture";
-    fullName = "Fixture User";
-    email = "fixture@example.invalid";
-  };
-
-  # Every path is left to the defaults on purpose — that is the
-  # primary path a forker takes. Only the non-derivable field is set.
-  layout.repoUrl = "example/fleet";
-
-  # Login keys are fleet DATA, not an argument: the fixture commits
-  # `keys/login.pub` with three lines — two `ed25519-sk` token pubkeys
-  # (a fleet whose every host trusts one token is a fleet one lost
-  # token locks the operator out of) and the pubkey of the throwaway
-  # `identity` key committed at `secrets/identity.age`, which is the
-  # line the CLI seeds the file with on a fleet that carries no token.
-  # `derived.operatorAuthorizedKeys` is exactly those three lines —
-  # asserted in ./repositories.nix. Real pubkeys (ssh-keygen parses
-  # them); no token exists, and nothing here ever authenticates.
-
-  networks = {
-    tailnet = {
-      type = "tailscale";
-      magicDnsSuffix = "fixture.ts.net";
-    };
-    public = {
-      type = "internet";
-      domain = "fixture.example.invalid";
-    };
-  };
-
-  hosts = {
-    # `disk` set: the framework renders the shipped disko layout and
-    # the loader/zram defaults that go with it. `publicFqdn` is left
-    # to its default (`<host>.<domain>`, since `public` is the one
-    # internet network); `networks` is spelled out because the host is
-    # on more than the tailscale default.
-    fixture-server = {
-      arch = "x86_64-linux";
-      profile = self.profiles.server;
-      modules = [ ./host-stub.nix ];
-      networks = [
-        "tailnet"
-        "public"
-      ];
-      disk = "/dev/disk/by-id/fixture-root";
-      publicIp = "203.0.113.10";
-    };
-
-    # The internet-facing half of the caddy coverage. It is a host of
-    # its own because caddy's listener is not per-interface: a host
-    # that serves an internet endpoint may not also serve
-    # unauthenticated tailnet ones (assertion in modules/infra/caddy.nix),
-    # so fixture-server keeps the tailnet branches and this one carries
-    # the ACME vhost.
-    # No `disk`: the custom-layout path, with ./hardware-stub.nix
-    # standing in for an operator's own `disko.devices`.
-    fixture-gateway = {
-      arch = "x86_64-linux";
-      profile = self.profiles.server;
-      modules = [ ./gateway-stub.nix ];
-      networks = [
-        "tailnet"
-        "public"
-      ];
-    };
-
-    # The tailnet-ONLY NixOS host, and the only one of the three that
-    # takes the framework's default SSH posture: both hosts above are
-    # members of `public`, so both take the internet branch of the
-    # openssh module (sshd opened fleet-wide, fail2ban on). `networks`
-    # is left to its default — every tailscale-typed network — which is
-    # exactly the shape a fleet host normally has. ./node-stub.nix
-    # asserts the resulting firewall scoping.
-    fixture-node = {
-      arch = "x86_64-linux";
-      profile = self.profiles.server;
-      modules = [ ./node-stub.nix ];
-      disk = "/dev/disk/by-id/fixture-node-root";
-    };
-
-    # The desktopLinux host. Every other NixOS fixture host draws the
-    # `server` profile, so without this one the desktop profile's
-    # defaults — the session entry, the wayland environment, the
-    # portal and audio stack — are shipped and built nowhere.
-    # It is also the fixture's machine with a guest ("Guests"): the
-    # grant below is one render node and one sound card, so both
-    # branches of the machine-side module are rendered.
-    fixture-desktop = {
-      arch = "x86_64-linux";
-      profile = self.profiles.desktopLinux;
-      modules = [ ./desktop-stub.nix ];
-      disk = "/dev/disk/by-id/fixture-desktop-root";
-      guests.fixture-guest.devices = [
-        "/dev/dri/renderD128"
-        "/dev/snd/by-id/usb-Fixture_Card_0001-00"
-      ];
-    };
-
-    # The guest: a server-profile host whose entry says nothing about
-    # where it runs — no `disk`, since the hardware is
-    # fixture-desktop's. `networks` left to its default.
-    fixture-guest = {
-      arch = "x86_64-linux";
-      profile = self.profiles.server;
-      modules = [ ./guest-stub.nix ];
-    };
-
-    # `networks` left to its default: every tailscale-typed network.
-    # `identity` is fleet-scoped, so this host activates the SAME
-    # committed throwaway ciphertext as fixture-server (nothing
-    # decrypts at eval) — which is what lets the darwin half of the
-    # repository/ssh/signing wiring be exercised without a second key.
-    fixture-mac = {
-      arch = "aarch64-darwin";
-      profile = self.profiles.workstationDarwin;
-      # The darwin side of the host-key pinning check: from here
-      # fixture-server is a peer *with* a committed host key.
-      modules = [
-        ./known-hosts-assertions.nix
-        ./repositories.nix
-      ];
-    };
-
-    # The Android hosts, one per shipped profile. `networks` left to
-    # its default, so each gets a tailnet address like any host; the
-    # `adb` key they declare (fleet scope, required) is the throwaway
-    # ciphertext at ./secrets/adb.age.
-    fixture-kiosk = {
-      arch = "aarch64-android";
-      profile = self.profiles.kiosk;
-      modules = [ ./kiosk-stub.nix ];
-    };
-    fixture-mobile = {
-      arch = "aarch64-android";
-      profile = self.profiles.mobile;
-      modules = [ ./mobile-stub.nix ];
-    };
-  };
-}
+in
+fleet

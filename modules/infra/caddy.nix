@@ -378,7 +378,19 @@ in
       # redirect).
       services.caddy.globalConfig = lib.mkIf (!hasInternet) "auto_https disable_redirects";
 
-      systemd.tmpfiles.rules = [ "d ${tlsDir} 0750 caddy caddy - -" ];
+      # Both directories are tmpfiles' rather than the unit's: a
+      # fetcher that is the caddy user cannot chown or chmod a
+      # directory root left behind, and tmpfiles corrects one.
+      systemd.tmpfiles.rules = [
+        "d ${tlsDir} 0750 caddy caddy - -"
+        "d ${tlsStaging} 0700 caddy caddy - -"
+      ];
+
+      # The uid tailscaled issues a node cert to. `tailscale cert`
+      # asks tailscaled over its socket and the daemon checks the
+      # peer's uid, so the fetcher below being caddy is not enough on
+      # its own.
+      services.tailscale.permitCertUid = config.services.caddy.user;
 
       systemd.services.tailscale-caddy-cert = {
         description = "Fetch/renew tailscale-issued TLS cert for caddy";
@@ -403,10 +415,15 @@ in
         ];
         serviceConfig = hardening // {
           Type = "oneshot";
-          # The cert directory it fills, and the chown that hands the
-          # pair to caddy.
+          # caddy's own uid, so the pair is written by the process
+          # that reads it: the hardening set leaves a root unit
+          # without CAP_DAC_OVERRIDE, CAP_FOWNER or CAP_CHOWN, which
+          # is every permission it would take to fill and then hand
+          # over a directory that is caddy's.
+          User = config.services.caddy.user;
+          Group = config.services.caddy.group;
+          # The cert directory it fills, staging included.
           ReadWritePaths = [ tlsDir ];
-          CapabilityBoundingSet = [ "CAP_CHOWN" ];
           # A first boot runs this before the node has joined the
           # tailnet, and `tailscale cert` fails. Without a retry the
           # next attempt is the timer's — a week away once the 2min
@@ -424,18 +441,15 @@ in
               sleep 2
             done
 
-            install -d -m 0750 -o caddy -g caddy ${tlsDir}
             # Staged, not written straight into the live paths: cert
             # and key are two separate writes, and the path unit
             # watches the live key — so a reload can only fire once
             # both halves are in place.
-            install -d -m 0700 -o root -g root ${tlsStaging}
             rm -f ${tlsStaging}/cert.crt ${tlsStaging}/cert.key
             tailscale cert \
               --cert-file=${tlsStaging}/cert.crt \
               --key-file=${tlsStaging}/cert.key \
               ${tailscaleFqdn}
-            chown caddy:caddy ${tlsStaging}/cert.crt ${tlsStaging}/cert.key
             chmod 0640 ${tlsStaging}/cert.crt
             chmod 0600 ${tlsStaging}/cert.key
             # Key last: it is the watched path, so the reload it

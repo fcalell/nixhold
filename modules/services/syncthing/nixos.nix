@@ -2,20 +2,13 @@
 #
 # GUI on localhost, fronted by caddy at `<fqdn>/sync` on whichever
 # network the host names in `expose.gui.network`. Devices and folders
-# are added imperatively through the GUI (override* = false so they
-# survive a rebuild). Sync ports (22000 tcp+udp, 21027 udp) are opened
-# on the tailscale interface only.
-#
-# Posture — tailnet-only, and actually so. Upstream syncthing defaults
-# are internet-facing (global discovery, relays, NAT-PMP/UPnP hole
-# punching, crash reports, usage reporting); `settings.options` below
-# turns all of that off, so this node talks to nothing but the peers
-# it is told about. **Consequence: peers must be given this node's
-# tailnet address statically** (Actions -> Advanced, or the device's
-# Addresses field: `tcp://<host>.<magicDnsSuffix>:22000`) — with
-# discovery off, nothing finds it on its own. Local (LAN) discovery is
-# off too: the sync ports are open on the tailscale interface only, so
-# a LAN peer could not connect on a discovered address anyway.
+# are the fleet's, derived in ./default.nix from `nixhold.fleet.sync`
+# and rendered here with `override{Devices,Folders} = true`: the GUI
+# browses and shows folder state, and anything added there is reverted
+# at the next restart. Sync ports (22000 tcp+udp, 21027 udp) are
+# opened on the tailscale interface only, which is also the one place
+# a peer is dialled from — discovery, relays and NAT traversal are off
+# (see ./default.nix).
 #
 # The daemon runs as its own `syncthing` service user (nixpkgs'
 # default), never as the operator: nothing on a nixhold fleet runs as
@@ -31,10 +24,37 @@
 # port, and caddy's network identity auth guards the route, not the
 # socket. `gui.user` is the operator's login name because it is a GUI
 # credential and nothing more — it names no unix account.
-{ config, lib, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 let
   cfg = config.nixhold.services.syncthing;
   user = config.nixhold.identity.username;
+  hardening = import ../../../lib/hardening.nix;
+
+  # Where the identity bundle is split into the pair syncthing's own
+  # ExecStartPre installs into configDir. A RuntimeDirectory of the
+  # splitting unit: tmpfs, 0700, gone at reboot, and never a file the
+  # daemon's state directory keeps a second copy of.
+  identityDir = "/run/syncthing-identity";
+
+  splitIdentity = pkgs.writeShellScript "syncthing-identity-split" ''
+    set -euo pipefail
+    umask 077
+    ${pkgs.gawk}/bin/awk \
+      -v key="$RUNTIME_DIRECTORY/key.pem" -v cert="$RUNTIME_DIRECTORY/cert.pem" \
+      '/^-----BEGIN CERTIFICATE-----/ { c = 1 } { print > (c ? cert : key) }' \
+      "${config.age.secrets.syncthing-identity.path}"
+    for half in key cert; do
+      if [ ! -s "$RUNTIME_DIRECTORY/$half.pem" ]; then
+        echo "the syncthing identity holds no $half.pem — it must be the key followed by the certificate, as 'syncthing generate' writes them; re-mint it with 'nixhold secret edit ${toString config.nixhold.fleet.selfName} syncthing-identity'" >&2
+        exit 1
+      fi
+    done
+  '';
 in
 {
   imports = [ ./default.nix ];
@@ -70,14 +90,21 @@ in
           # 0400), not by the operator. `required` is left at its
           # default (true) on purpose: without the ciphertext the host
           # fails to build, rather than deploying an unauthenticated
-          # REST API that every local uid can drive. Provision it
-          # before the first deploy —
-          #   nixhold secret edit <host> syncthing
+          # REST API that every local uid can drive. Nobody types it:
+          # the deploy that needs it runs the generator, and the
+          # operator reads the minted password back when they log into
+          # the GUI, with
+          #   nixhold secret show <host> syncthing
           nixhold.secrets.syncthing = {
             owner = "syncthing";
             category = "service";
+            generator = "openssl rand -base64 24";
             description = "Plaintext syncthing GUI password for the ${user} GUI login (syncthing-init bcrypts it into the running config)";
           };
+
+          # The identity is declared in ./default.nix, platform-neutral
+          # but for this: on NixOS the reader is the daemon's own uid.
+          nixhold.secrets.syncthing-identity.owner = "syncthing";
 
           # nixpkgs creates the `syncthing` user and group (fixed
           # uid/gid, home = dataDir) as long as both are left at their
@@ -105,31 +132,44 @@ in
             mode = "2770";
           };
 
+          # The identity arrives as one ciphertext and syncthing wants
+          # two files, so one unit splits it before the daemon starts
+          # and nixpkgs' own ExecStartPre copies the halves into
+          # configDir. A unit rather than a step inside syncthing.service:
+          # that unit's ExecStartPre is upstream's, and a second
+          # definition of it would be a merge of a string with a list.
+          systemd.services.syncthing-identity = {
+            description = "Split the syncthing identity into the key and certificate the daemon starts from";
+            requiredBy = [ "syncthing.service" ];
+            before = [ "syncthing.service" ];
+            serviceConfig = hardening // {
+              Type = "oneshot";
+              # A RuntimeDirectory is removed when its unit stops, and
+              # syncthing.service reads the pair at every start.
+              RemainAfterExit = true;
+              RuntimeDirectory = baseNameOf identityDir;
+              RuntimeDirectoryMode = "0700";
+              # The reader of the ciphertext is the uid it is owned
+              # by: the hardening set leaves root with no capability,
+              # so nothing else could open a 0400 file of another uid.
+              User = config.services.syncthing.user;
+              Group = config.services.syncthing.group;
+              ExecStart = splitIdentity;
+            };
+          };
+
           services.syncthing = {
             enable = true;
             dataDir = "/var/lib/syncthing";
             configDir = "/var/lib/syncthing/config";
-            overrideDevices = false;
-            overrideFolders = false;
+            cert = "${identityDir}/cert.pem";
+            key = "${identityDir}/key.pem";
+            overrideDevices = true;
+            overrideFolders = true;
             guiAddress = "127.0.0.1:8384";
             guiPasswordFile = config.age.secrets.syncthing.path;
-            settings = {
+            settings = cfg.settings // {
               gui.user = lib.mkDefault user;
-              # See the posture note in the header.
-              # `settings.options` is PATCHed onto
-              # /rest/config/options by syncthing-init on every
-              # activation — independently of
-              # override{Devices,Folders}, which only govern the
-              # devices/folders sections — so these stay enforced
-              # while paired devices remain imperative.
-              options = {
-                globalAnnounceEnabled = lib.mkDefault false;
-                localAnnounceEnabled = lib.mkDefault false;
-                relaysEnabled = lib.mkDefault false;
-                natEnabled = lib.mkDefault false;
-                crashReportingEnabled = lib.mkDefault false;
-                urAccepted = lib.mkDefault (-1); # anonymous usage reporting: declined
-              };
             };
           };
         }

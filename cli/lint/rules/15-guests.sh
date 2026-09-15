@@ -7,8 +7,15 @@
 # hardware is the machine's), no `guests` (nesting is not a shape),
 # no `publicIp` or `publicFqdn` (the gateway is the host with the
 # public address, which a guest's veth is not); every granted device
-# is a path under /dev. Those are errors: a fleet that evaluates with
-# them deploys something other than what the roster reads as.
+# is a path under /dev and is not a DRM card node, and no sound card
+# is granted to two guests of one machine. Those are errors: a fleet
+# that evaluates with them deploys something other than what the
+# roster reads as.
+#
+# Then the other end of the same shape: a host that LOOKS like a guest
+# its machine left behind. `host remove <machine>` drops the entry that
+# placed them, and a guest's own entry says nothing about where it
+# runs, so what is left is a NixOS host nothing could install or boot.
 #
 # Then the grant against use: every `DeviceAllow` node in a unit the
 # framework or the fleet defines on the guest (the same "ours" as rule
@@ -61,6 +68,7 @@ while IFS=$'\t' read -r machine mplatform march guest; do
   while IFS= read -r dev; do
     [ -n "$dev" ] || continue
     case "$dev" in
+      /dev/dri/card*) fail "$machine grants $guest '$dev', which is a DRM card node — a card node carries DRM master, the seat's mode-setting and every buffer on the machine; a guest takes the render node beside it (/dev/dri/renderD*)" ;;
       /dev/dri/* | /dev/snd/by-id/*) ;;
       /dev/*) report "$machine grants $guest '$dev', which is neither a render node (/dev/dri/*) nor a sound card (/dev/snd/by-id/*) — nothing renders it" ;;
       *) fail "$machine grants $guest '$dev', which is not a path under /dev" ;;
@@ -80,6 +88,39 @@ done < <(printf '%s' "$view" | jq -r '
   [ .hosts | to_entries[] | .key as $m | (.value.guests // {} | keys[]) | { guest: ., machine: $m } ]
   | group_by(.guest)[] | select(length > 1)
   | "\(.[0].guest) is named as a guest by \(map(.machine) | join(" and ")) — a guest has one machine"')
+
+# One sound card handed to two guests of one machine. A card has one
+# owner ("Guests"): the machine's wireplumber disables it so the
+# owner's pipewire is the only one on it, and two owners is two
+# pipewires opening the same PCM nodes. A render node is not in this
+# check, because the kernel time-slices a GPU and the framework binds
+# one into every guest that names it by design.
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  fail "$line"
+done < <(printf '%s' "$view" | jq -r '
+  .hosts | to_entries[] | .key as $m
+  | [ (.value.guests // {} | to_entries[]) as $ge
+      | ($ge.value.devices // [])[]
+      | select(startswith("/dev/snd/by-id/"))
+      | { device: ., guest: $ge.key } ]
+  | group_by(.device)[] | select(length > 1)
+  | "\($m) grants \(.[0].device) to \(map(.guest) | join(" and ")) — a sound card has one owner"')
+
+# A guest its machine left behind. Nothing in a guest's own entry says
+# it was one, so the shape is what identifies it: a NixOS host no
+# machine names, with no roster `disk` and no disko layout of its own,
+# so no partition table, no loader, nothing `host install` could write.
+while IFS= read -r h; do
+  [ -n "$h" ] || continue
+  [ -z "$(nh_host_machine "$h")" ] || continue
+  [ -z "$(nh_host_field "$h" disk)" ] || continue
+  # An eval that fails is rule 01's finding, not this one's.
+  own="$(nix eval --json --no-warn-dirty "$root#nixosConfigurations.$h.config.disko.devices.disk" \
+    --apply 'd: d != { }' 2>/dev/null)" || own="true"
+  [ "$own" = "false" ] || continue
+  fail "$h is a NixOS host that no machine names as a guest, carries no 'disk' and declares no disko layout of its own — nothing could install or boot it. A guest whose machine left the roster looks exactly like this: name it under a machine's 'guests', give it a 'disk', or 'nixhold host remove $h'"
+done < <(nh_hosts nixos | cut -d' ' -f1)
 
 # --- the grant against the guest's own units ---
 while IFS=$'\t' read -r guest machine; do

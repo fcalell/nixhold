@@ -33,6 +33,7 @@
     ./modules/fixtureweb.nix
     ./known-hosts-assertions.nix
     ./repositories.nix
+    ./checks.nix
     ./pins.nix
     # The forker idiom, which is what the fixture stands in for: a
     # host imports the implementations of the services it enables.
@@ -137,11 +138,12 @@
         message = "fixture-server: a backup directory is not published by the backups infra module";
       }
       {
-        # A named oneshot gets the umask and the post-run chmod; the
-        # daemon-written one (navidrome) gets neither.
+        # A named oneshot gets the umask, the post-run chmod and the
+        # freshness check that fails a run which copied nothing; the
+        # daemon-written one (navidrome) gets none of the three.
         assertion =
           config.systemd.services.backup-vaultwarden.serviceConfig.UMask == "0027"
-          && config.systemd.services.backup-taskchampion.serviceConfig ? ExecStartPost
+          && lib.length config.systemd.services.backup-taskchampion.serviceConfig.ExecStartPost == 2
           && config.nixhold.services.navidrome.backup.unit == null;
         message = "fixture-server: the backup record's unit half is not honoured";
       }
@@ -153,6 +155,31 @@
           "caddy-tls-reload"
         ];
         message = "fixture-server: a framework oneshot runs without the hardening set";
+      }
+      {
+        # The set leaves a unit at uid 0 with no capability, so a
+        # oneshot that touches another uid's files says which way it
+        # got there: the cert fetcher is caddy itself (and tailscaled
+        # issues to that uid), the taskchampion copier is a root
+        # holding the caps its DynamicUser source needs, chown among
+        # them in the syscall filter as well as the bounding set.
+        assertion =
+          let
+            cert = config.systemd.services.tailscale-caddy-cert.serviceConfig;
+            copy = config.systemd.services.backup-taskchampion.serviceConfig;
+          in
+          cert.User == config.services.caddy.user
+          && cert.CapabilityBoundingSet == [ "" ]
+          && config.services.tailscale.permitCertUid == config.services.caddy.user
+          && !(copy ? User)
+          &&
+            copy.CapabilityBoundingSet == [
+              "CAP_DAC_READ_SEARCH"
+              "CAP_DAC_OVERRIDE"
+              "CAP_CHOWN"
+            ]
+          && lib.elem "@chown" copy.SystemCallFilter;
+        message = "fixture-server: a framework oneshot reaches another uid's files without naming the uid or the capabilities it does it with";
       }
       {
         assertion = s.resolvedOwner == "root" && s.resolvedMode == "0400" && s.category == "service";
@@ -173,6 +200,20 @@
         assertion =
           config.services.vaultwarden.config.DOMAIN == "https://fixture-server.fixture.ts.net/vault";
         message = "fixture: vaultwarden's DOMAIN is not the resolved URL of its own endpoint, got ${config.services.vaultwarden.config.DOMAIN}";
+      }
+      {
+        # Signups follow the database, and the pre-start that reads it
+        # writes its answer into an environment file. systemd applies
+        # those in the order given, last assignment winning, so the
+        # answer only overrides `config.SIGNUPS_ALLOWED` while it is
+        # the LAST one the unit reads.
+        assertion =
+          let
+            sc = config.systemd.services.vaultwarden.serviceConfig;
+          in
+          sc.RuntimeDirectory == "vaultwarden"
+          && lib.last sc.EnvironmentFile == "-/run/vaultwarden/first-run.env";
+        message = "fixture: vaultwarden's first-run env file is not the last EnvironmentFile its unit reads";
       }
       {
         assertion =
@@ -209,6 +250,37 @@
             lib.elem 22000
               config.networking.firewall.interfaces.${config.services.tailscale.interfaceName}.allowedTCPPorts;
         message = "fixture: syncthing's sync port is not scoped to the tailscale interface";
+      }
+      {
+        # The sending end of `sync.backups`: the peers are the other
+        # two hosts of that folder, each dialled at the address it
+        # answers to on the tailnet the three share, with the device
+        # ID committed under keys/syncthing/. Nothing is discovered —
+        # this list is the whole of what this node talks to.
+        assertion =
+          let
+            st = config.services.syncthing;
+            id = host: lib.fileContents ./keys/syncthing/${host}.id;
+          in
+          lib.attrNames st.settings.devices == [
+            "fixture-desktop"
+            "fixture-mac"
+          ]
+          && st.settings.devices.fixture-desktop.id == id "fixture-desktop"
+          && st.settings.devices.fixture-desktop.addresses == [ "tcp://fixture-desktop.fixture.ts.net:22000" ]
+          && st.settings.devices.fixture-mac.id == id "fixture-mac"
+          && st.settings.devices.fixture-mac.addresses == [ "tcp://fixture-mac.fixture.ts.net:22000" ]
+          && st.settings.folders.backups.path == "/var/lib/backups"
+          && st.settings.folders.backups.type == "sendonly"
+          && st.settings.folders.backups.versioning == null
+          &&
+            st.settings.folders.backups.devices == [
+              "fixture-desktop"
+              "fixture-mac"
+            ]
+          && st.overrideDevices
+          && st.overrideFolders;
+        message = "fixture: syncthing's devices and folders are not the fleet's `sync` declaration";
       }
       {
         # HOST scope is a PATH choice and nothing else: this host's

@@ -60,10 +60,16 @@ checks/                synthetic fleet fixture mkFleet is run against by flake c
 `checks/` against every module and profile, builds the CLI, and
 runs shellcheck over every verb, library and lint rule the CLI
 sources (the `cli-shellcheck` check; `writeShellApplication` only
-sees the two-line wrapper).
-`nixfmt` is the formatter. Behaviour a fixture cannot reach is
-verified on the dogfood fleet, which needs that repo to point at
-this checkout and `--allow-dirty-locks`.
+sees the two-line wrapper), and checks that every `nh_*` a verb
+calls is defined in a file that verb's process sources (the
+`cli-symbols` check: the dispatcher sources one verb plus every
+library, which shellcheck cannot see).
+The fixture is eval-only; what a unit does when it runs belongs in a
+VM check under `checks/vm/` (`nix build .#checks.x86_64-linux.vm-oneshots -L`,
+x86_64-linux and a `/dev/kvm`).
+`nixfmt` is the formatter. Behaviour neither can reach is verified on
+the dogfood fleet, which needs that repo to point at this checkout
+and `--allow-dirty-locks`.
 
 ## Companion repo
 

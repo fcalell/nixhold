@@ -13,10 +13,40 @@
 {
   config,
   lib,
+  pkgs,
   ...
 }:
 let
   cfg = config.nixhold.services.vaultwarden;
+
+  runtimeDir = "vaultwarden";
+  firstRunFile = "first-run.env";
+  # What the pre-start writes and the unit reads as its LAST
+  # environment file. `RuntimeDirectory` creates the parent, gives the
+  # service account write access to it under `ProtectSystem = strict`,
+  # and empties it on every stop.
+  firstRunEnv = "/run/${runtimeDir}/${firstRunFile}";
+
+  # SIGNUPS_ALLOWED is read at start and has no runtime toggle, so the
+  # window is decided at start: open while the vault holds no account,
+  # the configured value from the first start after one exists, which
+  # on this fleet is the deploy that follows registering. A count that
+  # cannot be taken proves nothing, so it leaves the window shut.
+  firstRun = pkgs.writeShellScript "vaultwarden-first-run" ''
+    set -eu
+    out="$RUNTIME_DIRECTORY/${firstRunFile}"
+    # An empty file assigns nothing, so the config's own
+    # SIGNUPS_ALLOWED stands: this window only ever opens.
+    : >"$out"
+    db="''${DATABASE_URL:-$DATA_FOLDER/db.sqlite3}"
+    users=0
+    if [ -e "$db" ]; then
+      users="$(${pkgs.sqlite}/bin/sqlite3 "$db" 'select count(*) from users' 2>/dev/null)" || exit 0
+    fi
+    if [ "$users" = 0 ]; then
+      printf 'SIGNUPS_ALLOWED=true\n' >"$out"
+    fi
+  '';
 
   # Vaultwarden is one of the apps that has to know its own external
   # origin: with a path in DOMAIN it mounts every route under it and
@@ -81,10 +111,23 @@ in
               DOMAIN = domain;
               ROCKET_ADDRESS = "127.0.0.1";
               ROCKET_PORT = 8222;
+              # The floor, not the answer: the pre-start below opens
+              # signups while the vault has no account.
               SIGNUPS_ALLOWED = lib.mkDefault false;
               SHOW_PASSWORD_HINT = lib.mkDefault false;
               INVITATIONS_ALLOWED = lib.mkDefault false;
             };
+          };
+
+          systemd.services.vaultwarden.serviceConfig = {
+            RuntimeDirectory = runtimeDir;
+            ExecStartPre = [ firstRun ];
+            # LAST of the unit's environment files: systemd applies
+            # them in the order given and a later assignment wins, so
+            # this is what lets the pre-start's answer override the
+            # config's SIGNUPS_ALLOWED. `-` so a missing file is not a
+            # failed start.
+            EnvironmentFile = lib.mkAfter [ "-${firstRunEnv}" ];
           };
 
           # The unit's environment file, named after the service.

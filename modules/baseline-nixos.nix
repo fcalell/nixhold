@@ -14,6 +14,12 @@
     # guarantees is that `nixhold.services` is readable on every host,
     # whatever its profile imports.
     ./services
+    # Backup publishing, the one infra module whose data is a
+    # service's rather than a host kind's: a desktop that runs a
+    # service with a `backup.dir` publishes the copies the same way a
+    # server does. It activates from that data, so a host without one
+    # renders nothing.
+    ./infra/backups.nix
     ./secrets
     ./secrets/env.nix
     ./secrets/nixos.nix
@@ -22,6 +28,11 @@
     # ssh wiring, the direnv library and the clone step all follow
     # from one `nixhold.repositories` entry.
     ./repositories
+    # What the fleet asserts about its own services, one system unit
+    # each ("Provisioning": Checks are units too). Both baselines
+    # carry it, so `nixhold.checks` exists on every host.
+    ./checks
+    ./checks/nixos.nix
     ./hardware
     # Both sides of "Guests": what a host sets when it is a container
     # of another host's machine, and what a machine renders for the

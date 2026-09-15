@@ -62,18 +62,19 @@
 # target: locally when installing this machine, over ssh in --remote
 # mode. Keeps disk enumeration and by-id resolution single-sourced.
 #
-# No --host: in --remote mode the machine answering is the installer
-# ISO, whose host key is generated fresh on every boot, so the fleet's
-# committed key for <name> is NOT what it presents and there is nothing
-# to pin to. These snippets read block devices; the host key itself
-# never travels over them (it goes through nixos-anywhere's
-# --extra-files, below).
+# --installer, never --host: in --remote mode the machine answering is
+# a booted installer, whose host key is generated fresh on every boot,
+# so the fleet's committed key for <name> is NOT what it presents,
+# there is nothing to pin to, and nothing worth writing into the
+# operator's known_hosts either (lib/ssh.sh). These snippets read block
+# devices; the host key itself never travels over them (it goes through
+# nixos-anywhere's --extra-files, below).
 nh_target_sh() {
   local remote="$1" script="$2"
   if [ -z "$remote" ]; then
     sh -c "$script"
   else
-    nh_ssh "$remote" -- "$script"
+    nh_ssh "$remote" --installer -- "$script"
   fi
 }
 
@@ -90,7 +91,7 @@ nh_target_sudo_sh() {
     sh -c "$(nh_sudo_preamble_local)
 $script"
   else
-    nh_ssh_sudo "$remote" -- "$script" </dev/null
+    nh_ssh_sudo "$remote" --installer -- "$script" </dev/null
   fi
 }
 
@@ -257,39 +258,73 @@ nh_name_os() {
   esac
 }
 
-# nh_windows_disks <remote> <lsblk-json> — the disks holding a Windows
-# installation (an NTFS partition with Windows/System32, read through
-# a read-only mount on the target), one name per line.
+# nh_windows_disks <remote> <lsblk-json> <target-disk> — the disks
+# OTHER than <target> holding a Windows installation (an NTFS partition
+# with Windows/System32, read through a read-only mount on the target),
+# one name per line. <target> is skipped because a Windows there is
+# erased either way; every disk walked here is one the install keeps.
+#
+# Non-zero, with a message, when such a disk holds a Windows volume
+# that cannot be read at all. Both cases look exactly like "no NTFS
+# holding Windows" to the walk, and that answer is what decides the
+# loader carry: accepting it would erase the ESP and leave a Windows
+# that is still on the machine unbootable.
+#   BitLocker  lsblk reports the fstype of an encrypted volume as
+#              "BitLocker"; there is no mount that looks inside it.
+#   a refused read-only mount  Fast Startup or hibernation left the
+#              filesystem with a dirty log, which ntfs3 will not touch.
 nh_windows_disks() {
-  local remote="$1" json="$2" pairs
-  pairs="$(printf '%s' "$json" | jq -r '
-    .blockdevices[] | select(.type == "disk") | .name as $d
+  local remote="$1" json="$2" target="$3" pairs scan locked
+  locked="$(printf '%s' "$json" | jq -r --arg t "$target" '
+    .blockdevices[] | select(.type == "disk" and .name != $t)
+    | (.children // [])[]
+    | select(((.fstype // "") | ascii_downcase) == "bitlocker")
+    | " /dev/\(.name)"' | tr -d '\n')"
+  if [ -n "$locked" ]; then
+    nh_err "BitLocker on$locked — the install cannot tell whether Windows lives there, so it cannot decide whether to carry Windows' loader across the format. Suspend BitLocker in Windows, reboot into the installer, and re-run (nothing has been erased)."
+    return 1
+  fi
+  pairs="$(printf '%s' "$json" | jq -r --arg t "$target" '
+    .blockdevices[] | select(.type == "disk" and .name != $t) | .name as $d
     | (.children // [])[] | select((.fstype // "") == "ntfs")
     | "\($d) \(.name)"')"
   [ -n "$pairs" ] || return 0
   # shellcheck disable=SC2016 # runs on the TARGET's shell
-  nh_target_sudo_sh "$remote" '
-    d="$(mktemp -d)" || exit 0
+  scan="$(nh_target_sudo_sh "$remote" '
+    d="$(mktemp -d)" || exit 1
     printf "%s\n" '"'$pairs'"' | while read -r disk part; do
       [ -n "$part" ] || continue
       if nh_rsudo mount -o ro -t ntfs3 "/dev/$part" "$d" 2>/dev/null ||
          nh_rsudo mount -o ro -t ntfs "/dev/$part" "$d" 2>/dev/null; then
-        [ -d "$d/Windows/System32" ] && echo "$disk"
+        [ -d "$d/Windows/System32" ] && echo "windows $disk"
         nh_rsudo umount "$d" 2>/dev/null
+      else
+        echo "unreadable $part"
       fi
     done
     rmdir "$d" 2>/dev/null
-    exit 0' 2>/dev/null | sort -u || true
+    exit 0')" || {
+    nh_err "could not look for Windows on the disks this install keeps — nothing has been erased"
+    return 1
+  }
+  locked="$(printf '%s\n' "$scan" | awk '$1 == "unreadable" { printf " /dev/%s", $2 }')"
+  if [ -n "$locked" ]; then
+    nh_err "the NTFS filesystem on$locked refused a read-only mount — Fast Startup or hibernation left it with a dirty log, so the install cannot tell whether Windows lives there and cannot decide whether to carry Windows' loader across the format. Boot Windows and shut it down with Fast Startup off (or 'shutdown /s /t 0'), then re-run (nothing has been erased)."
+    return 1
+  fi
+  printf '%s\n' "$scan" | awk '$1 == "windows" { print $2 }' | sort -u
 }
 
 # nh_windows_carry <remote> <lsblk-json> <disk-name> — the partition
 # of the target disk whose EFI/Microsoft is carried into the new ESP:
 # an ESP of that disk holding Windows' loader, when a Windows
 # installation exists on some OTHER disk. Empty otherwise: a Windows
-# on the target disk goes with it, loader included.
+# on the target disk goes with it, loader included. Non-zero when the
+# Windows walk could not reach a verdict (nh_windows_disks).
 nh_windows_carry() {
-  local remote="$1" json="$2" target="$3" part
-  nh_windows_disks "$remote" "$json" | grep -qvx -- "$target" || return 0
+  local remote="$1" json="$2" target="$3" part disks
+  disks="$(nh_windows_disks "$remote" "$json" "$target")" || return 1
+  [ -n "$disks" ] || return 0
   while IFS= read -r part; do
     [ -n "$part" ] || continue
     if nh_esp_loaders "$remote" "$part" | grep -qix microsoft; then
@@ -316,6 +351,27 @@ nh_esp_tar() {
     exit $rc'
 }
 
+# nh_carry_install_remote <remote> <carry-tar> — unpack the carried
+# EFI/Microsoft into /mnt/boot/EFI on the target, the ESP disko has
+# just formatted and mounted. The --remote counterpart of the two
+# `tar -xf` lines in nh_local_install.
+#
+# The tar travels on the ssh session's stdin and lands in a file on the
+# target before it is unpacked: nh_rsudo pipes the operator's password
+# into sudo's own stdin, so `nh_rsudo tar -xf -` would read that pipe
+# rather than the session (lib/ssh.sh).
+nh_carry_install_remote() {
+  local remote="$1" carry="$2"
+  # shellcheck disable=SC2016 # runs on the TARGET's shell
+  nh_ssh_sudo "$remote" --installer -- '
+    t="$(mktemp)" || exit 1
+    cat >"$t" || exit 1
+    nh_rsudo install -d /mnt/boot/EFI && nh_rsudo tar -xf "$t" -C /mnt/boot/EFI
+    rc=$?
+    rm -f "$t"
+    exit $rc' <"$carry"
+}
+
 # nh_disk_name <remote> <by-id> — the kernel name behind a by-id path,
 # resolved on the target.
 nh_disk_name() {
@@ -333,7 +389,7 @@ nh_disk_name() {
 nh_esp_guard() {
   local remote="$1" json="$2" target="$3" part entry other names="" carry
   local -a parts entries
-  carry="$(nh_windows_carry "$remote" "$json" "$target")"
+  carry="$(nh_windows_carry "$remote" "$json" "$target")" || return 1
   # Collected before the prompt: gum reads its answer from stdin, and a
   # loop fed by a process substitution hands it the pipe's EOF, which
   # counts as No. One decision per disk, so every foreign loader is
@@ -901,11 +957,25 @@ cmd_host_install() {
   local name="" remote="" disk="" yes=0 picked=0 repo="" keys=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --remote) remote="$2"; shift 2 ;;
-      --disk) disk="$2"; shift 2 ;;
+      # Each value flag reports its own missing value: left bare, "$2"
+      # under `set -u` aborts the run with bash's "unbound variable".
+      --remote)
+        remote="${2:-}"
+        [ -n "$remote" ] || { nh_err "--remote needs <user>@<ip>"; return 1; }
+        shift 2 ;;
+      --disk)
+        disk="${2:-}"
+        [ -n "$disk" ] || { nh_err "--disk needs a /dev/disk/by-id path"; return 1; }
+        shift 2 ;;
       --yes) yes=1; shift ;;
-      --repo) repo="${2:-}"; shift 2 ;;
-      --keys) keys="${2:-}"; shift 2 ;;
+      --repo)
+        repo="${2:-}"
+        [ -n "$repo" ] || { nh_err "--repo needs <owner/repo>"; return 1; }
+        shift 2 ;;
+      --keys)
+        keys="${2:-}"
+        [ -n "$keys" ] || { nh_err "--keys needs a directory"; return 1; }
+        shift 2 ;;
       -h | --help)
         cat <<'EOF'
 Usage: nixhold host install [<name>] [--remote <user>@<ip>]
@@ -1064,14 +1134,17 @@ EOF
 
   # 1b. Windows' loader on the target's ESP, with Windows on another
   #     disk: read it now, while the old ESP exists. Both paths put it
-  #     back after the format (nh_local_install; --extra-files).
+  #     back into /mnt/boot/EFI right after disko, before the closure
+  #     is built (nh_local_install; nh_carry_install_remote).
   local carry="" carry_part
   if [ -n "$disk" ]; then
     local cjson cname
     cjson="$(nh_disk_json "$remote")" || cjson=""
     cname="$(nh_disk_name "$remote" "$disk" 2>/dev/null)" || cname=""
     carry_part=""
-    [ -z "$cjson" ] || [ -z "$cname" ] || carry_part="$(nh_windows_carry "$remote" "$cjson" "$cname")"
+    if [ -n "$cjson" ] && [ -n "$cname" ]; then
+      carry_part="$(nh_windows_carry "$remote" "$cjson" "$cname")" || return 1
+    fi
     if [ -n "$carry_part" ]; then
       carry="$(nh_tmpdir esp-carry)/microsoft.tar" || return 1
       if ! nh_esp_tar "$remote" "$carry_part" >"$carry" || [ ! -s "$carry" ]; then
@@ -1094,6 +1167,24 @@ EOF
       return 0
     }
   fi
+
+  # 2b. The tailnet node of this name, and the auth key that replaces
+  #     it. Before the disk is touched and before the required-secret
+  #     walk below, so the walk finds the ciphertext already there:
+  #     the machine is about to be wiped, so its live node is stale and
+  #     its committed key is spent (see "The tailnet's API client").
+  #     A fleet that commits no API client for the host's network
+  #     writes nothing here and the walk asks for a pasted key, as
+  #     before; darwin never reaches this, having no auth-key file.
+  local minted=() minted_out m
+  minted_out="$(nh_tailnet_remint "$name" nixos --delete-node)" || {
+    nh_err "could not re-mint $name's tailnet auth key — nothing has been erased"
+    return 1
+  }
+  while IFS= read -r m; do
+    [ -n "$m" ] || continue
+    minted+=("$m")
+  done <<<"$minted_out"
 
   local rc=0
   if [ -z "$remote" ]; then
@@ -1118,12 +1209,6 @@ EOF
       nh_err "the fleet key could not be staged — $name would first-boot unable to decrypt anything"
       return 1
     }
-    if [ -n "$carry" ]; then
-      if ! { mkdir -p "$extra/boot/EFI" && tar -xf "$carry" -C "$extra/boot/EFI"; }; then
-        nh_err "could not stage Windows' boot files for the new ESP"
-        return 1
-      fi
-    fi
 
     # Before the build, so the host first-boots with every required
     # secret decryptable. Fatal, as in `deploy`.
@@ -1135,6 +1220,20 @@ EOF
     # 4. Install. The target builds its own closure
     #    (--build-on remote); nixos-facter writes the hardware report
     #    back to facter.json.
+    #
+    #    Two runs of nixos-anywhere, with the carried Windows loader
+    #    between them. --extra-files is applied inside the install
+    #    phase, after the closure is built, so a build that fails —
+    #    the common failure, and the one that happens after disko has
+    #    already erased the ESP — would leave the loader nowhere: the
+    #    only copy is under the process scratch root, wiped on the way
+    #    out, and a re-run finds no Windows loader left to read.
+    #    Splitting at disko puts it on the new ESP the moment there is
+    #    one, which is where the ISO path puts it. The second run names
+    #    no kexec phase, so it reuses the installer the first one left
+    #    running with /mnt still mounted, and regenerates no hardware
+    #    report: the first run wrote it and git-added it, which is what
+    #    lets the second one evaluate the flake.
     nh_info "running nixos-anywhere against $name @ $remote"
     # nixos-anywhere drives its own ssh with UserKnownHostsFile=/dev/null
     # and StrictHostKeyChecking=no (its hard defaults, not ours) and the
@@ -1143,12 +1242,26 @@ EOF
     # therefore trust-on-first-use, and it carries the fleet key and
     # $name's new host key in --extra-files — run installs over a
     # network you trust.
-    nixos-anywhere \
-      --flake "$root#$name" \
+    local -a na=(
+      --flake "$root#$name"
+      --extra-files "$extra"
+      --build-on remote
+      --target-host "$remote"
+    )
+    nixos-anywhere "${na[@]}" \
       --generate-hardware-config nixos-facter "$facter_target" \
-      --extra-files "$extra" \
-      --build-on remote \
-      --target-host "$remote" || rc=$?
+      --phases kexec,disko || rc=$?
+    if [ "$rc" -eq 0 ] && [ -n "$carry" ]; then
+      if nh_carry_install_remote "$remote" "$carry"; then
+        nh_ok "carried Windows' boot files into the new ESP"
+      else
+        nh_err "could not put Windows' boot files onto the new ESP — the disk is already formatted, so re-run the install"
+        rc=1
+      fi
+    fi
+    if [ "$rc" -eq 0 ]; then
+      nixos-anywhere "${na[@]}" --phases install,reboot || rc=$?
+    fi
     if [ "$rc" -eq 0 ]; then
       nh_ok "installed $name"
     else
@@ -1165,7 +1278,8 @@ EOF
     local keys_dir
     keys_dir="$(nh_worktree_keys_dir 2>/dev/null)" || keys_dir="$root/keys"
     nh_commit_paths "$root" "host($name): install (disk + facter)" \
-      "$hosts_file" "$facter_target" "$keys_dir/hosts/$name.pub"
+      "$hosts_file" "$facter_target" "$keys_dir/hosts/$name.pub" \
+      "${minted[@]+"${minted[@]}"}"
     nh_push_if_installer "$root"
     nh_next_after_install "$name" "$platform"
   fi
