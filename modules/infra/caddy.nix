@@ -378,6 +378,15 @@ in
       # redirect).
       services.caddy.globalConfig = lib.mkIf (!hasInternet) "auto_https disable_redirects";
 
+      # The vhost hard-references the cert pair, and caddy exits on
+      # a config it cannot load (nixpkgs' RestartPreventExitStatus=1
+      # then keeps it down). Before the first fetch has landed, a
+      # node not yet on the tailnet included, the start is skipped
+      # rather than failed, so a deploy in that state reports nothing
+      # broken; the path unit's reload-or-restart brings caddy up the
+      # moment the key is in place.
+      systemd.services.caddy.unitConfig.ConditionPathExists = tlsKey;
+
       # Both directories are tmpfiles' rather than the unit's: a
       # fetcher that is the caddy user cannot chown or chmod a
       # directory root left behind, and tmpfiles corrects one.
@@ -402,11 +411,10 @@ in
           "tailscaled.service"
           "network-online.target"
         ];
-        # The vhost hard-references the cert files, so caddy must not
-        # start before the first fetch has run — otherwise it exits on
-        # config load and nixpkgs' RestartPreventExitStatus=1 keeps it
-        # down. Once the cert lands, the path unit below does a
-        # reload-or-restart, which is what brings caddy up.
+        # The first fetch runs ahead of caddy's start, whose
+        # ConditionPathExists (above) is the key this writes; on a
+        # node that cannot fetch yet, caddy's start is skipped and the
+        # path unit below brings it up when the key lands.
         before = [ "caddy.service" ];
         wantedBy = [ "caddy.service" ];
         path = [

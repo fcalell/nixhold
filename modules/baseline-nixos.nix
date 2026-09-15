@@ -14,11 +14,13 @@
     # guarantees is that `nixhold.services` is readable on every host,
     # whatever its profile imports.
     ./services
-    # Backup publishing, the one infra module whose data is a
-    # service's rather than a host kind's: a desktop that runs a
-    # service with a `backup.dir` publishes the copies the same way a
-    # server does. It activates from that data, so a host without one
-    # renders nothing.
+    # The infra modules: their data is a service's, not a host kind's.
+    # A desktop that enables a service with an endpoint serves it the
+    # way a server does, and one with a `backup.dir` publishes the
+    # copies the same way. Each activates from that data, so a host
+    # without one renders nothing.
+    ./infra/caddy.nix
+    ./infra/firewall.nix
     ./infra/backups.nix
     ./secrets
     ./secrets/env.nix

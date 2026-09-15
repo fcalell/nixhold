@@ -14,10 +14,9 @@
   imports = [
     inputs.nixhold.modules.services.nixos.openssh
     inputs.nixhold.modules.services.nixos.tailscale
-    inputs.nixhold.modules.infra.caddy
-    inputs.nixhold.modules.infra.firewall
-    # No `backups`: publishing follows a service's `backup` record on
-    # any NixOS host, so the baseline imports it (modules/baseline-nixos.nix).
+    # No infra modules: caddy, the firewall and backup publishing
+    # follow a service's declarations on any NixOS host, so the
+    # baseline imports them (modules/baseline-nixos.nix).
   ];
 
   nixhold.services.openssh.enable = lib.mkDefault true;

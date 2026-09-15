@@ -1592,6 +1592,11 @@ capabilities to write into it or hand anything over (see "One
 hardening set"). `services.tailscale.permitCertUid` is that same
 uid, since tailscaled checks the peer of the socket the cert is
 asked for on.
+caddy's own start carries `ConditionPathExists=<key>`: before the
+first fetch has landed (a node not yet on the tailnet, a fresh
+install) the start is skipped rather than failed, so a deploy in
+that state reports nothing broken, and the path unit's
+reload-or-restart is what brings caddy up when the key appears.
 Tailnet vhosts use `tls <cert> <key>` + `auto_https
 disable_redirects`; internet vhosts use caddy ACME. Apps that can't
 live under a subpath set their own base-path option or expose on an
@@ -1682,7 +1687,10 @@ them into place, and the path unit watches the half moved last;
 caddy is revived by that reload-or-restart, not by its own restart
 policy.
 
-**Infra consumers** (server bundle): caddy (HTTP endpoints →
+**Infra consumers** (NixOS baseline, like `backups`: each activates
+from a service's data, so a host with no endpoint renders nothing and
+a desktop that enables a service with one serves it the way a server
+does): caddy (HTTP endpoints →
 vhosts, TLS strategy from network type) and firewall (80/443 tcp+udp
 on every interface for internet-network endpoints; 443 tcp+udp
 scoped to the tailscale interface for tailnet endpoints — the LAN
@@ -1746,7 +1754,7 @@ gets `RestrictSUIDSGID = false`: a symbolic chmod preserving the bit
 is a chmod setting it). The directory line lives under tmpfiles
 `10-<name>` with its fields forced, because nixpkgs' vaultwarden
 creates the same directory under that name. The module is imported
-by the NixOS baseline rather than the server profile — the data is a
+by the NixOS baseline, as caddy and the firewall are — the data is a
 service's, so a `desktopLinux` host that sets `backup.dir` publishes
 the same way a server does. The producer, its timer and the
 transport off the box stay the service's: vaultwarden's producer is
