@@ -124,13 +124,15 @@ nh_activate_nixos_snippet() {
 
 # nh_activate_darwin <out> — nix-darwin's switch, as root: the system
 # profile set and the closure's own activation script (its /etc guard
-# and messages are the script's).
+# and messages are the script's). `--set-home`: macOS sudo keeps the
+# operator's $HOME, and nix under root warns about a home it does not
+# own before falling back to root's — the reset darwin-rebuild does.
 nh_activate_darwin() {
   local out="$1"
   [ -x "$out/activate" ] || {
     nh_err "$out is not a nix-darwin system closure"
     return 1
   }
-  sudo nix-env -p /nix/var/nix/profiles/system --set "$out" || return 1
-  sudo "$out/activate"
+  sudo --set-home nix-env -p /nix/var/nix/profiles/system --set "$out" || return 1
+  sudo --set-home "$out/activate"
 }
