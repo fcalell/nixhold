@@ -42,6 +42,8 @@ export NIX_CONFIG
 . "$NIXHOLD_LIB_ROOT/lib/operator.sh"
 # shellcheck source=lib/tailnet.sh
 . "$NIXHOLD_LIB_ROOT/lib/tailnet.sh"
+# shellcheck source=lib/system.sh
+. "$NIXHOLD_LIB_ROOT/lib/system.sh"
 
 # One process-wide exit path: wipes the scratch root (the fleet key,
 # freshly minted host keys, the clone key, unwrapped identities) and

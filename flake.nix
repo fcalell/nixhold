@@ -170,11 +170,19 @@
               # builds under pipefail, where grep's 1 would end this one.
               match() { grep "$@" || true; }
               defs() { match -hoE '^nh_[a-z0-9_]+\(\)' "$@" | tr -d '()'; }
+              # The libraries are the ones the dispatcher sources, by
+              # name — a lib/*.sh it does not name defines nothing at
+              # runtime, so the glob is not the list.
+              libs=$(match -oE '\$NIXHOLD_LIB_ROOT/lib/[a-z-]+\.sh' nixhold.sh | sed 's|.*/|lib/|' | sort -u)
+              for l in lib/*.sh; do
+                printf '%s\n' "$libs" | grep -qx "$l" ||
+                  { echo "$l is not sourced by nixhold.sh" >&2; exit 1; }
+              done
               rc=0
               for f in ./*.sh; do
                 # A verb that sources a sibling verb gets its functions too.
                 siblings=$(match -oE '\$NIXHOLD_LIB_ROOT/[a-z-]+\.sh' "$f" | sed 's|.*/||' | sort -u)
-                known=$(defs "$f" lib/*.sh $siblings | sort -u)
+                known=$(defs "$f" $libs $siblings | sort -u)
                 for call in $(match -ohE '\bnh_[a-z0-9_]+' "$f" | sort -u); do
                   printf '%s\n' "$known" | grep -qx "$call" ||
                     { echo "$f calls $call, which neither it nor anything it sources defines" >&2; rc=1; }
