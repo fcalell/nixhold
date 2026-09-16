@@ -32,7 +32,7 @@ in
     # modules/fleet). Root login stays closed.
     openssh.authorizedKeys.keys = config.nixhold.fleet.derived.operatorAuthorizedKeys;
 
-    # Console login. nixos-anywhere stages no password, so without
+    # Console login. The install stages no password, so without
     # this a freshly installed box has a locked account at the tty —
     # and the tty is the one way in when ssh is not. The secret is
     # `required`, so this is unconditional: a host with no committed

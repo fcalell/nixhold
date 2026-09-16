@@ -91,6 +91,14 @@ let
   # Android host shares.
   hostPlatform = host: { lib, ... }: { nixpkgs.hostPlatform = lib.mkDefault host.arch; };
 
+  # The commit a generation was built from, read back by `nixhold
+  # status` ("Where a host is built"). A clean checkout at a commit is
+  # the only source a verb builds, so the attribute is always there
+  # on a deployed host; a dirty in-tree eval leaves it unset.
+  revision = { lib, ... }: {
+    system.configurationRevision = lib.mkIf (inputs.self ? rev) inputs.self.rev;
+  };
+
   nixosSpecialArgs = name: {
     inherit inputs identity;
     fleet = fleetView;
@@ -101,6 +109,7 @@ let
     [
       inputs.nixhold.nixosModules.nixhold
       (hostPlatform host)
+      revision
     ]
     ++ [ host.profile ]
     ++ baseline name host
@@ -255,6 +264,7 @@ let
       modules = [
         inputs.nixhold.darwinModules.nixhold
         (hostPlatform host)
+        revision
       ]
       ++ [ host.profile ]
       ++ baseline name host

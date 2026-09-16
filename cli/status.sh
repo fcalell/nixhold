@@ -106,7 +106,56 @@ nh_status_host() {
     printf '    %-24s %-12s %-6s %-8s %-8s %s\n' "$name" "$category" "$scope" "$state" "$req" "$desc"
   done
   echo
+  printf '  revision: %s\n' "$(nh_status_revision "$host" "$platform")"
   printf '  provisioning: %s\n' "$(nh_status_provisioning "$host" "$platform")"
+}
+
+# nh_status_target <host> <platform> — where the live lines read the
+# host: "local" for this machine (and for a Mac, which is read on
+# itself or not at all), else the operator user at the deploy address,
+# pinned to the committed host key when connecting. Non-zero when a
+# remote host has no address yet.
+nh_status_target() {
+  local host="$1" platform="$2" user addr
+  if [ "$(nh_deploy_self)" = "$host" ] || [ "$platform" != "nixos" ]; then
+    printf 'local'
+    return 0
+  fi
+  user="$(nh_host_eval "$host" nixos nixhold.identity.username 2>/dev/null | jq -r '.')" || user=""
+  addr="$(nh_deploy_addr "$host")" || addr=""
+  [ -n "$user" ] && [ -n "$addr" ] || return 1
+  printf '%s@%s' "$user" "$addr"
+}
+
+# nh_status_revision <host> <platform> — the commit the running
+# generation was built from (ARCHITECTURE "Where a host is built"):
+# `system.configurationRevision`, as the host's own version tool
+# prints it. A host that is down, or a Mac read from elsewhere, is a
+# word here.
+nh_status_revision() {
+  local host="$1" platform="$2" target cmd out=""
+  case "$platform" in
+    nixos) cmd="nixos-version --configuration-revision" ;;
+    darwin) cmd="darwin-version --configuration-revision" ;;
+    *) return 0 ;;
+  esac
+  target="$(nh_status_target "$host" "$platform")" || {
+    printf 'unreachable (no address for %s yet)' "$host"
+    return 0
+  }
+  if [ "$target" = "local" ]; then
+    if [ "$platform" = "darwin" ] && [ "$(uname -s)" != "Darwin" ]; then
+      printf 'read it on %s itself' "$host"
+      return 0
+    fi
+    out="$(sh -c "$cmd" 2>/dev/null)" || out=""
+  else
+    out="$(nh_ssh "$target" --host "$host" -- "$cmd" </dev/null 2>/dev/null)" || out=""
+  fi
+  case "$out" in
+    "" | unknown* | *unknown) printf 'unknown (built before this nixhold, or from a dirty tree)' ;;
+    *) printf '%s' "$out" ;;
+  esac
 }
 
 # nh_status_provisioning <host> <platform> — the live line. The
@@ -115,16 +164,13 @@ nh_status_host() {
 # here, never a failure of the verb.
 nh_status_provisioning() {
   local host="$1" platform="$2" local_host=0 target="" state="" rc=0
-  [ "$(nh_deploy_self)" = "$host" ] && local_host=1
-  if [ "$platform" = "nixos" ] && [ "$local_host" -ne 1 ]; then
-    local user addr
-    user="$(nh_host_eval "$host" nixos nixhold.identity.username 2>/dev/null | jq -r '.')" || user=""
-    addr="$(nh_deploy_addr "$host")" || addr=""
-    if [ -z "$user" ] || [ -z "$addr" ]; then
-      printf 'unreachable (no address for %s yet)' "$host"
-      return 0
-    fi
-    target="$user@$addr"
+  target="$(nh_status_target "$host" "$platform")" || {
+    printf 'unreachable (no address for %s yet)' "$host"
+    return 0
+  }
+  if [ "$target" = "local" ]; then
+    local_host=1
+    target=""
   fi
   state="$(nh_provision_state "$host" "$platform" "$local_host" "$target")" || rc=$?
   case "$rc" in

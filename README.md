@@ -15,7 +15,7 @@ Status: **pre-v1.** The implemented design is described in
 A fleet lives in its own repo and pins `inputs.nixhold`. The whole
 `flake.nix` is the `mkFleet` call. The fleet declares the heavy
 inputs too (nixpkgs, home-manager, nix-darwin, agenix, disko,
-nixos-anywhere, nixos-hardware) and points nixhold at them with
+nixos-hardware) and points nixhold at them with
 `inputs.nixhold.inputs.<x>.follows`, so one lock — the fleet's —
 decides what every host runs and `nixhold update` moves all of it.
 
@@ -23,11 +23,11 @@ decides what every host runs and `nixhold update` moves all of it.
 {
   inputs = {
     nixhold.url = "github:fcalell/nixhold";
-    # nixhold's seven root inputs, declared here and followed — the
+    # nixhold's six root inputs, declared here and followed — the
     # template carries the full block.
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    # … home-manager, nix-darwin, agenix, disko, nixos-anywhere,
-    # nixos-hardware, each with the follows nixhold's flake.nix sets
+    # … home-manager, nix-darwin, agenix, disko, nixos-hardware,
+    # each with the follows nixhold's flake.nix sets
     nixhold.inputs.nixpkgs.follows = "nixpkgs";
     # … one follows per heavy input
   };

@@ -29,12 +29,6 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    nixos-anywhere = {
-      url = "github:nix-community/nixos-anywhere";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.disko.follows = "disko";
-    };
-
     nixos-hardware.url = "github:NixOS/nixos-hardware/master";
   };
 

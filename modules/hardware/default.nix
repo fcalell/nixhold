@@ -18,9 +18,9 @@
 #     `<layout.hostsDir>/<host>/facter.json`, a computed subpath like
 #     every layout default; install writes it there. Until the file
 #     exists the host still EVALUATES (so `nix eval`, lint and status
-#     work) but a build is blocked by an assertion. nixos-anywhere
-#     evaluates the disko script (which does not force `assertions`),
-#     kexecs, writes the report, then builds the closure, so the
+#     work) but a build is blocked by an assertion. The install
+#     evaluates the disko script (which does not force `assertions`)
+#     and writes the report before the closure is built, so the
 #     assertion only trips on a plain rebuild of an un-installed host.
 #
 # The `hardware.facter` option set ships in nixpkgs; the disko module

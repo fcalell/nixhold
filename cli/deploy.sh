@@ -1,16 +1,21 @@
 # nixhold deploy [<name>…|--all] [--mode {switch|boot|test}] [--dry-run]
 #                                [--target <addr>]
 #
-# Daily verb. Builds + activates each host's current config.
+# Daily verb. Each host builds its own system from the fleet at HEAD's
+# sha on the forge and is activated from the out path (ARCHITECTURE
+# "Where a host is built"; lib/system.sh):
 #   - No name: this machine (nh_deploy_self); a usage error when it
 #     is not a fleet host. --all: every host this machine can
 #     activate (every NixOS host, every Android host; a darwin host
 #     only when this Mac is it). Naming is the confirmation: no
 #     picker, no prompt.
-#   - Local mode iff <name> is this machine: nixos-rebuild / darwin-rebuild.
-#   - Remote NixOS: nixos-rebuild --target-host <addr> --build-host <addr>
-#     (the target builds itself; we orchestrate).
-#   - Remote darwin: refused (deploy Macs locally).
+#   - The checkout is refused dirty and HEAD is pushed when the forge
+#     is behind it, once, before the first host.
+#   - NixOS: `nix build` of the toplevel as the operator, locally or
+#     over nh_ssh, then the profile set and switch-to-configuration
+#     as root, locally or over nh_ssh_sudo (one password per process).
+#   - Darwin: refused remotely (deploy Macs locally); locally the same
+#     two steps with nix-darwin's activate.
 #   - Android: the plan is built here and the device converged onto
 #     it over adb (deploy-android.sh); --mode does not apply.
 # Several hosts deploy in order; a failure on one does not abandon
@@ -115,7 +120,13 @@ EOF
     done
   fi
 
-  nh_info "deploy: ${names[*]} — mode=$mode$([ "$dry_run" -eq 1 ] && printf ' dry-run')"
+  # A dirty checkout is refused before anything is prompted for or
+  # written: a host builds the fleet at a commit. The reference each
+  # host builds is taken right before its build (nh_deploy_host),
+  # since the secret walk and a guest's minted key commit on the way.
+  local sha
+  sha="$(nh_fleet_rev "$(nh_fleet_root)")" || return 1
+  nh_info "deploy: ${names[*]} @ ${sha:0:12} — mode=$mode$([ "$dry_run" -eq 1 ] && printf ' dry-run')"
 
   local name failed=()
   for name in "${names[@]}"; do
@@ -373,64 +384,54 @@ nh_deploy_host() {
     return 1
   }
 
-  local args=("$mode")
+  local out ref
   case "$platform" in
     nixos)
-      nh_require_cmd nixos-rebuild
-      [ "$dry_run" -eq 1 ] && args=(dry-build)
       # A guest that has never run joins the tailnet with a key minted
       # here, before the build that creates it.
       [ "$dry_run" -eq 1 ] || nh_deploy_guest_authkeys "$name" "$local_host" "$target" || return 1
+      # The reference, after everything this deploy commits: the sha
+      # the target builds is the one that holds them, and HEAD is on
+      # the forge before the target fetches it.
+      ref="$(nh_fleet_ref "$root")" || return 1
+      # The build, as the operator: it is the operator's ssh config on
+      # the target that names the key the fleet is fetched with, and
+      # a build needs no root. Connect as the operator user, not root:
+      # the hardened openssh preset is prohibit-password and no root
+      # authorized key is planted. The connection is pinned to $name's
+      # committed host key (nh_ssh), so a deploy cannot activate a
+      # closure on whatever answered at that address.
+      nh_info "$name builds ${ref%%\?*} @ ${ref##*rev=}"
       if [ "$local_host" -eq 1 ]; then
-        (cd "$root" && sudo nixos-rebuild "${args[@]}" --flake ".#$name")
+        out="$(sh -c "$(nh_build_cmd "$ref" nixos "$name" "$dry_run")")" || return 1
       else
-        # Connect as the operator user (+ --elevate=sudo), not root:
-        # the hardened openssh preset is prohibit-password and no root
-        # authorized key is planted, so the operator user is the only
-        # way in. Its sudo asks for a password, and the remote session
-        # has no terminal to type one into — hence
-        # --ask-elevate-password, which prompts HERE (getpass on the
-        # local tty) once per host and feeds the answer to the
-        # target's `sudo --stdin`. Same mechanism as lib/ssh.sh's
-        # nh_ssh_sudo, implemented by nixos-rebuild itself.
-        #
-        # nixos-rebuild spawns its own ssh; $NIX_SSHOPTS is the only way
-        # in. Pin it to $name's committed host key exactly as nh_ssh
-        # does, so a deploy cannot activate a closure on whatever
-        # answered at that address. Nothing to pin (no keys/hosts/<n>.pub
-        # yet, or a scratch path ssh's word-split env var cannot carry)
-        # leaves ssh on its own known_hosts, which asks rather than
-        # assumes.
-        local pin="" pinrc=0
-        pin="$(nh_ssh_pin_opts "$name" "${target##*@}")" || pinrc=$?
-        case "$pinrc" in
-          0) ;;
-          1) nh_info "no committed host key for $name yet — ssh verifies $target against your own known_hosts" ;;
-          *)
-            pin=""
-            nh_warn "could not pin $target to $name's committed host key — ssh falls back to your own known_hosts"
-            ;;
-        esac
-        NIX_SSHOPTS="${NIX_SSHOPTS:-}${pin:+ $pin}" \
-          nixos-rebuild "${args[@]}" \
-          --flake "$root#$name" \
-          --target-host "$target" \
-          --build-host "$target" \
-          --elevate=sudo \
-          --ask-elevate-password
+        out="$(nh_ssh "$target" --host "$name" -- "$(nh_build_cmd "$ref" nixos "$name" "$dry_run")" </dev/null)" || return 1
+      fi
+      [ "$dry_run" -eq 1 ] && return 0
+      [ -n "$out" ] || {
+        nh_err "the build printed no out path"
+        return 1
+      }
+      # Activation, as root: the one sudo of this process, which the
+      # guest-key read and the unit kick below reuse.
+      if [ "$local_host" -eq 1 ]; then
+        sh -c "$(nh_sudo_preamble_local)
+$(nh_activate_nixos_snippet "$out" "$mode")" || return 1
+      else
+        nh_ssh_sudo "$target" --host "$name" -- "$(nh_activate_nixos_snippet "$out" "$mode")" </dev/null || return 1
       fi
       # The guests this machine started for the first time.
-      [ "$dry_run" -eq 1 ] || nh_deploy_capture_guest_keys "$name" "$local_host" "$target"
+      nh_deploy_capture_guest_keys "$name" "$local_host" "$target"
       # Activation put the closure in place; a unit that gave up
       # before this deploy fixed its cause is restarted, user scope
       # and the system-scope checks alike (a check is meant to run
       # again on every deploy), and then those units say whether the
       # host reached what it declares and whether what it declares
       # works.
-      [ "$dry_run" -eq 1 ] || nh_provision_kick "$name" nixos "$local_host" "$target"
-      [ "$dry_run" -eq 1 ] || nh_provision_report "$name" nixos "$local_host" "$target"
+      nh_provision_kick "$name" nixos "$local_host" "$target"
+      nh_provision_report "$name" nixos "$local_host" "$target"
       # And each guest says whether it booted at all.
-      [ "$dry_run" -eq 1 ] || nh_deploy_guest_health "$name" "$local_host" "$target" || return 1
+      nh_deploy_guest_health "$name" "$local_host" "$target" || return 1
       ;;
     darwin)
       # darwin deploys are always local — so gate on the OS, not on
@@ -443,20 +444,26 @@ nh_deploy_host() {
       if [ "$local_host" -ne 1 ]; then
         nh_warn "local hostname is '$(nh_hostname)', not '$name' — assuming this machine IS $name (darwin deploys are local-only)"
       fi
-      if ! command -v darwin-rebuild >/dev/null 2>&1; then
-        nh_err "darwin-rebuild not on PATH — the first activation goes through 'nixhold host install $name'"
+      if [ "$mode" != switch ]; then
+        nh_err "--mode $mode does not apply to a Mac: nix-darwin switches"
         return 1
       fi
-      [ "$dry_run" -eq 1 ] && args=(check)
-      # nix-darwin requires root for switch (since the 25.05-era
-      # activation refactor), same as the NixOS path.
-      # No kick here: a launchd agent's KeepAlive retries unbounded,
-      # so a cause this deploy fixed is picked up within the throttle.
-      (cd "$root" && sudo darwin-rebuild "${args[@]}" --flake ".#$name")
+      [ -e /run/current-system/activate ] || {
+        nh_err "this Mac has never switched — the first activation goes through 'nixhold host install $name'"
+        return 1
+      }
+      ref="$(nh_fleet_ref "$root")" || return 1
+      nh_info "$name builds ${ref%%\?*} @ ${ref##*rev=}"
+      out="$(sh -c "$(nh_build_cmd "$ref" darwin "$name" "$dry_run")")" || return 1
+      [ "$dry_run" -eq 1 ] && return 0
+      # nix-darwin activates as root, same as the NixOS path. No kick
+      # here: a launchd agent's KeepAlive retries unbounded, so a
+      # cause this deploy fixed is picked up within the throttle.
+      nh_activate_darwin "$out" || return 1
       # sudo-ok: the checks are launchd daemons and only root is
       # shown the system domain. This verb has just elevated on this
       # terminal, so the read costs no prompt of its own.
-      [ "$dry_run" -eq 1 ] || nh_provision_report "$name" darwin 1 "" 1
+      nh_provision_report "$name" darwin 1 "" 1
       ;;
     *)
       nh_err "unsupported arch for $name: $arch"

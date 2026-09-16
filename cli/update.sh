@@ -13,7 +13,9 @@
 #      moved; a kernel move ends with "reboot required". A host that
 #      fails restores the lock and the pin files and stops the verb
 #      before deploy.
-#   7. hand off to `deploy`: this machine, or --all
+#   7. the lock and the pin files committed (`flake: update <what>`)
+#   8. hand off to `deploy`: this machine, or --all — which pushes and
+#      builds from that commit
 # Nothing new from step 1, 2, 4 or 5 exits early after the baseline:
 # there is nothing to deploy for. All inputs and pins move or none —
 # no per-input flag, because a held input is the "behind" state lint
@@ -148,10 +150,16 @@ cmd_update() {
   local files what=""
   files="$(nh_update_commit_files "$root" "$moved" "$tmp/pins" "$new_pins")"
   # The subject names what actually moved: the lock, the pin files, or
-  # both.
+  # both. Committed here, by the verb that generated them: `deploy`
+  # builds the fleet at a pushed commit, so it has to find them in one.
   [ -z "$moved" ] || what="inputs"
   if [ -n "$moved_pins" ] || [ -n "$new_pins" ]; then what="${what:+$what and }pins"; fi
-  [ -z "$files" ] || nh_info "commit what moved:  git -C $root commit -m 'flake: update $what' $files"
+  if [ -n "$files" ]; then
+    local -a paths=()
+    local f
+    for f in $files; do paths+=("$root/$f"); done
+    nh_commit_paths "$root" "flake: update $what" "${paths[@]}"
+  fi
 
   . "$NIXHOLD_LIB_ROOT/deploy.sh"
   if [ "$all" -eq 1 ]; then

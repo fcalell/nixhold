@@ -1,10 +1,14 @@
 # nixhold host install [<name>] [--remote <user>@<ip>] [--disk <by-id>]
 #                               [--yes] [--repo <owner/repo> --keys <dir>]
 #
-# Two entry points, one phase sequence:
-#   --remote  drive the install over SSH from any fleet machine
-#             (nixos-anywhere with --build-on remote: the target
-#             builds its own closure).
+# Two entry points, one phase sequence (nh_install_phases), run on the
+# target either way — in place on the installer ISO, or over ssh to
+# one (ARCHITECTURE "Where a host is built"):
+#   --remote  drive the install over SSH from any fleet machine. The
+#             target is the fleet installer ISO booted on the machine:
+#             it carries git, nix, disko, nixos-facter and
+#             nixos-install and pins the forge's host keys, which is
+#             what lets it clone the fleet and build its own closure.
 #   no flag   install THIS machine in place. Allowed only inside the
 #             installer environment, marked by the plain file
 #             /etc/nixhold-installer that the ISO drops — so a running
@@ -21,6 +25,14 @@
 # hosts dispatch from arch and always run locally (see
 # nh_darwin_install); the ISO is NixOS-only.
 #
+# The build reads a committed tree: the hardware report is generated
+# first, then the roster's `disk`, the report, the host's new pubkey
+# and any minted secret are committed and pushed, and the target
+# builds the fleet at that sha — from the checkout the CLI already
+# holds on the ISO, from a clone made over the `identity` key on a
+# remote installer, whose plaintext the install puts in the
+# installer's RAM for exactly that clone.
+#
 # Keys: the install stages two things onto the target before it boots.
 # /etc/nixhold/fleet.key (0400 root) + /etc/nixhold/fleet.pub (0444) —
 # the one age identity every host decrypts its secrets with, so agenix
@@ -32,10 +44,10 @@
 #
 # A Windows on ANOTHER disk whose loader sits on the target's ESP is
 # carried across the format: `EFI/Microsoft` is read off the old ESP
-# before disko and put back on the new one (in place on the ISO, via
-# --extra-files over ssh), and systemd-boot lists it on its own. Only
-# with evidence — a Windows installation found on a non-target disk —
-# and only Windows: nothing on the target disk survives, and no other
+# before disko and put back on the new one right after it, before the
+# closure is built, and systemd-boot lists it on its own. Only with
+# evidence — a Windows installation found on a non-target disk — and
+# only Windows: nothing on the target disk survives, and no other
 # loader is one systemd-boot would show.
 #
 # Disk: the roster field `hosts.<name>.disk`, written by the picker
@@ -67,8 +79,8 @@
 # so the fleet's committed key for <name> is NOT what it presents,
 # there is nothing to pin to, and nothing worth writing into the
 # operator's known_hosts either (lib/ssh.sh). These snippets read block
-# devices; the host key itself never travels over them (it goes through
-# nixos-anywhere's --extra-files, below).
+# devices; the host key itself never travels over them (it goes as a
+# tar into /mnt/etc, nh_install_stage_tree).
 nh_target_sh() {
   local remote="$1" script="$2"
   if [ -z "$remote" ]; then
@@ -354,7 +366,7 @@ nh_esp_tar() {
 # nh_carry_install_remote <remote> <carry-tar> — unpack the carried
 # EFI/Microsoft into /mnt/boot/EFI on the target, the ESP disko has
 # just formatted and mounted. The --remote counterpart of the two
-# `tar -xf` lines in nh_local_install.
+# `tar -xf` lines in nh_install_carry.
 #
 # The tar travels on the ssh session's stdin and lands in a file on the
 # target before it is unpacked: nh_rsudo pipes the operator's password
@@ -498,128 +510,204 @@ nh_stage_host_key() {
   nh_ok "generated $name's SSH host key; its pubkey is committed as keys/hosts/$name.pub"
 }
 
-# nh_local_install <name> <root> <facter> — the ISO path: the remote
-# path's phases run in place, in the remote path's order.
-#
-# Everything that can fail or prompt — opening the fleet key (a wrong
-# passphrase, a token that never got touched) and secret bootstrap
-# ($EDITOR) — runs BEFORE disko touches the disk. Reversed, a
-# passphrase typo left the operator with a wiped machine and nothing
-# installed on it.
-#
-# Called as `nh_local_install … || rc=$?`, so errexit is off in here:
-# every step is checked explicitly.
-nh_local_install() {
-  local name="$1" root="$2" facter_target="$3" carry="${4:-}"
+# nh_identity_key_file — the plaintext of the fleet's `identity` key,
+# for the one journey that cannot use an ssh config: a remote
+# installer's clone. A fleet machine holds it at ~/.ssh/identity
+# (agenix, the operator's own); the installer ISO and a --keys seat
+# open the ciphertext they carry (nh_clone_key).
+nh_identity_key_file() {
+  if [ -r "$HOME/.ssh/identity" ]; then
+    printf '%s' "$HOME/.ssh/identity"
+    return 0
+  fi
+  nh_clone_key && return 0
+  nh_err "no identity key to clone with: ~/.ssh/identity is not readable here and no clone key is baked in"
+  return 1
+}
 
-  # Baked into the installer ISO; requiring them here is what makes
-  # the local path honest outside it.
-  nh_require_cmd disko nixos-facter nixos-install || {
-    nh_err "local install needs disko, nixos-facter and nixos-install on PATH — they ship in the nixhold installer ISO"
+# nh_install_clone_remote <remote> <root> <sha> <dest> — the fleet on
+# the installer at <sha>: the identity key into the installer's RAM
+# (/root/.ssh on the ISO is a tmpfs, the same boundary the ISO's own
+# unwrapped identity lives in), then a clone over it. The ISO pins the
+# forge's host keys, so the clone verifies rather than asks.
+nh_install_clone_remote() {
+  local remote="$1" root="$2" sha="$3" dest="$4" key repo branch
+  key="$(nh_identity_key_file)" || return 1
+  repo="$(nh_fleet_repo)" || return 1
+  branch="$(nh_fleet_branch "$root")" || return 1
+  nh_info "cloning the fleet onto the installer at ${sha:0:12}"
+  nh_ssh "$remote" --installer -- 'umask 077; mkdir -p /root/.ssh && cat >/root/.ssh/nixhold-identity' <"$key" || {
+    nh_err "could not place the identity key on the installer"
+    return 1
+  }
+  nh_ssh "$remote" --installer -- "rm -rf '$dest' && GIT_SSH_COMMAND='ssh -i /root/.ssh/nixhold-identity -o IdentitiesOnly=yes' git clone -q --branch '$branch' 'git@github.com:$repo.git' '$dest' && git -C '$dest' checkout -q '$sha'" </dev/null || {
+    nh_err "the installer could not clone the fleet — it needs the forge reachable and its host key pinned (the fleet ISO pins github.com)"
+    return 1
+  }
+}
+
+# nh_install_carry <remote> <carry> — Windows' loader onto the new ESP.
+nh_install_carry() {
+  local remote="$1" carry="$2"
+  if [ -z "$remote" ]; then
+    nh_sudo install -d /mnt/boot/EFI && nh_sudo tar -xf "$carry" -C /mnt/boot/EFI
+  else
+    nh_carry_install_remote "$remote" "$carry"
+  fi
+}
+
+# nh_install_stage_tree <remote> <dir> — <dir>'s tree (etc/ssh, the
+# host key; etc/nixhold, the fleet key) into /mnt, owned by root with
+# the modes staged here. Streamed as a tar: nh_rsudo pipes the
+# operator's password into sudo's own stdin, so the remote side writes
+# the stream to a file first (see nh_carry_install_remote).
+nh_install_stage_tree() {
+  local remote="$1" dir="$2" tarfile
+  tarfile="$(nh_tmpdir stage)/tree.tar" || return 1
+  tar -C "$dir" -cf "$tarfile" . || return 1
+  if [ -z "$remote" ]; then
+    nh_sudo tar -C /mnt --no-same-owner -xf "$tarfile"
+  else
+    # shellcheck disable=SC2016 # runs on the TARGET's shell
+    nh_ssh_sudo "$remote" --installer -- '
+      t="$(mktemp)" || exit 1
+      cat >"$t" || exit 1
+      nh_rsudo tar -C /mnt --no-same-owner -xf "$t"
+      rc=$?
+      rm -f "$t"
+      exit $rc' <"$tarfile"
+  fi
+}
+
+# nh_install_phases <name> <root> <remote> <facter> <carry> <hosts-file>
+#                   <minted…> — the one phase sequence, in place
+# (<remote> empty: the installer ISO) or over ssh to a booted
+# installer. Everything that can fail or prompt — the required-secret
+# walk ($EDITOR), opening the fleet key (a wrong passphrase, a token
+# that never got touched), the commit and the push — runs BEFORE
+# disko touches the disk. Reversed, a passphrase typo left the
+# operator with a wiped machine and nothing installed on it.
+#
+# Called as `nh_install_phases … || rc=$?`, so errexit is off in here:
+# every step is checked explicitly.
+nh_install_phases() {
+  local name="$1" root="$2" remote="$3" facter_target="$4" carry="$5" hosts_file="$6"
+  shift 6
+  local minted=("$@") extra keys_dir sha flake out
+
+  # The tool belt the phases run on the target — baked into the ISO;
+  # requiring it is what makes the sequence honest anywhere else.
+  # shellcheck disable=SC2016 # runs on the TARGET's shell
+  nh_target_sh "$remote" 'for c in disko nixos-facter nixos-install git nix; do command -v "$c" >/dev/null 2>&1 || { echo "missing on the installer: $c" >&2; exit 1; }; done' || {
+    nh_err "the target is not a nixhold installer — boot the fleet ISO on it (disko, nixos-facter, nixos-install, git and nix ship on it)"
     return 1
   }
 
   # Before the disk is touched AND before the build, so a host
-  # first-boots with every required secret decryptable. Fatal, as in
-  # `deploy`: activation would only fail later with a worse error.
+  # first-boots with every required secret decryptable.
   nh_provision_required_secrets "$name" nixos || {
     nh_err "secret provisioning failed — fix the secrets above, then re-run install (nothing has been erased)"
     return 1
   }
 
-  # The fleet key has to be readable HERE before the disk is touched:
-  # it is decrypted over the operator's route (a passphrase prompt, a
-  # token touch) and staged into the new root below. Discovered now it
-  # costs a re-run; discovered after disko it costs an erased machine.
-  local keydir
-  keydir="$(nh_tmpdir hostkey)" || return 1
-  nh_fleet_key_plain >/dev/null || {
-    nh_err "the fleet key could not be opened — nothing has been erased"
+  # What the machine needs before its first activation, staged into a
+  # tree that lands in /mnt/etc after disko: the fleet key (agenix
+  # decrypts with it on the first pass — opened here over the
+  # operator's route, discovered now at the cost of a re-run rather
+  # than after disko at the cost of an erased machine) and a fresh ssh
+  # host key, whose pubkey this commits as keys/hosts/<name>.pub.
+  extra="$(nh_tmpdir extra-files)" || return 1
+  mkdir -p "$extra/etc/ssh" || {
+    nh_err "could not create the staging tree under $extra"
+    return 1
+  }
+  nh_stage_host_key "$name" "$extra/etc/ssh" || return 1
+  nh_fleet_key_install --stage "$extra" || {
+    nh_err "the fleet key could not be staged — $name would first-boot unable to decrypt anything (nothing has been erased)"
     return 1
   }
 
+  # The hardware report, off the target, before anything is written to
+  # its disk: the build below reads it out of the committed tree.
+  nh_info "generating the hardware report"
+  if ! nh_target_sudo_sh "$remote" "nh_rsudo nixos-facter" >"$facter_target.tmp" || [ ! -s "$facter_target.tmp" ]; then
+    rm -f "$facter_target.tmp"
+    nh_err "nixos-facter failed on the target"
+    return 1
+  fi
+  mv "$facter_target.tmp" "$facter_target" || return 1
+  nh_ok "wrote $facter_target"
+
+  # The tree the target builds: committed and pushed first, so the
+  # sha the machine boots from is one the fleet repo holds.
+  keys_dir="$(nh_worktree_keys_dir 2>/dev/null)" || keys_dir="$root/keys"
+  nh_commit_paths "$root" "host($name): install (disk + facter)" \
+    "$hosts_file" "$facter_target" "$keys_dir/hosts/$name.pub" \
+    "${minted[@]+"${minted[@]}"}"
+  sha="$(nh_fleet_rev "$root")" || return 1
+  nh_fleet_push "$root" || return 1
+  if [ -z "$remote" ]; then
+    flake="$root"
+  else
+    flake="/root/nixhold-fleet"
+    nh_install_clone_remote "$remote" "$root" "$sha" "$flake" || return 1
+  fi
+
   nh_info "partitioning + mounting per $name's disko.devices"
-  nh_sudo disko --mode destroy,format,mount --yes-wipe-all-disks --flake "$root#$name" || {
+  nh_target_sudo_sh "$remote" "nh_rsudo disko --mode destroy,format,mount --yes-wipe-all-disks --flake '$flake#$name'" || {
     nh_err "disko failed — nothing was installed"
     return 1
   }
 
   # Windows' loader, read off the old ESP before the format, onto the
-  # new one before the loader is installed beside it.
+  # new one before the closure is built beside it.
   if [ -n "$carry" ]; then
-    if ! { nh_sudo install -d /mnt/boot/EFI && nh_sudo tar -xf "$carry" -C /mnt/boot/EFI; }; then
-      nh_err "could not put Windows' boot files onto the new ESP"
+    nh_install_carry "$remote" "$carry" || {
+      nh_err "could not put Windows' boot files onto the new ESP — the disk is already formatted, so re-run the install"
       return 1
-    fi
+    }
     nh_ok "carried Windows' boot files into the new ESP"
   fi
 
-  # A fresh host key, generated after the disk exists but before the
-  # closure is built: keys/hosts/<name>.pub is committed here and the
-  # known-hosts module reads it in the very build below.
-  nh_stage_host_key "$name" "$keydir" || return 1
-
-  nh_sudo install -d -m 0755 /mnt/etc/ssh || {
-    nh_err "could not create /mnt/etc/ssh"
+  nh_install_stage_tree "$remote" "$extra" || {
+    nh_err "could not stage the host key and the fleet key into /mnt/etc"
     return 1
   }
-  nh_sudo install -m 0600 "$keydir/ssh_host_ed25519_key" /mnt/etc/ssh/ssh_host_ed25519_key || {
-    nh_err "could not stage the host key into /mnt/etc/ssh"
-    return 1
-  }
-  nh_sudo install -m 0644 "$keydir/ssh_host_ed25519_key.pub" /mnt/etc/ssh/ssh_host_ed25519_key.pub || {
-    nh_err "could not stage the host pubkey into /mnt/etc/ssh"
-    return 1
-  }
-  nh_ok "staged the host key into /mnt/etc/ssh"
-
-  # agenix decrypts with /etc/nixhold/fleet.key on the first activation
-  # pass, which nixos-install runs.
-  nh_fleet_key_install --root /mnt || {
-    nh_err "could not stage the fleet key into /mnt/etc/nixhold"
-    return 1
-  }
-
-  nh_info "generating the hardware report"
-  nh_sudo nixos-facter -o "$facter_target" || {
-    nh_err "nixos-facter failed"
-    return 1
-  }
-  nh_stage_for_eval "$root" "$facter_target"
-  nh_ok "wrote $facter_target"
+  nh_ok "staged the host key and the fleet key into /mnt/etc"
 
   # Into the TARGET's store, not the installer's. The ISO's
   # /nix/store is an overlay whose writable layer is an unsized tmpfs
   # — half of RAM, whatever the disk being installed holds — and its
   # / is another one, so a closure built in place is capped by memory
   # and a graphical host's does not fit. `--store /mnt` is the chroot
-  # store nixos-install builds into itself and nixos-anywhere gives
-  # the --remote path; `auto?trusted=1` keeps the installer's own
-  # store a source, so what it already realised is not re-fetched;
-  # TMPDIR moves build scratch off the RAM-backed root. `env` rather
-  # than a prefix assignment: sudo resets the environment.
-  nh_sudo install -d -m 1777 /mnt/tmp || {
-    nh_err "could not create /mnt/tmp for the build"
+  # store nixos-install builds into itself; `auto?trusted=1` keeps
+  # the installer's own store a source, so what it already realised
+  # is not re-fetched; TMPDIR moves build scratch off the RAM-backed
+  # root. `env` rather than a prefix assignment: sudo resets the
+  # environment. --print-out-paths reports the logical /nix/store
+  # path even out of a chroot store, so nixos-install --system takes
+  # it as-is and copies nothing.
+  nh_info "building $name's system closure at ${sha:0:12} into $name's own store"
+  out="$(nh_target_sudo_sh "$remote" "nh_rsudo install -d -m 1777 /mnt/tmp || exit 1
+nh_rsudo env TMPDIR=/mnt/tmp nix build --no-link --print-out-paths --store /mnt --extra-substituters 'auto?trusted=1' '$flake#nixosConfigurations.$name.config.system.build.toplevel'")" || {
+    nh_err "closure build failed"
     return 1
   }
-  nh_info "building $name's system closure into $name's own store"
-  # --print-out-paths reports the logical /nix/store path even out of
-  # a chroot store, so nixos-install --system below takes it as-is
-  # and copies nothing.
-  local out
-  out="$(nh_sudo env TMPDIR=/mnt/tmp nix build --no-link --print-out-paths \
-    --no-warn-dirty --store /mnt --extra-substituters 'auto?trusted=1' \
-    "$root#nixosConfigurations.$name.config.system.build.toplevel")" || {
-    nh_err "closure build failed"
+  [ -n "$out" ] || {
+    nh_err "the build printed no out path"
     return 1
   }
 
   nh_info "installing $out into /mnt"
-  nh_sudo nixos-install --root /mnt --system "$out" --no-root-passwd || {
+  nh_target_sudo_sh "$remote" "nh_rsudo nixos-install --root /mnt --system '$out' --no-root-passwd" || {
     nh_err "nixos-install failed"
     return 1
   }
   nh_ok "installed $name"
+  if [ -n "$remote" ]; then
+    nh_info "rebooting the installer into $name"
+    nh_ssh "$remote" --installer -- "reboot" </dev/null >/dev/null 2>&1 || true
+  fi
 }
 
 # nh_bootstrap_fleet <owner/repo> <keys-dir> — the fresh-Mac path: no
@@ -752,35 +840,17 @@ nh_darwin_preflight() {
   nh_ok "preflight: account $user, Command Line Tools present, Nix manageable"
 }
 
-# nh_darwin_rebuild_cmd <root> <name> — the darwin-rebuild to switch
-# with: the installed one, or, on a machine that has never switched,
-# the fleet's pinned nix-darwin built into the scratch root.
-nh_darwin_rebuild_cmd() {
-  local root="$1" name="$2" out
-  if command -v darwin-rebuild >/dev/null 2>&1; then
-    printf 'darwin-rebuild'
-    return 0
-  fi
-  nh_info "darwin-rebuild not on PATH — first switch, bootstrapping via the fleet's pinned nix-darwin"
-  out="$(nh_tmpdir darwin-bootstrap)" || return 1
-  nix build --out-link "$out/system" "$root#darwinConfigurations.$name.system" >&2 || {
-    nh_err "could not build $name's system closure"
-    return 1
-  }
-  printf '%s' "$out/system/sw/bin/darwin-rebuild"
-}
-
-# nh_darwin_switch <root> <name> <rebuild> — one `darwin-rebuild
-# switch` (root, as nix-darwin requires). The first switch on a fresh
-# Mac is refused when /etc holds files nix-darwin did not write
+# nh_darwin_switch <out> — nix-darwin's switch from a built system
+# (root, as nix-darwin requires; lib/system.sh). The first switch on a
+# fresh Mac is refused when /etc holds files nix-darwin did not write
 # (/etc/nix/nix.conf from the Nix installer, /etc/zshenv, …): those
 # are moved to <file>.before-nix-darwin — the rename nix-darwin asks
 # for — and the switch retried once.
 nh_darwin_switch() {
-  local root="$1" name="$2" rebuild="$3" log attempt files f
+  local out="$1" log attempt files f
   log="$(nh_tmpdir switch)/log" || return 1
   for attempt in 1 2; do
-    if (cd "$root" && sudo "$rebuild" switch --flake ".#$name" 2>&1 | tee "$log" >&2; exit "${PIPESTATUS[0]}"); then
+    if (nh_activate_darwin "$out" 2>&1 | tee "$log" >&2; exit "${PIPESTATUS[0]}"); then
       return 0
     fi
     [ "$attempt" -eq 1 ] || break
@@ -797,7 +867,7 @@ nh_darwin_switch() {
       nh_info "  $f → $f.before-nix-darwin"
     done <<<"$files"
   done
-  nh_err "activation of $name failed — see above"
+  nh_err "activation failed — see above"
   return 1
 }
 
@@ -855,10 +925,13 @@ nh_missing_paths() {
 #      `ssh-keygen -A` mints one; its live pubkey is recorded as
 #      keys/hosts/<name>.pub (pinning only). Then the fleet key is put
 #      at /etc/nixhold/fleet.key, which is what agenix decrypts with;
-#   2. activate — sudo darwin-rebuild (bootstrapped from the fleet's
-#      pinned nix-darwin on a machine that has never switched), with
-#      the first-switch /etc refusal handled in place;
-#   3. secrets verified under /run/agenix, then a second switch so
+#   2. build — the system closure, as the operator, from the checkout
+#      at its committed HEAD (a Mac that has never switched has no ssh
+#      config to fetch the forge with, so the clone `--repo/--keys`
+#      made is the source; ARCHITECTURE "Where a host is built"), then
+#      activate as root, with the first-switch /etc refusal handled in
+#      place;
+#   3. secrets verified under /run/agenix, then a second activation so
 #      home-manager derives the .pub files of sshKey secrets.
 nh_darwin_install() {
   local name="$1" root="$2"
@@ -891,16 +964,22 @@ nh_darwin_install() {
     return 1
   }
 
-  # 2. Activate.
-  local rebuild
-  rebuild="$(nh_darwin_rebuild_cmd "$root" "$name")" || return 1
-  nh_darwin_switch "$root" "$name" "$rebuild" || return 1
+  # 2. Build at the committed HEAD, then activate.
+  local sha out
+  sha="$(nh_fleet_rev "$root")" || return 1
+  nh_fleet_push "$root" || return 1
+  nh_info "building $name's system at ${sha:0:12}"
+  out="$(sh -c "$(nh_build_cmd "$root" darwin "$name" 0)")" || {
+    nh_err "could not build $name's system closure"
+    return 1
+  }
+  nh_darwin_switch "$out" || return 1
 
   # 3. Secrets, then the .pub files.
   nh_darwin_wait_secrets "$name" || true
   if [ "$(nh_host_eval "$name" darwin nixhold.secrets | jq 'any(.[]; .sshKey and .active)')" = "true" ]; then
-    nh_info "switching again so home-manager derives the .pub files of the SSH keys"
-    nh_darwin_switch "$root" "$name" "$rebuild" || return 1
+    nh_info "activating again so home-manager derives the .pub files of the SSH keys"
+    nh_darwin_switch "$out" || return 1
   fi
 
   nh_ok "installed $name"
@@ -1088,7 +1167,7 @@ EOF
       nh_err "local install refused — pass --remote <user>@<ip> or boot the installer ISO"
       return 1
     fi
-    nh_info "this machine is not the installer — $name installs over ssh to a target booted from the fleet ISO (or any installer)"
+    nh_info "this machine is not the installer — $name installs over ssh to a target booted from the fleet ISO"
     remote="$(nh_prompt_input "Installer address (root@<ip>)")" || remote=""
     if [ -z "$remote" ]; then
       nh_err "no address — boot the target from the fleet ISO, then: nixhold host install $name --remote root@<ip>"
@@ -1135,7 +1214,7 @@ EOF
   # 1b. Windows' loader on the target's ESP, with Windows on another
   #     disk: read it now, while the old ESP exists. Both paths put it
   #     back into /mnt/boot/EFI right after disko, before the closure
-  #     is built (nh_local_install; nh_carry_install_remote).
+  #     is built (nh_install_carry).
   local carry="" carry_part
   if [ -n "$disk" ]; then
     local cjson cname
@@ -1187,101 +1266,8 @@ EOF
   done <<<"$minted_out"
 
   local rc=0
-  if [ -z "$remote" ]; then
-    nh_local_install "$name" "$root" "$facter_target" "$carry" || rc=$?
-  else
-    # 3. Stage what the machine needs before its first activation:
-    #    /etc/nixhold/fleet.key (agenix decrypts with it on the first
-    #    pass) and a fresh SSH host key whose pubkey this commits as
-    #    keys/hosts/<name>.pub. nixos-anywhere is checked BEFORE key
-    #    material lands anywhere; the staging dir is under the process
-    #    scratch root the dispatcher wipes on every exit path, and
-    #    --extra-files preserves the modes set here.
-    nh_require_cmd nixos-anywhere
-    local extra
-    extra="$(nh_tmpdir extra-files)" || return 1
-    mkdir -p "$extra/etc/ssh" || {
-      nh_err "could not create the staging tree under $extra"
-      return 1
-    }
-    nh_stage_host_key "$name" "$extra/etc/ssh" || return 1
-    nh_fleet_key_install --stage "$extra" || {
-      nh_err "the fleet key could not be staged — $name would first-boot unable to decrypt anything"
-      return 1
-    }
-
-    # Before the build, so the host first-boots with every required
-    # secret decryptable. Fatal, as in `deploy`.
-    nh_provision_required_secrets "$name" nixos || {
-      nh_err "secret provisioning failed — fix the secrets above, then re-run install"
-      return 1
-    }
-
-    # 4. Install. The target builds its own closure
-    #    (--build-on remote); nixos-facter writes the hardware report
-    #    back to facter.json.
-    #
-    #    Two runs of nixos-anywhere, with the carried Windows loader
-    #    between them. --extra-files is applied inside the install
-    #    phase, after the closure is built, so a build that fails —
-    #    the common failure, and the one that happens after disko has
-    #    already erased the ESP — would leave the loader nowhere: the
-    #    only copy is under the process scratch root, wiped on the way
-    #    out, and a re-run finds no Windows loader left to read.
-    #    Splitting at disko puts it on the new ESP the moment there is
-    #    one, which is where the ISO path puts it. The second run names
-    #    no kexec phase, so it reuses the installer the first one left
-    #    running with /mnt still mounted, and regenerates no hardware
-    #    report: the first run wrote it and git-added it, which is what
-    #    lets the second one evaluate the flake.
-    nh_info "running nixos-anywhere against $name @ $remote"
-    # nixos-anywhere drives its own ssh with UserKnownHostsFile=/dev/null
-    # and StrictHostKeyChecking=no (its hard defaults, not ours) and the
-    # host key cannot be pinned anyway: the machine answering is the
-    # installer ISO, whose key is random per boot. The connection is
-    # therefore trust-on-first-use, and it carries the fleet key and
-    # $name's new host key in --extra-files — run installs over a
-    # network you trust.
-    local -a na=(
-      --flake "$root#$name"
-      --extra-files "$extra"
-      --build-on remote
-      --target-host "$remote"
-    )
-    nixos-anywhere "${na[@]}" \
-      --generate-hardware-config nixos-facter "$facter_target" \
-      --phases kexec,disko || rc=$?
-    if [ "$rc" -eq 0 ] && [ -n "$carry" ]; then
-      if nh_carry_install_remote "$remote" "$carry"; then
-        nh_ok "carried Windows' boot files into the new ESP"
-      else
-        nh_err "could not put Windows' boot files onto the new ESP — the disk is already formatted, so re-run the install"
-        rc=1
-      fi
-    fi
-    if [ "$rc" -eq 0 ]; then
-      nixos-anywhere "${na[@]}" --phases install,reboot || rc=$?
-    fi
-    if [ "$rc" -eq 0 ]; then
-      nh_ok "installed $name"
-    else
-      nh_err "nixos-anywhere failed (exit $rc)"
-    fi
-  fi
-
-  # 5. The machine is bootable by now; the repo side is best-effort.
-  #    The roster's disk, the facter report and the new host's pubkey
-  #    are install-time outputs, committed on success — auto-commit
-  #    never reaches beyond them. On the installer the checkout is
-  #    ephemeral, so the commit is pushed too.
-  if [ "$rc" -eq 0 ]; then
-    local keys_dir
-    keys_dir="$(nh_worktree_keys_dir 2>/dev/null)" || keys_dir="$root/keys"
-    nh_commit_paths "$root" "host($name): install (disk + facter)" \
-      "$hosts_file" "$facter_target" "$keys_dir/hosts/$name.pub" \
-      "${minted[@]+"${minted[@]}"}"
-    nh_push_if_installer "$root"
-    nh_next_after_install "$name" "$platform"
-  fi
+  nh_install_phases "$name" "$root" "$remote" "$facter_target" "$carry" "$hosts_file" \
+    "${minted[@]+"${minted[@]}"}" || rc=$?
+  [ "$rc" -eq 0 ] && nh_next_after_install "$name" "$platform"
   return "$rc"
 }

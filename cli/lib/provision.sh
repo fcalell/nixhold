@@ -47,11 +47,13 @@ nh_provision_state() {
   errf="$(nh_provision_err)"
   case "$platform" in
     nixos)
-      local -a cmd=(systemctl --user list-units --all --plain --no-legend 'nixhold-*')
+      # One string, quotes included: the remote side is the operator's
+      # login shell, and an unquoted `nixhold-*` is a glob there.
+      local cmd="systemctl --user list-units --all --plain --no-legend 'nixhold-*'"
       if [ "$local_host" -eq 1 ]; then
-        raw="$("${cmd[@]}" 2>"$errf")" || rc=$?
+        raw="$(sh -c "$cmd" 2>"$errf")" || rc=$?
       else
-        raw="$(nh_ssh "$target" --host "$name" -- "${cmd[*]}" </dev/null 2>"$errf")" || rc=$?
+        raw="$(nh_ssh "$target" --host "$name" -- "$cmd" </dev/null 2>"$errf")" || rc=$?
       fi
       case "$rc" in
         0) ;;
@@ -65,11 +67,11 @@ nh_provision_state() {
           return 3
           ;;
       esac
-      cmd=(systemctl list-units --all --plain --no-legend 'nixhold-check-*')
+      cmd="systemctl list-units --all --plain --no-legend 'nixhold-check-*'"
       if [ "$local_host" -eq 1 ]; then
-        checks="$("${cmd[@]}" 2>"$errf")" || rc=$?
+        checks="$(sh -c "$cmd" 2>"$errf")" || rc=$?
       else
-        checks="$(nh_ssh "$target" --host "$name" -- "${cmd[*]}" </dev/null 2>"$errf")" || rc=$?
+        checks="$(nh_ssh "$target" --host "$name" -- "$cmd" </dev/null 2>"$errf")" || rc=$?
       fi
       case "$rc" in
         0) ;;

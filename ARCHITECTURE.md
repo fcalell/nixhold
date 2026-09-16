@@ -140,7 +140,7 @@ Rules:
 
 - The forker owns the heavy inputs. The template declares every
   root input nixhold declares (nixpkgs, home-manager, nix-darwin,
-  agenix, disko, nixos-anywhere, nixos-hardware) and rebinds each
+  agenix, disko, nixos-hardware) and rebinds each
   with `inputs.nixhold.inputs.<x>.follows`, so the fleet's lock is
   the only lock that builds anything: nixhold's own `flake.lock`
   feeds its checks and devShell and nothing else. `nixhold update`
@@ -782,17 +782,12 @@ found on a *non-target* disk (an NTFS partition with
 reads `EFI/Microsoft` off the old ESP before disko and puts it on
 the new one the moment there is one, before the closure is built
 and long before the loader is installed beside it. That is a
-`tar -x` into `/mnt/boot/EFI` in place on the ISO, and the same
-tar streamed over ssh on the `--remote` path, which splits
-nixos-anywhere into `--phases kexec,disko` and `--phases
-install,reboot` to open the window (the second run names no kexec
-phase, so it reuses the installer the first one left running,
-`/mnt` still mounted). `--extra-files` is the wrong carrier for
-this one file: nixos-anywhere applies those inside the install
-phase, after the remote build, and a build that fails after disko
-is exactly the case that would leave the erased ESP empty with the
-only copy of the loader in a scratch directory the run wipes on
-its way out. systemd-boot lists
+`tar -x` into `/mnt/boot/EFI`, in place on the ISO and streamed
+over ssh on the `--remote` path, right after disko and before the
+build: a build that fails after disko is exactly the case that
+would otherwise leave the erased ESP empty with the only copy of
+the loader in a scratch directory the run wipes on its way out.
+systemd-boot lists
 Windows on its own, since it recognises that loader on its own
 ESP. Nothing on the target disk survives, so a Windows there goes
 with its loader and the picker names it among what is erased; no
@@ -841,8 +836,8 @@ path: a warning in dev, an error under `--strict`.
 File exists → framework sets `hardware.facter.reportPath`. File
 missing → eval still succeeds (lint/status work) but build is
 blocked by an assertion pointing at `nixhold host install`. This
-is what lets nixos-anywhere evaluate the disko script, kexec,
-generate the report, then build.
+is what lets the install evaluate the disko script and generate
+the report before the build that needs it.
 
 ## Guests
 
@@ -2005,11 +2000,11 @@ exists, the installer ISO is itself a sufficient operator seat.
 | L1 fork | `nix flake init -t github:fcalell/nixhold` → fill identity (+ `layout.repoUrl`) → `nixhold host add`. The operator identity is generated on first need (see "Operator routes"); there is no init step. A fleet that wants the token route commits its `age1fido2-hmac1…` line into `keys/operator.pub` before that first `host add`, and then nothing is generated — the fleet already has a route |
 | L2 first host | `nixhold host add [<name>]` — the walk: name, profile, arch (defaulted from the machine when it is the target), networks only when the fleet declares more than one, public address only when an internet network exists, stateVersion defaulted from the pinned inputs; entry written to `layout.hostsFile`, then the fleet's one-time artifacts: the operator identity when `keys/operator.pub` is empty, the fleet key when `keys/fleet.key.age` is missing, and the framework secrets minted (`identity` — its pubkey printed with every forge the fleet's repositories name, and seeded into `keys/login.pub` — and `password`, the hash of the passphrase the identity was wrapped with a moment before, from the same prompt) alongside any required-missing one. Everything generated is committed, then "install now?" — this machine (on the ISO, or a Mac), over ssh to an address, or later |
 | L2b later host | The same walk, and that is all of it: nothing is minted and nothing is rekeyed. `identity` and `password` are fleet-scoped and already provisioned, the fleet key already opens every ciphertext, and the new machine gets that key at install. A host joins with no forge step, no new password and no route prompt |
-| L3 NixOS host | On-prem: boot the fleet ISO on the target, `nixhold host install` → the operator route → "new host…" runs the add walk and installs in place. VPS / from another machine: `nixhold host add <name>` and answer "over ssh" with the address (scripted: `--install root@<ip>`); the fleet ISO makes the target reachable with zero typing, any installer works |
+| L3 NixOS host | On-prem: boot the fleet ISO on the target, `nixhold host install` → the operator route → "new host…" runs the add walk and installs in place. From another machine: boot the fleet ISO on the target, then `nixhold host add <name>` and answer "over ssh" with its address (scripted: `--install root@<ip>`); the target is the fleet ISO, which carries git, nix and disko and pins the forge, so it clones and builds the fleet itself (see "Where a host is built") |
 | L3d darwin host | On the Mac itself: name the account after `identity.username`, install Command Line Tools and vanilla multi-user Nix, then `nix run github:fcalell/nixhold#nixhold -- host install <mac>`. With no fleet checkout yet, `--repo <owner/repo> --keys <dir>` — the directory holding `identity.age`, and `operator.age` when the fleet keeps one, copied from any checkout or the safekeeping copy — clones with the `identity` key first, so a wiped Mac needs one operator route and nothing else; the run then continues on the CLI that checkout pins, so the typed `github:` url bootstraps rather than decides the version (see "The installing CLI is the fleet's"). Preflight, `/etc/nixhold/fleet.key` written, the Mac's live ssh host pubkey recorded, first switch, secrets verified — one command (see CLI) |
 | L4 add service | edit host/profile module → `nixhold deploy <name>` (provisions missing required secrets first) |
 | L5 new service module | `nixhold service new <name>` → edit |
-| L6 update inputs and pins | `nixhold update` (from any directory): pull → pins with no file yet written → baseline eval of every host → flake update → pins resolved → what moved: inputs from the lock diff, pins by version → the eval gate (every host evaluates; the warnings and spine-version deltas; a kernel move says "reboot required") → `deploy` this machine (`--all`: every host this machine can activate). A gate failure restores the lock and the pin files and stops |
+| L6 update inputs and pins | `nixhold update` (from any directory): pull → pins with no file yet written → baseline eval of every host → flake update → pins resolved → what moved: inputs from the lock diff, pins by version → the eval gate (every host evaluates; the warnings and spine-version deltas; a kernel move says "reboot required") → the lock and the pin files committed (`flake: update <what>`) → `deploy` this machine (`--all`: every host this machine can activate), which pushes and builds from that commit. A gate failure restores the lock and the pin files and stops |
 | L7 reinstall/reformat | Boot the ISO, `nixhold host install` → the operator route → pick the host (or `host install <name> --remote root@<ip>` from a fleet machine; the picker there asks for the address). The fleet key is installed from `keys/fleet.key.age` (the route is already open, the clone needed it) → a fresh ssh host key is minted and its pubkey rewritten at `keys/hosts/<name>.pub` → secrets still decrypt, because the recipient set never mentioned the machine → nothing else generated |
 | L8 rename | manual: `git mv secrets/<old> secrets/<new>`, `git mv keys/hosts/<old>.pub keys/hosts/<new>.pub`, edit hostsFile, reinstall. No rekey — the recipients do not know the host's name |
 | L9 remove | `nixhold host remove [<name>]` — deletes the fleet entry, `hosts/<n>`, `secrets/<n>/` and `keys/hosts/<n>.pub`. No rekey: nothing was encrypted to that machine. It still *holds* the fleet key, though, so the verb ends by naming the consequence — if the hardware is not being wiped, `nixhold secret rotate` — and decommissioning the machine is the operator's job |
@@ -2034,7 +2029,7 @@ known_hosts under the process scratch root, strict checking).
 Trust-on-first-use
 survives only where there is nothing to pin to: a host the fleet
 has never seen, and the installer ISO, whose key is random per boot
-(`host install --remote` rides nixos-anywhere's own no-check ssh —
+(`host install --remote` connects to it keeping no record —
 install over a LAN you control). A machine running a key the fleet
 does not know is unreachable from the CLI by design; the fix is
 `host key <name>`, which records the live pubkey after the
@@ -2183,7 +2178,7 @@ nixhold deploy [<name>…|--all] [--mode switch|boot|test] [--dry-run] [--target
                                                     can activate; several: in order
 nixhold update [--all]                              git pull → new pin files → baseline eval →
                                                     nix flake update → moved inputs and pins →
-                                                    eval gate → deploy (same host rule); a failed
+                                                    eval gate → commit → deploy (same host rule); a failed
                                                     gate restores the lock and the pin files
 nixhold status [<name>] [--fleet]
 nixhold lint [--strict]
@@ -2309,11 +2304,10 @@ Notable shapes:
   the root the build scratch would land on is another one. A
   closure built there is capped by memory, and a graphical host —
   more so one whose roster entry carries a guest, whose toplevel
-  is part of it — does not fit. So the local path builds with
+  is part of it — does not fit. So both paths build with
   `--store /mnt` once disko has mounted the target: the chroot
-  store `nixos-install` builds into for its own `--flake` form,
-  and the one nixos-anywhere hands the `--remote` path
-  (`local?root=/mnt`). `nixos-install --system` then sets the
+  store `nixos-install` builds into for its own `--flake` form.
+  `nixos-install --system` then sets the
   profile with `--store /mnt` too, finds the closure already
   there, and copies nothing. `--extra-substituters
   auto?trusted=1` keeps the installer's own store a source, so
@@ -2413,64 +2407,135 @@ answer for what the fleet asserts about its services (see
 "Provisioning"). Anything richer is `nix eval` / `nixos-option` /
 `nixhold logs`. Never a dashboard.
 
+### Where a host is built
+
+**A host builds itself from a pushed commit, and the operator's
+machine never instantiates another machine's system.** The flake
+reference every activation evaluates is the fleet repo at the
+forge, at one commit:
+`git+ssh://git@github.com/<layout.repoUrl>?ref=refs/heads/<branch>&rev=<sha>`,
+where the sha is the operator checkout's HEAD. Before a verb touches
+a target it refuses a dirty checkout, pushes HEAD when the forge is
+behind it, and prints its plan line `<host> @ <sha>`, so what the
+target builds is what the forge holds and what the operator can
+check out again. `system.configurationRevision` carries the same
+sha into the generation, and `nixhold status <host>` reads it back
+(`nixos-version --configuration-revision`; `darwin-version` on a
+Mac). Nothing but commands crosses the operator's ssh connection:
+the target fetches the fleet over its own copy of the `identity`
+key (every host's baseline renders the `github.com` block on it,
+see "Repositories & env"), fetches its inputs by the lock from
+their forges, substitutes from the caches, and evaluates with its
+own eval cache.
+
+**Build as the operator, activate as root** — one shape on every
+platform, local or remote. `nix build --no-link --print-out-paths
+<ref>#nixosConfigurations.<host>.config.system.build.toplevel`
+(darwin: `darwinConfigurations.<host>.system`) runs as the operator
+user, whose ssh config names the key; the out path it prints is
+then activated under the one sudo the verb already holds:
+`nix-env -p /nix/var/nix/profiles/system --set <out>` (not on
+`test`) and `<out>/bin/switch-to-configuration <mode>` under
+`systemd-run`, so a dropped ssh connection does not kill the switch
+(the invocation nixos-rebuild uses); on darwin, `<out>/activate`.
+`nixos-rebuild` and `darwin-rebuild` are not on the CLI's path:
+each is a wrapper over exactly these two steps, and both re-evaluate
+as root, which on this shape is a fetch with no key. Local and
+remote differ in transport alone: the same two steps over `sh`, or
+over `nh_ssh` for the build and `nh_ssh_sudo` for the activation.
+`--dry-run` is `nix build --dry-run` of the same attribute.
+
+**An installer has no identity of its own, so it gets a clone.**
+`host install` is the one verb whose target cannot fetch: the fleet
+ISO holds `identity.age`, not its plaintext, and the operator route
+that opens it is on the operator's seat. So the install ships the
+plaintext `identity` key into the installer's RAM (`/root/.ssh`, a
+tmpfs, the same boundary the ISO's own unwrapped identity lives in)
+and clones the fleet there at the same sha; every build on an
+installer is `<clone>#…`, a clean checkout at the pushed commit, so
+`self.rev` is the sha a running host would see. The ISO path is the
+same sequence with the clone the CLI already made, and a Mac's first
+switch builds from the clone `--repo/--keys` made, for the same
+reason (no ssh config yet). Order, on every install path: hardware
+report → commit and push (roster `disk`, `facter.json`,
+`keys/hosts/<host>.pub`, any minted secret) → the clone at that sha
+→ disko → keys staged into `/mnt/etc` → `nix build --store /mnt` →
+`nixos-install --system` → reboot. The report comes first so the
+build reads a committed tree. The `--remote` target is the fleet
+installer ISO booted on the machine: it carries git, nix, disko and
+nixos-facter and pins the forge's host keys. nixos-anywhere and its
+kexec image left the CLI with this shape: that image ships no git,
+and a target that cannot clone cannot build here (a kexec image of
+the fleet installer is the ROADMAP row a first VPS triggers).
+
+**Android** is the closed exception: a Shield runs no Nix, so its
+plan is built on the seat and converged over adb (see "Android
+hosts").
+
+Turned down for this (see "Rejected"): `nixos-rebuild
+--build-host`, `nix build --eval-store auto --store ssh-ng://`, and
+`nix copy` of the fleet source. The first two instantiate on the
+operator's machine and copy the derivation closure — every
+derivation and every source it references, one ssh round trip per
+path, thousands of them after an `update`. The third moves one
+path, but what it names is a snapshot of a working tree, not a
+commit anyone can check out again.
+
 ### `nixhold deploy`
 
-Daily verb; thin over `nixos-rebuild switch` / `darwin-rebuild
-switch`. **This machine** is the fleet host whose name is the local
-hostname (reliable: the framework owns host naming), or on a Mac the
-fleet's only darwin host when the hostname matches none (the fleet
-name and the macOS/MDM hostname routinely differ). Local iff
-`<name>` is this machine. Remote NixOS: `--target-host` **and**
-`--build-host` point at the target — **each machine builds its own
-closure**; the operator machine never builds foreign arches
-(applies to install too via `--build-on remote`). The connection is
-the operator's, activation is `--elevate=sudo` on the target, and
-sudo asks: the verb passes `--ask-elevate-password`, which prompts
-on the operator's terminal and feeds the target's `sudo --stdin`
-(see "Sudo asks"). One prompt per host — deploying several hosts
-prompts once each, and a deploy with no terminal is a usage error
-rather than a hang. Remote darwin:
-refused (deploy Macs locally). Android: a converge over adb from
-whichever machine runs the verb (see "Android hosts"). The address
-comes from
+Daily verb, on the shape of "Where a host is built": the target
+fetches the fleet at HEAD's sha from the forge, builds as the
+operator and activates as root. **This machine** is the fleet host
+whose name is the local hostname (reliable: the framework owns host
+naming), or on a Mac the fleet's only darwin host when the hostname
+matches none (the fleet name and the macOS/MDM hostname routinely
+differ). Local iff `<name>` is this machine; local and remote run
+the same two steps, over `sh` or over the operator's ssh (`nh_ssh`
+for the build, `nh_ssh_sudo` for the activation — one password
+prompt per CLI process, see "Sudo asks"; a deploy with no terminal
+is a usage error rather than a hang). Remote darwin: refused
+(deploy Macs locally). Android: a converge over adb from whichever
+machine runs the verb (see "Android hosts"). The address comes from
 `derived.address.<name>`: the tailnet entry when it resolves,
 otherwise the first non-null address of any other network;
 `--target <addr>` overrides (single host only). Modes: switch
-(default) / boot / test, a usage error on an Android host. Zero, one or several hosts: none means this
-machine (a usage error on a machine that is not a fleet host);
-`--all` means every host this machine can activate (every NixOS
-host and every Android host; a darwin host only when this Mac is
-it); explicit names deploy
+(default) / boot / test, a usage error on an Android host or a Mac.
+Zero, one or several hosts: none means this machine (a usage error
+on a machine that is not a fleet host); `--all` means every host
+this machine can activate (every NixOS host and every Android host;
+a darwin host only when this Mac is it); explicit names deploy
 exactly those. A guest's name resolves to its machine (see
-"Guests"). No picker and no confirmation: the name, or `--all`,
-is the intent, and the verb prints its plan line before the first
-host. Several deploy in order, continuing past a failure and
-reporting at the end. Required secrets with no ciphertext are provisioned before
-the build; then the target's fleet key is ensured — read
-`/etc/nixhold/fleet.pub` over plain ssh (it is `0444`), and when it is
-missing or differs from `keys/fleet.pub`, decrypt
-`keys/fleet.key.age` over one operator route and install it. No
-rekey, ever: a host added to the fleet inherits `env` and every
-shared repository env because it holds the key those ciphertexts
-were already written to, so declaring the repository and deploying
-is the whole flow. A guest deployed for the first time (its state
-directory absent on the machine) gets its tailnet auth key
-re-minted first when the network's API client is committed (see
-"The tailnet's API client"): the guest has no install step, so
-this is its install. After activation, on a NixOS host, the verb
-resets and starts the `nixhold-*` units, user scope and the
-system-scope checks alike — sd-switch starts only what
-the closure changed, so the deploy that fixes a unit's cause is what
-has to run it again, and a unit that is done skips on its condition.
-A launchd agent needs no such kick: its `KeepAlive` retries
-unbounded. Then the verb reads those units and prints them (the read
-`status` makes), `failed` and `retrying` as warnings and a unit still
-running as a line of its own: activation succeeding says the closure
-is in place, not that the checkouts it declares exist.
-`--dry-run` runs `nixos-rebuild dry-build` (darwin:
-`check`). Tradeoffs accepted: tiny VPSes may struggle building
-(substituters cover most); power users escape to raw `nixos-rebuild
---build-host`.
+"Guests"). No picker and no confirmation: the name, or `--all`, is
+the intent, and the verb prints its plan line, `<host> @ <sha>`,
+before the first host. Several deploy in order, continuing past a
+failure and reporting at the end.
+
+Before the first target: the checkout is refused dirty and HEAD is
+pushed when the forge is behind it. Per host: required secrets with
+no ciphertext are provisioned before the build; then the target's
+fleet key is ensured — read `/etc/nixhold/fleet.pub` over plain ssh
+(it is `0444`), and when it is missing or differs from
+`keys/fleet.pub`, decrypt `keys/fleet.key.age` over one operator
+route and install it. No rekey, ever: a host added to the fleet
+inherits `env` and every shared repository env because it holds the
+key those ciphertexts were already written to, so declaring the
+repository and deploying is the whole flow. A guest deployed for the
+first time (its state directory absent on the machine) gets its
+tailnet auth key re-minted first when the network's API client is
+committed (see "The tailnet's API client"): the guest has no install
+step, so this is its install. After activation, on a NixOS host, the
+verb resets and starts the `nixhold-*` units, user scope and the
+system-scope checks alike — sd-switch starts only what the closure
+changed, so the deploy that fixes a unit's cause is what has to run
+it again, and a unit that is done skips on its condition. A launchd
+agent needs no such kick: its `KeepAlive` retries unbounded. Then
+the verb reads those units and prints them (the read `status`
+makes), `failed` and `retrying` as warnings and a unit still running
+as a line of its own: activation succeeding says the closure is in
+place, not that the checkouts it declares exist. Tradeoffs
+accepted: a tiny VPS builds its own closure (substituters cover
+most), and every target fetches the fleet and its inputs itself, so
+it needs the forge and the caches reachable.
 
 ### `nixhold update`
 
@@ -2482,9 +2547,10 @@ its `latest`, then what moved: inputs from the lock diff, `<input>:
 Then the eval gate, and a hand-off to `deploy` under its host rule:
 this machine, or every eligible host with `--all`. A run where
 neither the checkout, an input nor a pin moved stops after the
-baseline. Neither the lock nor a pin file is auto-committed; the verb
-ends with the commit command, its subject naming what moved (inputs,
-pins, or both).
+baseline. The lock and the pin files are committed by the verb,
+subject `flake: update <what>` naming what moved (inputs, pins, or
+both): they are generated files, and `deploy` builds from a pushed
+commit, so the hand-off finds a clean HEAD and pushes it.
 
 **The eval gate.** One `nix eval` per host per side, reading three
 things off the configuration: `system.build.toplevel.drvPath`,
@@ -2883,7 +2949,7 @@ Architecture:
   ones from the dependency's lock, so `nixhold update` moved the
   framework and left the kernel where nixhold's lock had it —
   months behind, invisibly, on every consumer. The forker now
-  declares and follows all seven ("Inputs: who pins what").
+  declares and follows all six ("Inputs: who pins what").
 - **Module self-imports via flake inputs** — relative paths
   inside the framework.
 - **In-tree dogfood** — out-of-tree keeps dogfooder UX = forker
@@ -3059,11 +3125,31 @@ Network:
 
 Install & deploy:
 
+- **Instantiating on the operator's machine and copying the
+  derivation closure** — `nixos-rebuild --build-host` for deploy,
+  `nix build --eval-store auto --store ssh-ng://` (nixos-anywhere's
+  `--build-on remote`) for install. Both evaluate a foreign host
+  here and then `nix copy` every derivation and every source it
+  references to the target, one round trip per path; after an
+  `update` moves the inputs that is the whole of nixpkgs in small
+  pieces over the operator's uplink. The target builds from the
+  forge instead ("Where a host is built").
+- **`nix copy` of the fleet source as the transport** — one
+  content-addressed path, fast, and the shape between the two
+  above. Turned down because the path names a snapshot of a
+  working tree: a dirty checkout deploys, and nothing on the host
+  or in the repo says which commit it was.
+- **nixos-anywhere for `host install --remote`** — it brought
+  kexec (a VPS into an installer) and the install phase. Its kexec
+  image ships no git, so it cannot clone; and its install phase is
+  the instantiate-and-copy shape above. The fleet ISO is the
+  target, and the install's own phases run there over ssh; a kexec
+  image of that ISO is on the ROADMAP for the first VPS.
 - **LUKS / dropbear-initrd** — threat model doesn't justify it;
   power users declare `disko.devices` themselves.
 - **Sub-disk install choices in the wizard** (dual-boot /
-  install-into-free-space / root-size prompt) — disko and
-  nixos-anywhere format the whole declared disk; adopting
+  install-into-free-space / root-size prompt) — disko formats the
+  whole declared disk; adopting
   existing partitions is unsupported territory. One shape,
   whole disk; a second OS on the same disk is hand-partitioned
   outside the framework, custom layouts are a `disko.devices`

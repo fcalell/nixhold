@@ -486,7 +486,7 @@ nh_fleet_key_decrypt_to() {
 #   --root <dir>    a mounted root the installer owns — /mnt during
 #                   `host install`; sudo, since /mnt/etc is root's
 #   --stage <dir>   a staging tree the CLI owns and something else
-#                   copies as root (nixos-anywhere --extra-files); no
+#                   copies as root (the install's tar into /mnt); no
 #                   sudo, and the modes are what the copy preserves
 nh_fleet_key_install() {
   local remote="" host="" root="" stage="" d line

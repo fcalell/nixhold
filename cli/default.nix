@@ -54,11 +54,9 @@ pkgs.writeShellApplication {
     # `iso --flash` inspects the target device with lsblk before it
     # dd's over it; darwin has no lsblk, and that path is Linux-only.
     util-linux
-    # Remote-install/deploy drivers: `host install` hard-requires
-    # nixos-anywhere, and `deploy` needs nixos-rebuild even for
-    # remote targets (darwin machines don't ship it).
-    nixos-anywhere
-    nixos-rebuild
+    # No nixos-rebuild and no nixos-anywhere: a host builds itself
+    # from the forge and is activated from the out path (ARCHITECTURE
+    # "Where a host is built"), which is the two steps those wrap.
     # `deploy` of an Android host is a converge over adb.
     android-tools
   ];
