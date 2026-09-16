@@ -10,6 +10,12 @@
 # route, and a non-zero exit when any of them failed or the fleet
 # commits none at all.
 #
+# The passphrase route is opened with the string the CLI reads itself,
+# so the same string is then proved against every `operatorPassphrase`
+# ciphertext the fleet declares (ARCHITECTURE "One passphrase"): the
+# console password and the wrap are two artifacts of one string, and
+# nothing but this verb can see them drift.
+#
 # The token route is ONE check however many age1fido2-hmac1… lines the
 # fleet holds: `age -d -j fido2-hmac` decrypts with whichever token is
 # plugged in and does not report which line answered. What it proves is
@@ -25,6 +31,8 @@ Usage: nixhold operator check
 
   Opens keys/fleet.key.age over each committed route: the
   passphrase-wrapped identity, and the FIDO2 token that is plugged in.
+  The passphrase is also proved against the hash every
+  `operatorPassphrase` secret holds (the NixOS console password).
   Prints one line per route and exits non-zero if any of them fails.
 EOF
         return 0
@@ -35,7 +43,7 @@ EOF
         ;;
     esac
   done
-  nh_require_cmd age jq nix || return 1
+  nh_require_cmd age age-plugin-batchpass mkpasswd jq nix || return 1
 
   local key rcpt d out wrapped tokens routes=0 failed=0
   key="$(nh_fleet_key_file)" || return 2
@@ -52,6 +60,7 @@ EOF
     routes=$((routes + 1))
     if nh_operator_route_decrypt passphrase "$key" "$out"; then
       nh_ok "passphrase route ($wrapped): ok"
+      nh_operator_check_hashes || failed=1
     else
       nh_err "passphrase route ($wrapped): did not open the fleet key"
       failed=1
@@ -80,4 +89,51 @@ EOF
   fi
   [ "$failed" -eq 0 ] || return 1
   nh_ok "every committed route opens the fleet key"
+}
+
+# nh_operator_check_hashes — the coupling's proof: every
+# `operatorPassphrase` ciphertext the fleet declares, opened with the
+# identity the held passphrase just unwrapped, hashes that same string.
+# One check per ciphertext (fleet scope makes it one), a host that does
+# not evaluate is named and skipped.
+nh_operator_check_hashes() {
+  local idfile sdir d line h platform json name scope target seen=" " rc=0
+  idfile="$(nh_passphrase_identity_file)" || return 1
+  sdir="$(nh_worktree_secrets_dir)" || return 1
+  d="$(nh_tmpdir operator-check-hash)" || return 1
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    h="${line%% *}"
+    platform="${line##* }"
+    json="$(nh_host_secrets "$h" "$platform" 2>/dev/null)" || {
+      nh_warn "$h does not evaluate — its passphrase hash is unproven"
+      continue
+    }
+    while IFS=$'\t' read -r name scope; do
+      [ -n "$name" ] || continue
+      target="$(nh_secret_file "$sdir" "$h" "$name" "$scope")"
+      case "$seen" in *" $target "*) continue ;; esac
+      seen="$seen$target "
+      if [ ! -f "$target" ]; then
+        nh_warn "$name is declared on $h with no ciphertext at $target — 'nixhold secret edit $h $name' mints it"
+        continue
+      fi
+      if ! age -d -i "$idfile" -o "$d/hash" "$target"; then
+        rm -f "$d/hash"
+        nh_err "$target: not opened by the operator identity"
+        rc=1
+        continue
+      fi
+      if nh_passphrase_verify "$d/hash"; then
+        nh_ok "passphrase hash ($target): the same string"
+      else
+        nh_err "passphrase hash ($target): a different string than the one that opens the operator identity — 'nixhold secret edit $name' writes both from one prompt"
+        rc=1
+      fi
+      rm -f "$d/hash"
+    done < <(printf '%s' "$json" | jq -r '
+      to_entries[] | select(.value.operatorPassphrase == true)
+      | [ .key, (.value.scope // "host") ] | @tsv')
+  done < <(nh_hosts)
+  return "$rc"
 }

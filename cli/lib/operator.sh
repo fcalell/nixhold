@@ -72,16 +72,178 @@ nh_operator_append_line() {
   chmod 0644 "$f"
 }
 
+# ---------------------------------------------------------------------
+# The fleet passphrase.
+#
+# One string wraps the operator identity (keys/operator.age) and, on a
+# fleet that declares an `operatorPassphrase` secret, is the console
+# and sudo password of its NixOS hosts (ARCHITECTURE "One
+# passphrase"). age takes a passphrase from the terminal alone, so
+# where the CLI has to hold the string itself — to hash it as well as
+# wrap with it, or to prove it against the hash — it is read once by
+# the CLI, kept 0600 under the process scratch root the dispatcher
+# wipes, and handed to age's batchpass plugin over a file descriptor,
+# never the environment. Unwrapping for an ordinary verb stays age's
+# own prompt: the CLI holds the string only where it writes or proves
+# it.
+
+# nh_passphrase_file [--confirm] -> path of the held fleet passphrase,
+# prompting for it the first time in this CLI process. --confirm asks
+# twice, for a string about to be written; a proof asks once.
+nh_passphrase_file() {
+  local confirm=0 root out first second
+  [ "${1:-}" = "--confirm" ] && confirm=1
+  root="$(nh_tmp_root)" || return 1
+  out="$root/passphrase"
+  if [ -s "$out" ]; then
+    printf '%s' "$out"
+    return 0
+  fi
+  if ! nh_tty; then
+    nh_err "the fleet passphrase is typed on a terminal, and this run has none"
+    return 1
+  fi
+  first="$(nh_prompt_password "fleet passphrase (wraps the operator identity; the console and sudo password of the NixOS hosts)")" || return 1
+  if [ -z "$first" ]; then
+    nh_err "an empty passphrase — nothing was written"
+    return 1
+  fi
+  if [ "$confirm" -eq 1 ]; then
+    second="$(nh_prompt_password "the same passphrase, again")" || return 1
+    if [ "$first" != "$second" ]; then
+      nh_err "the two passphrases differ — nothing was written"
+      return 1
+    fi
+  fi
+  if ! (umask 077 && printf '%s' "$first" >"$out"); then
+    rm -f "$out"
+    nh_err "could not hold the passphrase under $root"
+    return 1
+  fi
+  printf '%s' "$out"
+}
+
+# nh_passphrase_wrap <plaintext> <out> — wrap a file with the held
+# passphrase and no prompt: a regular scrypt age file, the one `age -d`
+# opens at its own prompt. <out> exists only on success.
+nh_passphrase_wrap() {
+  local plain="$1" out="$2" pf
+  pf="$(nh_passphrase_file)" || return 1
+  AGE_PASSPHRASE_FD=3 age -e -j batchpass -o "$out" "$plain" 3<"$pf" || {
+    rm -f "$out"
+    return 1
+  }
+}
+
+# nh_passphrase_unwrap <ciphertext> <out> — the reverse, with the held
+# passphrase and no prompt. Non-zero on a wrong string, age's own line
+# above unless the caller silenced it. <out> exists only on success.
+nh_passphrase_unwrap() {
+  local src="$1" out="$2" pf
+  pf="$(nh_passphrase_file)" || return 1
+  AGE_PASSPHRASE_FD=3 age -d -j batchpass -o "$out" "$src" 3<"$pf" || {
+    rm -f "$out"
+    return 1
+  }
+}
+
+# nh_passphrase_identity_file -> the unwrapped operator identity, the
+# same memo nh_operator_identity_file fills, but opened with the
+# passphrase the CLI holds rather than at age's prompt: for the verb
+# that has to prove the string, not just use it.
+nh_passphrase_identity_file() {
+  local root out src
+  root="$(nh_tmp_root)" || return 1
+  out="$root/operator-identity"
+  if [ -s "$out" ]; then
+    printf '%s' "$out"
+    return 0
+  fi
+  src="$(nh_age_wrapped_identity)" || {
+    nh_err "no passphrase-wrapped operator identity in this checkout (nixhold.layout.ageIdentityWrapped / \$NIXHOLD_IDENTITY_FILE)"
+    return 1
+  }
+  : >"$out" || return 1
+  chmod 600 "$out" || return 1
+  nh_passphrase_unwrap "$src" "$out" || {
+    rm -f "$out"
+    nh_err "that passphrase did not open $src"
+    return 1
+  }
+  printf '%s' "$out"
+}
+
+# nh_passphrase_hash -> the yescrypt hash of the held passphrase, on
+# stdout: what an `operatorPassphrase` secret holds. Prompts with a
+# confirmation when nothing is held yet, since this is a write.
+nh_passphrase_hash() {
+  local pf
+  pf="$(nh_passphrase_file --confirm)" || return 1
+  mkpasswd -m yescrypt -s <"$pf"
+}
+
+# nh_passphrase_verify <hash-file> — does the held passphrase hash to
+# the crypt(3) hash in <hash-file>? The hash's own prefix (method,
+# parameters, salt: everything before its last `$` field) goes back to
+# mkpasswd, so any crypt method verifies the same way.
+nh_passphrase_verify() {
+  local hash pf got
+  hash="$(head -n 1 "$1")"
+  pf="$(nh_passphrase_file)" || return 1
+  got="$(mkpasswd -s -S "${hash%\$*}" <"$pf")" || return 1
+  [ "$got" = "$hash" ]
+}
+
+# nh_operator_rewrap_identity -> path of the committed wrap, now
+# wrapped to the held passphrase, on stdout; nothing at all on a fleet
+# that commits no wrap. A wrap that already opens with the held string
+# is left as it is (the mint that just wrote it, a re-run); otherwise
+# the current wrap is opened first — age's own prompt, for the string
+# it was wrapped with — and written back under the new one. The
+# identity itself is unchanged, so no recipient line moves and nothing
+# is rekeyed.
+nh_operator_rewrap_identity() {
+  local wrapped d idfile root
+  wrapped="$(nh_worktree_layout_file ageIdentityWrapped 2>/dev/null)" ||
+    wrapped="$(nh_worktree_keys_dir)/operator.age" || return 2
+  [ -n "$wrapped" ] && [ -f "$wrapped" ] || return 0
+  d="$(nh_tmpdir rewrap)" || return 1
+  if nh_passphrase_unwrap "$wrapped" "$d/identity" 2>/dev/null; then
+    rm -f "$d/identity"
+    printf '%s' "$wrapped"
+    return 0
+  fi
+  nh_info "re-wrapping the operator identity at $wrapped — its current passphrase first, once"
+  idfile="$(nh_operator_identity_file)" || return 1
+  if ! nh_passphrase_wrap "$idfile" "$wrapped.tmp"; then
+    nh_err "could not re-wrap the operator identity — $wrapped is untouched"
+    return 1
+  fi
+  mv "$wrapped.tmp" "$wrapped" || {
+    rm -f "$wrapped.tmp"
+    nh_err "could not replace $wrapped — it is untouched"
+    return 1
+  }
+  chmod 0644 "$wrapped"
+  nh_ok "re-wrapped the operator identity with the new passphrase"
+  if root="$(nh_fleet_root)"; then
+    nh_stage_for_eval "$root" "$wrapped"
+  fi
+  printf '%s' "$wrapped"
+}
+
 # nh_operator_route_decrypt <route> <ciphertext> <out> — decrypt over
 # ONE named route ("token" or "passphrase") rather than the one
 # nh_age_pick_route settled on for this process. `operator check` is
 # the only caller and the only verb that should be one: everywhere
 # else the route is whatever the recipients file and the USB port say,
 # and trying the other one after a failure is a fallback nothing takes
-# silently. Neither stdin nor stderr is redirected, since the plugin's
-# PIN prompt and its "touch your token" ride this process's terminal,
-# so a failed attempt is reported by age itself, above the caller's
-# own line. <out> exists only on success.
+# silently. The passphrase route is opened with the string the CLI
+# holds, so the check can also prove it against the hash it is typed
+# for. Neither stdin nor stderr is redirected, since the plugin's PIN
+# prompt and its "touch your token" ride this process's terminal, so a
+# failed attempt is reported by age itself, above the caller's own
+# line. <out> exists only on success.
 nh_operator_route_decrypt() {
   local route="$1" src="$2" out="$3" idfile
   case "$route" in
@@ -92,7 +254,7 @@ nh_operator_route_decrypt() {
       }
       ;;
     passphrase)
-      idfile="$(nh_operator_identity_file)" || return 1
+      idfile="$(nh_passphrase_identity_file)" || return 1
       age -d -i "$idfile" -o "$out" "$src" || {
         rm -f "$out"
         return 1
@@ -135,13 +297,13 @@ nh_ensure_operator_identity() {
     nh_err "this fleet has no operator recipient ($pub is missing or empty) — run 'nixhold host add' on a terminal to generate a passphrase identity, or commit your FIDO2 token's age1fido2-hmac1… recipient there"
     return 1
   fi
-  nh_require_cmd age age-keygen || return 1
+  nh_require_cmd age age-keygen age-plugin-batchpass || return 1
   nh_info "this fleet has no operator recipient yet — the operator seat is what decrypts the fleet key and every secret (a FIDO2 token recipient can be committed to $pub instead; this generates the passphrase kind)"
-  if ! nh_prompt_confirm "Generate it now? (you will choose its passphrase; losing that passphrase is unrecoverable)"; then
+  if ! nh_prompt_confirm "Generate it now? (you will choose the fleet passphrase: it wraps the identity and is the NixOS hosts' console and sudo password; losing it is unrecoverable)"; then
     nh_err "no operator identity — nothing was written"
     return 1
   fi
-  # The unwrapped identity exists only between age-keygen and `age -p`,
+  # The unwrapped identity exists only between age-keygen and the wrap,
   # under the scratch root the dispatcher wipes on every exit path.
   tmpdir="$(nh_tmpdir identity)" || return 1
   age-keygen -o "$tmpdir/identity" >/dev/null 2>&1 || {
@@ -149,8 +311,11 @@ nh_ensure_operator_identity() {
     return 1
   }
   mkdir -p "$(dirname "$wrapped")" "$(dirname "$pub")" || return 1
-  nh_info "wrapping the identity with your passphrase (you'll be prompted twice)"
-  if ! age -p -o "$wrapped" "$tmpdir/identity"; then
+  # The passphrase is held for the rest of the process: the secrets
+  # walk that follows mints the `operatorPassphrase` hash from it
+  # without a second prompt.
+  nh_info "wrapping the identity with the fleet passphrase (typed twice)"
+  if ! nh_passphrase_file --confirm >/dev/null || ! nh_passphrase_wrap "$tmpdir/identity" "$wrapped"; then
     rm -f "$wrapped"
     nh_err "could not wrap the operator identity — nothing was written"
     return 1

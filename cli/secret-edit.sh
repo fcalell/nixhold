@@ -196,7 +196,7 @@ nh_secret_provision() {
   # Iterated over "$@", not a here-string-fed `read` loop: a redirect
   # on the loop would hand $EDITOR (and the gate prompt) a stdin that
   # is not the operator's terminal.
-  local added=0 failed=0 rc idx=0 target scope generator template desc sshkey choice tsnet
+  local added=0 failed=0 rc idx=0 target scope generator template desc sshkey choice tsnet oppass
   local written=() public=() pubfile
   for name in "$@"; do
     idx=$((idx + 1))
@@ -222,6 +222,10 @@ nh_secret_provision() {
     # operator-typed and its description says where to get a key.
     tsnet="$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].tailscaleAuthKey // ""')"
     [ -z "$tsnet" ] || [ -f "$(nh_tailnet_client_file "$tsnet")" ] || tsnet=""
+    # The fleet passphrase's hash: the CLI writes it from the string
+    # it holds (or prompts for), and re-wraps the operator identity
+    # with the same string first (ARCHITECTURE "One passphrase").
+    oppass="$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].operatorPassphrase // false')"
     nh_info "[$idx/$total] $name${desc:+ — $desc}"
     # The client is opened HERE, for the reason the recipient probes
     # are: the per-secret subshell below inherits the memo but cannot
@@ -249,6 +253,8 @@ nh_secret_provision() {
     fi
     if [ -n "$tsnet" ]; then
       nh_info "  minting a single-use key through the '$tsnet' tailnet's API client (no editor)"
+    elif [ "$oppass" = "true" ]; then
+      nh_info "  the fleet passphrase's hash (no editor; prompts unless the passphrase is already held)"
     elif [ -n "$generator" ]; then
       nh_info "  running its generator (no editor; it may prompt)"
     else
@@ -279,6 +285,12 @@ nh_secret_provision() {
       if [ -n "$tsnet" ]; then
         key="$(nh_tailnet_mint_key "$tsnet" "$host")" || exit 1
         printf '%s\n' "$key" >"$tmp"
+      elif [ "$oppass" = "true" ]; then
+        nh_passphrase_hash >"$tmp" || exit 1
+        # The wrap first: a failure here leaves nothing written, and a
+        # wrap done with the ciphertext still to come is finished by
+        # re-running, since a wrap that already opens is left alone.
+        nh_operator_rewrap_identity >/dev/null || exit 1
       elif [ -n "$generator" ]; then
         # The generator is operator-declared config; run it in this
         # already-isolated subshell rather than spawning an external
@@ -359,7 +371,7 @@ nh_secret_provision() {
     # whose names overflow it commits as a count instead.
     [ "${#header}" -le 60 ] || header="secrets($host): provision $added secret(s)"
     local commit=("${written[@]}" "${public[@]}")
-    [ -z "$keys_dir" ] || commit+=("$keys_dir/login.pub" "$keys_dir/fleet.key.age" "$keys_dir/fleet.pub")
+    [ -z "$keys_dir" ] || commit+=("$keys_dir/login.pub" "$keys_dir/fleet.key.age" "$keys_dir/fleet.pub" "$keys_dir/operator.age")
     nh_commit_paths "$root" "$header" "${commit[@]}"
   elif [ "$failed" -eq 0 ]; then
     nh_info "nothing provisioned on $host ($total skipped)"
@@ -390,6 +402,10 @@ nh_secret_edit_one() {
     nh_commit_paths "$(nh_fleet_root)" "secrets($host): re-mint $name" "$target"
     nh_info "next: nixhold deploy $host"
     return 0
+  fi
+  if [ "$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].operatorPassphrase // false')" = "true" ]; then
+    nh_secret_passphrase_remint "$host" "$name" "$target"
+    return $?
   fi
   (
     set -euo pipefail
@@ -443,6 +459,39 @@ nh_secret_edit_one() {
     nh_commit_paths "$(nh_fleet_root)" "secrets($host): update $name" "${paths[@]}"
     nh_info "next: nixhold deploy $host"
   )
+}
+
+# nh_secret_passphrase_remint <host> <name> <target> — `secret edit`
+# on an `operatorPassphrase` secret that exists: a hash has no editor,
+# so the string is prompted for, the operator identity re-wrapped with
+# it, and the hash written in place of the old one (ARCHITECTURE "One
+# passphrase"). The commit carries both files, and "next" is every
+# host that declares the secret, since the hash is live on each.
+nh_secret_passphrase_remint() {
+  local host="$1" name="$2" target="$3" d rfile wrapped paths
+  nh_info "$host/$name is the fleet passphrase's hash — a new passphrase replaces it and re-wraps the operator identity (no editor)"
+  d="$(nh_tmpdir secret)" || return 1
+  rfile="$d/recipients"
+  nh_recipients_file "$rfile" || return 1
+  nh_passphrase_hash >"$d/hash" || return 1
+  wrapped="$(nh_operator_rewrap_identity)" || return 1
+  # Encrypt to a sibling temp + rename so an age failure can't leave
+  # the committed ciphertext truncated.
+  if ! age -R "$rfile" -o "$target.tmp" "$d/hash"; then
+    rm -f "$target.tmp"
+    nh_err "re-encryption failed — $target is untouched; the operator identity is already wrapped with the new passphrase, so re-run to finish"
+    return 1
+  fi
+  mv "$target.tmp" "$target" || {
+    rm -f "$target.tmp"
+    nh_err "could not replace $target — it is untouched"
+    return 1
+  }
+  nh_ok "updated $target"
+  paths=("$target")
+  [ -z "$wrapped" ] || paths+=("$wrapped")
+  nh_commit_paths "$(nh_fleet_root)" "secrets($host): update $name" "${paths[@]}"
+  nh_info "next: nixhold deploy <host>, for every host that declares $name — the hash is live on each of them"
 }
 
 # nh_missing_secrets <host> <platform> [required-only] — the declared

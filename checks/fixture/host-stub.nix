@@ -298,11 +298,14 @@
       }
       {
         # `password` follows `identity`: fleet-scoped, one ciphertext
-        # for the whole fleet, declared by the NixOS hosts only.
+        # for the whole fleet, declared by the NixOS hosts only, and
+        # it is the fleet passphrase's hash, so the CLI owns its content.
         assertion =
           config.nixhold.secrets.password.scope == "fleet"
-          && lib.hasSuffix "/secrets/password.age" (toString config.nixhold.secrets.password.sourceFile);
-        message = "fixture: password is fleet-scoped at secrets/password.age, got ${toString config.nixhold.secrets.password.sourceFile}";
+          && lib.hasSuffix "/secrets/password.age" (toString config.nixhold.secrets.password.sourceFile)
+          && config.nixhold.secrets.password.operatorPassphrase
+          && config.nixhold.secrets.password.generator == null;
+        message = "fixture: password is fleet-scoped at secrets/password.age and the fleet passphrase's hash, got ${toString config.nixhold.secrets.password.sourceFile}";
       }
     ];
 }

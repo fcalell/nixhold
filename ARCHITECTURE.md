@@ -1258,6 +1258,7 @@ Fields:
 | `unit` | NixOS only: `systemd.services.<unit>.serviceConfig.EnvironmentFile += [ <age path> ]`, gated on `active`. Mutually exclusive with `homePath`/`sshKey` (assertion) — systemd reads the file as root, a home symlink is the operator's | null |
 | `public` | `{ file; command; }` or null: a public half the fleet commits. After every write (a mint, a paste, an edit), `secret edit` pipes the plaintext through `command` and writes its stdout to `<keysDir>/<file>`, staged and committed with the ciphertext. Peers read the file at eval as a layout-path exception, like every committed pubkey. One consumer today, `syncthing-identity` (the device ID); the field is generic because a branch on a secret's name in the CLI is the shape the rule "names never carry behaviour" forbids | null |
 | `tailscaleAuthKey` | the name of a `tailscale`-typed network, or null: a typed mint like `sshKey`. When the fleet commits that network's API client, `secret edit` mints the content through the API instead of a shell generator (single-use, pre-authorized, tagged, one-hour expiry); without the client the secret is operator-typed as before. Set by the tailscale module on its `<authKeySecret>` declaration, never by an operator | null |
+| `operatorPassphrase` | marks the secret as the crypt(3) hash of the fleet passphrase, the string that wraps the operator identity: `secret edit` prompts for it and writes `mkpasswd -m yescrypt -s` of it, on the mint and on every edit (a hash has no editor), and re-wraps `keys/operator.age` with the same string on a fleet that commits one; `operator check` verifies the hash against the string. Mutually exclusive with `generator` and `template` (assertion): the CLI owns the content. Set by the NixOS identity module on `password`, never by an operator (see "One passphrase") | false |
 
 The framework derives per-entry: the ciphertext's checkout location
 `sourceFile` (scope + name; existence checks and messages only)
@@ -1289,7 +1290,7 @@ are declared by the framework, so a forker never writes them:
 
 | Secret | Declared by | Shape |
 |---|---|---|
-| `password` | NixOS identity module | **fleet scope**, owner root, **`required = true`**, generator `mkpasswd -m yescrypt` (prompts on the TTY, emits the hash); wired to the operator's `hashedPasswordFile`. Declared by the NixOS half only, so a Darwin-only fleet never provisions it. Required because it is the way in when ssh is not: a box with no console password is unreachable the moment the network is (unjoined tailnet, broken interface, a reformat at its own keyboard), with a locked account and nothing to log in as. It costs nothing past the first host — the first `host add` mints the one ciphertext before any host is installed, and every later host reads that same file |
+| `password` | NixOS identity module | **fleet scope**, owner root, **`required = true`**, `operatorPassphrase = true`: the yescrypt hash of the fleet passphrase, written by the CLI from the one prompt that wraps the operator identity (see "One passphrase"); wired to the operator's `hashedPasswordFile`. Declared by the NixOS half only, so a Darwin-only fleet never provisions it. Required because it is the way in when ssh is not: a box with no console password is unreachable the moment the network is (unjoined tailnet, broken interface, a reformat at its own keyboard), with a locked account and nothing to log in as. It costs nothing past the first host — the first `host add` mints the one ciphertext before any host is installed, and every later host reads that same file |
 | `identity` | secrets baseline, both platforms | **fleet scope**, `sshKey = true`, `required = false`. The fleet's single outbound ssh key: `IdentityFile` on every fleet-peer and forge matchBlock, git signing key, the credential the installer ISO clones the fleet repo with, and — on a fleet that lists nothing else — the line `keys/login.pub` is seeded with when the CLI mints it. One ed25519 key per fleet, by construction rather than by assertion; the one second outbound key the framework mints is `identity-rsa`, declared by a repository whose forge cannot take ed25519 (see "One outbound key, and a named exception") |
 | `env` | secrets baseline, both platforms | fleet scope, owner user (0600), `required = false`. Sourced into every operator shell by system-level shell init on both platforms (`set -a; . <path>; set +a`, guarded on readability), gated on `active`. Its blast radius is every process the operator starts from a login shell — editor, browser, build, assistant — so it holds what genuinely belongs to the whole seat; anything narrower goes in a repository's own env, which direnv loads only inside that checkout |
 | `adb` | android baseline, every Android host | **fleet scope**, owner root, `required = true`, generator `ssh-keygen -t rsa -b 2048 -m PKCS8`: the one key every Android device is paired with. Deploy hands it to adb as `ADB_VENDOR_KEYS`; a NixOS host that drives a device itself imports the same declaration as `modules.infra.adbKey` to have it placed (see "Android hosts") |
@@ -1489,6 +1490,51 @@ passphrase, and as a second way in when the passphrase is not to
 hand. A token-only fleet narrows the boundary to "repo + a token"
 and trades "passphrase lost" for "every token lost" in L10 — so it
 enrolls two tokens, kept apart.
+
+**One passphrase.** On a fleet that commits a wrapped identity and
+declares a secret with `operatorPassphrase = true` (the NixOS
+identity module's `password`), the two are one string: the
+passphrase that unwraps `keys/operator.age` is the console and sudo
+password of every NixOS host. They stay two artifacts, since a
+crypt(3) hash opens no age key and a scrypt-wrapped key logs nobody
+in, so what is unified is the write. `nixhold secret edit password`
+prompts once (twice, to confirm), hashes the string with `mkpasswd
+-m yescrypt -s` for the ciphertext and re-wraps the operator key
+with it through `age -e -j batchpass` over `AGE_PASSPHRASE_FD`, and
+commits both; the key itself is unchanged, so no recipient line
+moves and nothing is rekeyed. Re-wrapping opens the current wrap
+first, which is age's own prompt for the old string, unless the
+wrap already opens with the new one, in which case it is left as
+it is. The string lives in a 0600 file under the process scratch
+root for the length of the verb and reaches age over a file
+descriptor, never the environment. The first-host mint is the same
+prompt: `host add` reads the passphrase once, wraps the new
+identity with it and mints `password` from the same memo, so a
+fleet never starts split. Reading stays as it was: age prompts on
+the terminal at unwrap, and the plugin is used only where the
+string is already in hand. A token-only fleet has no wrap to keep
+in step, and its `password` is the same hash of a string typed
+once.
+
+The cost is stated rather than discovered: every host already holds
+`/etc/nixhold/fleet.key` root-readable, so sudo on any host already
+reaches every ciphertext, and the coupling adds no reach. What it
+adds is exposure: the operator route is now typed at every sudo,
+and the hash on every NixOS host is an offline target for it, so
+the string is chosen as a passphrase, not a password. The token
+route is untouched, and once one is enrolled it is the daily route
+for secrets; `pam_u2f` for login and sudo is the roadmap's, and
+makes the string a fallback typed only without a token. `operator
+check` proves the coupling: it reads the passphrase itself, opens
+the wrap with it through the plugin, opens the fleet key with the
+identity, and checks the string against every `operatorPassphrase`
+ciphertext's hash (`mkpasswd -s -S` with the hash's own prefix);
+lint cannot, since neither artifact reveals the other. A
+darwin-only fleet declares no such secret and rotates its
+passphrase by hand; a Mac's own login password cannot be declared
+at all (nix-darwin's user module has no password option, and macOS
+keeps a shadow hash of its own), so matching it to the fleet
+passphrase is the operator's manual step.
 
 A fleet with no identity yet gets one from the first verb that
 needs the recipient — the first `host add`, minting the fleet key:
@@ -1957,7 +2003,7 @@ exists, the installer ISO is itself a sufficient operator seat.
 | Event | Flow |
 |---|---|
 | L1 fork | `nix flake init -t github:fcalell/nixhold` → fill identity (+ `layout.repoUrl`) → `nixhold host add`. The operator identity is generated on first need (see "Operator routes"); there is no init step. A fleet that wants the token route commits its `age1fido2-hmac1…` line into `keys/operator.pub` before that first `host add`, and then nothing is generated — the fleet already has a route |
-| L2 first host | `nixhold host add [<name>]` — the walk: name, profile, arch (defaulted from the machine when it is the target), networks only when the fleet declares more than one, public address only when an internet network exists, stateVersion defaulted from the pinned inputs; entry written to `layout.hostsFile`, then the fleet's one-time artifacts: the operator identity when `keys/operator.pub` is empty, the fleet key when `keys/fleet.key.age` is missing, and the framework secrets minted (`identity` — its pubkey printed with every forge the fleet's repositories name, and seeded into `keys/login.pub` — and `password`) alongside any required-missing one. Everything generated is committed, then "install now?" — this machine (on the ISO, or a Mac), over ssh to an address, or later |
+| L2 first host | `nixhold host add [<name>]` — the walk: name, profile, arch (defaulted from the machine when it is the target), networks only when the fleet declares more than one, public address only when an internet network exists, stateVersion defaulted from the pinned inputs; entry written to `layout.hostsFile`, then the fleet's one-time artifacts: the operator identity when `keys/operator.pub` is empty, the fleet key when `keys/fleet.key.age` is missing, and the framework secrets minted (`identity` — its pubkey printed with every forge the fleet's repositories name, and seeded into `keys/login.pub` — and `password`, the hash of the passphrase the identity was wrapped with a moment before, from the same prompt) alongside any required-missing one. Everything generated is committed, then "install now?" — this machine (on the ISO, or a Mac), over ssh to an address, or later |
 | L2b later host | The same walk, and that is all of it: nothing is minted and nothing is rekeyed. `identity` and `password` are fleet-scoped and already provisioned, the fleet key already opens every ciphertext, and the new machine gets that key at install. A host joins with no forge step, no new password and no route prompt |
 | L3 NixOS host | On-prem: boot the fleet ISO on the target, `nixhold host install` → the operator route → "new host…" runs the add walk and installs in place. VPS / from another machine: `nixhold host add <name>` and answer "over ssh" with the address (scripted: `--install root@<ip>`); the fleet ISO makes the target reachable with zero typing, any installer works |
 | L3d darwin host | On the Mac itself: name the account after `identity.username`, install Command Line Tools and vanilla multi-user Nix, then `nix run github:fcalell/nixhold#nixhold -- host install <mac>`. With no fleet checkout yet, `--repo <owner/repo> --keys <dir>` — the directory holding `identity.age`, and `operator.age` when the fleet keeps one, copied from any checkout or the safekeeping copy — clones with the `identity` key first, so a wiped Mac needs one operator route and nothing else; the run then continues on the CLI that checkout pins, so the typed `github:` url bootstraps rather than decides the version (see "The installing CLI is the fleet's"). Preflight, `/etc/nixhold/fleet.key` written, the Mac's live ssh host pubkey recorded, first switch, secrets verified — one command (see CLI) |
@@ -2155,7 +2201,9 @@ nixhold secret rotate                               new fleet key → rekey → 
 nixhold operator enrol [<label>]                    a token: login key + age recipient, both
                                                     files written, rekey, commit
 nixhold operator remove <line>                      the reverse: drop the lines, rekey, commit
-nixhold operator check                              open the fleet key over every committed route
+nixhold operator check                              open the fleet key over every committed route;
+                                                    the passphrase is also proved against the
+                                                    `operatorPassphrase` hash it is typed for
 nixhold service new <name>
 nixhold iso [--flash <device>]
 ```
@@ -2638,6 +2686,14 @@ rekey` beside the fleet key. Lint checks that each
 `keys/networks/<n>.age` names a declared tailscale network and is
 tracked; its recipient set is not readable from the file (age
 stanzas carry no fingerprint), so `operator check` is the proof.
+
+An `operatorPassphrase` secret has no editor, missing or present:
+the verb prompts for the fleet passphrase, re-wraps the operator
+identity with it when the fleet commits one, then writes the hash
+(see "One passphrase"); a present one is re-minted, not opened,
+since the string is what changes. The commit carries the ciphertext
+and the wrap, and "next" is a deploy of every host that declares
+the secret, since the hash is live on each of them.
 
 ### `nixhold secret show`
 

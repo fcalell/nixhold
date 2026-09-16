@@ -28,6 +28,9 @@ pkgs.writeShellApplication {
     curl
     gum
     openssh
+    # age's batchpass plugin is what lets the CLI wrap the operator
+    # identity with a passphrase it holds, and prove that passphrase:
+    # age itself takes one from the terminal alone (lib/operator.sh).
     age
     rage
     # The operator's age seat may be a FIDO2 token: age spawns the
@@ -38,9 +41,10 @@ pkgs.writeShellApplication {
     age-plugin-fido2-hmac
     libfido2
     # Generators of the shipped secrets run in this process: the
-    # console password's hash, syncthing's GUI password, and the
-    # syncthing identity — whose `public` command derives the device
-    # ID from the same binary that minted the key.
+    # fleet passphrase's hash (written and verified by the CLI
+    # itself), syncthing's GUI password, and the syncthing identity —
+    # whose `public` command derives the device ID from the same
+    # binary that minted the key.
     mkpasswd
     openssl
     syncthing

@@ -43,8 +43,9 @@ in
   };
 
   # Declared by the framework so no fleet writes it: `host add` walks
-  # it with the other missing secrets, mkpasswd prompts for the
-  # password on the terminal and emits the hash that is encrypted.
+  # it with the other missing secrets, and the CLI encrypts the hash
+  # of the fleet passphrase, the string that wraps the operator
+  # identity, from the one prompt that wrapped it (`operatorPassphrase`).
   # Fleet-scoped: one console password for the whole fleet, minted on
   # the first NixOS host and read by every later one — one ciphertext,
   # encrypted to the operator and the fleet key like everything else,
@@ -63,8 +64,8 @@ in
     # host finds it already provisioned.
     required = true;
     category = "framework";
-    generator = "mkpasswd -m yescrypt";
-    description = "console login password for ${identity.username}, fleet-wide (typed at the mkpasswd prompt; the hash is what is stored)";
+    operatorPassphrase = true;
+    description = "console and sudo password for ${identity.username}, fleet-wide: the fleet passphrase, the string that wraps the operator identity (its yescrypt hash is what is stored)";
   };
 
   programs.zsh.enable = lib.mkDefault true;

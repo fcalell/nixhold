@@ -140,6 +140,24 @@ let
           example = "tailnet";
         };
 
+        operatorPassphrase = mkOption {
+          type = types.bool;
+          default = false;
+          description = ''
+            Marks the secret as the crypt(3) hash of the fleet
+            passphrase, the string that wraps the operator identity
+            at `layout.ageIdentityWrapped`. `nixhold secret edit`
+            prompts for the string and writes `mkpasswd -m yescrypt
+            -s` of it, on the mint and on every edit (a hash has no
+            editor), and re-wraps the identity with the same string
+            on a fleet that commits one; `nixhold operator check`
+            verifies the hash against the string. Mutually exclusive
+            with `generator` and `template`: the CLI owns the
+            content. Set by the NixOS identity module on `password`,
+            never by an operator.
+          '';
+        };
+
         scope = mkOption {
           type = types.enum [
             "host"
@@ -521,6 +539,14 @@ in
               lib.attrNames (lib.filterAttrs (_: n: n.type == "tailscale") config.nixhold.fleet.network)
             )
           }).
+        '';
+      }
+      {
+        assertion = !s.operatorPassphrase || (s.generator == null && s.template == null);
+        message = ''
+          nixhold.secrets.${name}: operatorPassphrase makes the CLI
+          the writer of the content; it cannot also declare a
+          generator or a template.
         '';
       }
       {
