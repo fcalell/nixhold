@@ -13,6 +13,7 @@
 # Everything here is `mkDefault`: a host overrides the one option
 # rather than opting out of the profile.
 {
+  config,
   inputs,
   lib,
   pkgs,
@@ -45,6 +46,12 @@
   # entry the GUI can drive. The identity module adds the operator to
   # the `networkmanager` group whenever this is on.
   networking.networkmanager.enable = lib.mkDefault true;
+
+  # NetworkManager is the seat's one DHCP client. nixpkgs' facter
+  # module marks every NIC in the report `useDHCP`, which starts
+  # dhcpcd beside it: two clients on one link, colliding on DHCPv6,
+  # and multi-user.target held until dhcpcd has its own lease.
+  hardware.facter.detected.dhcp.enable = lib.mkDefault (!config.networking.networkmanager.enable);
 
   # A desktop is attended, so firmware updates are worth having (the
   # server profile turns fwupd off for the opposite reason).
