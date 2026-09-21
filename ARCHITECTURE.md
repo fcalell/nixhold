@@ -487,6 +487,15 @@ A fleet's checks are its own: the framework renders the unit and
 reads its state, the script is the fleet's assertion about its
 services.
 
+**A check reads a log by invocation, never by boot.** The hardening
+set's `ProcSubset = "pid"` hides `/proc/sys/kernel/random/boot_id`,
+so `journalctl -b` under it dies of `Failed to get boot ID` and the
+check fails on evidence it never read. What a check names instead is
+the run of the service it asserts about — `journalctl
+_SYSTEMD_INVOCATION_ID="$(systemctl show -P InvocationID
+<unit>.service)"` — which needs no boot ID and reads that run alone
+rather than every run since boot.
+
 **The closure over the network.** A thing that can be a store path
 is one. A binary fetched at activation time is the wrong answer
 when a fixed-output fetch of the same release exists: then it
