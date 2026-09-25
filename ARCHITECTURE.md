@@ -763,7 +763,8 @@ authored nor imported by the operator:
   renders the one shipped layout from it into `disko.devices`:
   whole disk, GPT, 1G ESP mounted `umask=0077` (kernels and the
   loader's random seed are not for other local accounts) + ext4
-  root, no encryption. The disko module is in the NixOS baseline; a
+  root, encrypted when the host sets `nixhold.hardware.encrypt`
+  (below). The disko module is in the NixOS baseline; a
   host with `disk = null` and no `disko.devices` of its own is an
   install-time error, never a placeholder. What the shape implies is set alongside it
   (`mkDefault`): systemd-boot with EFI variables, and zram swap,
@@ -772,10 +773,30 @@ authored nor imported by the operator:
   to `<layout.hostsDir>/<host>/facter.json`, a computed subpath like
   every layout default; install writes it there.
 
-Custom layouts (LUKS, mirrors, sizes, a second OS on the same
-disk) are a `disko.devices` declaration in the host's own module
-with `disk` left null; install then skips the picker and formats
-what the declaration names. There is no file to copy into place.
+**Disk encryption is one switch on the shipped layout.**
+`nixhold.hardware.encrypt = true` in a host's module puts the root
+partition inside LUKS2 (`/dev/mapper/root`, discards allowed so the
+SSD keeps its TRIM); the ESP stays plain, since the firmware reads
+it. The disk still comes from the picker, so an encrypting host
+costs the operator no device path. The key is the fleet passphrase
+("One passphrase"), typed at the console on every boot; a machine
+that leaves the house is the case it serves, since a stolen
+unencrypted disk hands over `/etc/nixhold/fleet.key` and with it
+every secret in the fleet. `host install` holds the string from one
+prompt and proves it against the host's `operatorPassphrase` hash
+before disko runs, so a typo stops the install with nothing erased;
+where the run has not opened the wrap yet, the held string opens it
+too, so the wrap costs no second prompt. The string reaches the installer as
+a 0400 file under `/run` (RAM), is the layout's `passwordFile` for
+the format, and is removed the moment disko returns. The switch
+shapes the shipped layout only: on a guest, or on a host with
+`disk` null, it is an eval error, and a custom layout declares its
+own `luks` content.
+
+Custom layouts (mirrors, sizes, a second OS on the same disk) are a
+`disko.devices` declaration in the host's own module with `disk`
+left null; install then skips the picker and formats what the
+declaration names. There is no file to copy into place.
 
 **A second OS on its own disk is inside the shape.** The framework
 formats only the declared disk and never touches a sibling drive;
@@ -1519,6 +1540,15 @@ the terminal at unwrap, and the plugin is used only where the
 string is already in hand. A token-only fleet has no wrap to keep
 in step, and its `password` is the same hash of a string typed
 once.
+
+An encrypting host's disk ("Disk encryption is one switch on the
+shipped layout") is a third artifact of the string, and the one no
+verb can write from the operator's seat: its LUKS key slot lives on
+the machine and is set at install. `secret edit password` ends by
+naming every host with `nixhold.hardware.encrypt` and the
+`cryptsetup luksChangeKey <root partition>` that moves its slot,
+run there with the old string and the new; until it runs, that
+disk still opens with the old one.
 
 The cost is stated rather than discovered: every host already holds
 `/etc/nixhold/fleet.key` root-readable, so sudo on any host already
@@ -3154,8 +3184,14 @@ Install & deploy:
   the instantiate-and-copy shape above. The fleet ISO is the
   target, and the install's own phases run there over ssh; a kexec
   image of that ISO is on the ROADMAP for the first VPS.
-- **LUKS / dropbear-initrd** — threat model doesn't justify it;
-  power users declare `disko.devices` themselves.
+- **dropbear-initrd** (unlocking an encrypted disk over ssh at
+  boot) — an encrypting host is a machine someone sits at; a
+  server that reboots unattended is not encrypted, so nothing
+  waits at the initrd for a remote passphrase.
+- **A separate disk passphrase** — a second string to keep safe
+  and to type, for no reach the fleet passphrase does not already
+  have: whoever holds it opens the fleet key, which is what the
+  disk protects.
 - **Sub-disk install choices in the wizard** (dual-boot /
   install-into-free-space / root-size prompt) — disko formats the
   whole declared disk; adopting

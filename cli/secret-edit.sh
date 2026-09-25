@@ -492,6 +492,27 @@ nh_secret_passphrase_remint() {
   [ -z "$wrapped" ] || paths+=("$wrapped")
   nh_commit_paths "$(nh_fleet_root)" "secrets($host): update $name" "${paths[@]}"
   nh_info "next: nixhold deploy <host>, for every host that declares $name — the hash is live on each of them"
+  nh_secret_passphrase_disks
+}
+
+# nh_secret_passphrase_disks — every host whose disk is formatted under
+# the fleet passphrase (`nixhold.hardware.encrypt`), with the command
+# that moves its LUKS key slot to the new string. The slot lives on
+# the machine, so no verb writes it from here (ARCHITECTURE "One
+# passphrase"); a host that does not evaluate is named, not skipped.
+nh_secret_passphrase_disks() {
+  local h enc dev
+  while IFS= read -r h; do
+    [ -n "$h" ] || continue
+    [ "$(nh_host_platform "$h" 2>/dev/null)" = "nixos" ] || continue
+    enc="$(nh_host_eval "$h" nixos nixhold.hardware.encrypt 2>/dev/null)" || {
+      nh_warn "$h does not evaluate — if its disk is encrypted, its key slot still takes the old passphrase"
+      continue
+    }
+    [ "$enc" = "true" ] || continue
+    dev="$(nh_host_eval "$h" nixos disko.devices.disk.main.content.partitions.root.device | jq -r '.')" || dev="<root partition>"
+    nh_info "$h's disk still opens with the old passphrase: on $h, run 'sudo cryptsetup luksChangeKey $dev' (old string, then the new one)"
+  done < <(nh_hosts)
 }
 
 # nh_missing_secrets <host> <platform> [required-only] — the declared

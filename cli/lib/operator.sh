@@ -103,7 +103,7 @@ nh_passphrase_file() {
     nh_err "the fleet passphrase is typed on a terminal, and this run has none"
     return 1
   fi
-  first="$(nh_prompt_password "fleet passphrase (wraps the operator identity; the console and sudo password of the NixOS hosts)")" || return 1
+  first="$(nh_prompt_password "fleet passphrase (wraps the operator identity; the console and sudo password of the NixOS hosts, and the key of their encrypted disks)")" || return 1
   if [ -z "$first" ]; then
     nh_err "an empty passphrase — nothing was written"
     return 1

@@ -6,7 +6,10 @@
 #   - the install disk, `nixhold.fleet.hosts.<host>.disk` — a
 #     /dev/disk/by-id path the disk picker writes into the roster. The
 #     one shipped layout is rendered from it below: whole disk, GPT,
-#     1G ESP mounted umask=0077 + ext4 root, no encryption. What the
+#     1G ESP mounted umask=0077 + ext4 root, inside LUKS2 when
+#     `nixhold.hardware.encrypt` is set (the key is the fleet
+#     passphrase, which `host install` proves and places at the
+#     layout's `passwordFile` for the format). What the
 #     shape implies (systemd-boot with EFI variables, zram swap — the
 #     layout has no swap partition) is set alongside it at mkDefault. A host that
 #     wants anything else declares `disko.devices` in its own module
@@ -43,9 +46,27 @@ let
   disk = if fleet.derived.self == null || isGuest then null else fleet.derived.self.disk;
   declared = cfg.facterReport != null;
   present = declared && builtins.pathExists cfg.facterReport;
+  rootFs = {
+    type = "filesystem";
+    format = "ext4";
+    mountpoint = "/";
+  };
 in
 {
   imports = [ inputs.nixhold.inputs.disko.nixosModules.disko ];
+
+  options.nixhold.hardware.encrypt = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = ''
+      Put the shipped layout's root partition inside LUKS2, unlocked
+      at the console on every boot with the fleet passphrase (the
+      string `operatorPassphrase` hashes). `nixhold host install`
+      proves the string against that hash before anything is erased.
+      Shapes the shipped layout only: a guest or a host with its own
+      `disko.devices` cannot set it.
+    '';
+  };
 
   options.nixhold.hardware.facterReport = lib.mkOption {
     type = lib.types.nullOr lib.types.path;
@@ -106,11 +127,21 @@ in
             };
             root = {
               size = "100%";
-              content = {
-                type = "filesystem";
-                format = "ext4";
-                mountpoint = "/";
-              };
+              content =
+                if cfg.encrypt then
+                  {
+                    type = "luks";
+                    name = "root";
+                    # Read by disko at the format only, never by the
+                    # booted system: `host install` writes the proven
+                    # fleet passphrase here on the installer's /run and
+                    # removes it when disko returns.
+                    passwordFile = "/run/nixhold/disk-passphrase";
+                    settings.allowDiscards = true;
+                    content = rootFs;
+                  }
+                else
+                  rootFs;
             };
           };
         };
@@ -118,6 +149,18 @@ in
       boot.loader.systemd-boot.enable = lib.mkDefault true;
       boot.loader.efi.canTouchEfiVariables = lib.mkDefault true;
       zramSwap.enable = lib.mkDefault true;
+    })
+    (lib.mkIf (cfg.encrypt && disk == null) {
+      assertions = [
+        {
+          assertion = false;
+          message = ''
+            nixhold.hardware.encrypt shapes the shipped layout, which this host
+            does not use: a guest has no disk, and a host with its own
+            `disko.devices` declares its `luks` content there.
+          '';
+        }
+      ];
     })
   ];
 }

@@ -45,13 +45,28 @@
   # no report to point at: opt out of the facter guard.
   nixhold.hardware.facterReport = null;
 
+  # The seat is where encryption is used: the shipped layout's root in
+  # LUKS, unlocked by the initrd.
+  nixhold.hardware.encrypt = true;
+
   assertions =
     let
       guest = config.containers.fixture-guest;
       unit = config.systemd.services."container@fixture-guest";
       derived = config.nixhold.fleet.derived.guests.fixture-guest;
+      root = config.disko.devices.disk.main.content.partitions.root;
     in
     [
+      {
+        assertion =
+          root.content.type == "luks"
+          && root.content.passwordFile == "/run/nixhold/disk-passphrase"
+          && root.content.content.mountpoint == "/"
+          && config.boot.initrd.luks.devices.root.device == root.device
+          && config.boot.initrd.luks.devices.root.allowDiscards
+          && config.fileSystems."/".device == "/dev/mapper/root";
+        message = "fixture-desktop: nixhold.hardware.encrypt does not put the shipped layout's root in LUKS, unlocked by the initrd";
+      }
       {
         # The container IS the guest's own eval: the same store path
         # `nixosConfigurations.fixture-guest` exports, one system built

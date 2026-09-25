@@ -579,6 +579,59 @@ nh_install_stage_tree() {
   fi
 }
 
+# nh_install_place_file <remote> <src> <dest> — <src> onto the
+# installer at <dest>, root-owned and 0400, the same stream-to-a-file
+# shape as nh_install_stage_tree.
+nh_install_place_file() {
+  local remote="$1" src="$2" dest="$3"
+  if [ -z "$remote" ]; then
+    nh_sudo install -D -m 0400 "$src" "$dest"
+  else
+    # shellcheck disable=SC2016 # runs on the TARGET's shell
+    nh_ssh_sudo "$remote" --installer -- '
+      t="$(mktemp)" || exit 1
+      cat >"$t" || exit 1
+      nh_rsudo install -D -m 0400 "$t" '"'$dest'"'
+      rc=$?
+      rm -f "$t"
+      exit $rc' <"$src"
+  fi
+}
+
+# nh_install_disk_passphrase <name> -> path of the held fleet
+# passphrase, proved against <name>'s `operatorPassphrase` hash: the
+# string an encrypting host's disk is formatted under (ARCHITECTURE
+# "Disk encryption is one switch on the shipped layout"). On a fleet
+# that commits a wrap, the held string opens it first, which fills the
+# identity memo every later decrypt in this run reads.
+nh_install_disk_passphrase() {
+  local name="$1" pf json line sdir target d
+  pf="$(nh_passphrase_file)" || return 1
+  if nh_age_wrapped_identity >/dev/null 2>&1; then
+    nh_passphrase_identity_file >/dev/null || return 1
+  fi
+  json="$(nh_host_secrets "$name" nixos)" || return 1
+  line="$(printf '%s' "$json" | jq -r '
+    [ to_entries[] | select(.value.operatorPassphrase == true)
+      | [ .key, (.value.scope // "host") ] | @tsv ] | first // empty')"
+  if [ -z "$line" ]; then
+    nh_err "$name declares no operatorPassphrase secret to prove the disk passphrase against"
+    return 1
+  fi
+  sdir="$(nh_worktree_secrets_dir)" || return 1
+  target="$(nh_secret_file "$sdir" "$name" "${line%%$'\t'*}" "${line#*$'\t'}")"
+  d="$(nh_tmpdir disk-passphrase)" || return 1
+  nh_age_decrypt "$target" "$d/hash" || return 1
+  if ! nh_passphrase_verify "$d/hash"; then
+    rm -f "$d/hash"
+    nh_err "that is not the fleet passphrase: it does not hash to $target"
+    return 1
+  fi
+  rm -f "$d/hash"
+  nh_ok "the fleet passphrase is proved; $name's disk is formatted under it"
+  printf '%s' "$pf"
+}
+
 # nh_install_phases <name> <root> <remote> <facter> <carry> <hosts-file>
 #                   <minted…> — the one phase sequence, in place
 # (<remote> empty: the installer ISO) or over ssh to a booted
@@ -593,7 +646,7 @@ nh_install_stage_tree() {
 nh_install_phases() {
   local name="$1" root="$2" remote="$3" facter_target="$4" carry="$5" hosts_file="$6"
   shift 6
-  local minted=("$@") extra keys_dir sha flake out
+  local minted=("$@") extra keys_dir sha flake out encrypt pw_path="" pw_file="" rc
 
   # The tool belt the phases run on the target — baked into the ISO;
   # requiring it is what makes the sequence honest anywhere else.
@@ -609,6 +662,18 @@ nh_install_phases() {
     nh_err "secret provisioning failed — fix the secrets above, then re-run install (nothing has been erased)"
     return 1
   }
+
+  # An encrypting host's disk is formatted under the fleet passphrase,
+  # proved here and before the fleet key is opened below, so a wrapped
+  # identity opens with the same held string and nothing prompts twice.
+  encrypt="$(nh_host_eval "$name" nixos nixhold.hardware.encrypt)" || return 1
+  if [ "$encrypt" = "true" ]; then
+    pw_path="$(nh_host_eval "$name" nixos disko.devices.disk.main.content.partitions.root.content.passwordFile | jq -r '.')" || return 1
+    pw_file="$(nh_install_disk_passphrase "$name")" || {
+      nh_err "the disk passphrase is unproven (nothing has been erased)"
+      return 1
+    }
+  fi
 
   # What the machine needs before its first activation, staged into a
   # tree that lands in /mnt/etc after disko: the fleet key (agenix
@@ -653,8 +718,20 @@ nh_install_phases() {
     nh_install_clone_remote "$remote" "$root" "$sha" "$flake" || return 1
   fi
 
+  if [ -n "$pw_file" ]; then
+    nh_install_place_file "$remote" "$pw_file" "$pw_path" || {
+      nh_err "could not place the disk passphrase on the installer (nothing has been erased)"
+      return 1
+    }
+  fi
   nh_info "partitioning + mounting per $name's disko.devices"
-  nh_target_sudo_sh "$remote" "nh_rsudo disko --mode destroy,format,mount --yes-wipe-all-disks --flake '$flake#$name'" || {
+  rc=0
+  nh_target_sudo_sh "$remote" "nh_rsudo disko --mode destroy,format,mount --yes-wipe-all-disks --flake '$flake#$name'" || rc=$?
+  if [ -n "$pw_file" ]; then
+    nh_target_sudo_sh "$remote" "nh_rsudo rm -f '$pw_path'" ||
+      nh_warn "could not remove $pw_path from the installer; it lives in RAM and goes at the reboot"
+  fi
+  [ "$rc" -eq 0 ] || {
     nh_err "disko failed — nothing was installed"
     return 1
   }

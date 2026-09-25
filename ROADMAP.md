@@ -72,6 +72,7 @@ through):
 | Operator key recovery beyond the committed routes | use case surfaces | a Shamir split of the wrapped identity. The hardware-token half of this landed — see ARCHITECTURE "Operator routes" — and a second token is the cheap answer today |
 | `nixhold secret set <name> KEY=value…` | the first env-shaped secret edited for one line | `secret edit` opens `$EDITOR` on the whole file, which is the wrong shape for adding one variable to `env` or a repository's env — and impossible without a terminal. Non-interactive: decrypt, merge the given keys, re-encrypt. Stays opaque (principle: env files are `KEY=value` blobs, never declared in Nix) |
 | A separate private-secrets flake input | **decision** | it would need its own write root; today only the fleet's own source store path is re-rooted to the worktree, and a layout path into another input is a hard error |
+| TPM2 unlock for an encrypting host | **decision**: the dogfood fleet's laptop, once it is installed and unlocking by passphrase | `systemd-cryptenroll --tpm2-device=auto` bound to PCR 7 (Secure Boot state) adds a TPM slot beside the passphrase one, which stays the fallback. What it trades: the disk opens by itself in the machine, so the login screen, not the disk, is what a thief of the whole laptop meets |
 
 ---
 
