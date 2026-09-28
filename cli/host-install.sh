@@ -567,21 +567,28 @@ nh_install_carry() {
 
 # nh_install_stage_tree <remote> <dir> — <dir>'s tree (etc/ssh, the
 # host key; etc/nixhold, the fleet key) into /mnt, owned by root with
-# the modes staged here. Streamed as a tar: nh_rsudo pipes the
-# operator's password into sudo's own stdin, so the remote side writes
-# the stream to a file first (see nh_carry_install_remote).
+# the modes staged here. The archive holds <dir>'s entries, never `.`:
+# that is the 0700 scratch dir, and tar would stamp its mode on /mnt,
+# which nixos-install refuses unless it is world-readable.
+# `--no-overwrite-dir` leaves a directory already on the target as it
+# is; what the tree creates takes the staged mode, `-p` whoever
+# extracts it. Streamed
+# as a tar: nh_rsudo pipes the operator's password into sudo's own
+# stdin, so the remote side writes the stream to a file first (see
+# nh_carry_install_remote).
 nh_install_stage_tree() {
   local remote="$1" dir="$2" tarfile
   tarfile="$(nh_tmpdir stage)/tree.tar" || return 1
-  tar -C "$dir" -cf "$tarfile" . || return 1
+  find "$dir" -mindepth 1 -maxdepth 1 -printf '%P\0' |
+    tar -C "$dir" --null -T - -cf "$tarfile" || return 1
   if [ -z "$remote" ]; then
-    nh_sudo tar -C /mnt --no-same-owner -xf "$tarfile"
+    nh_sudo tar -C /mnt --no-same-owner --no-overwrite-dir -p -xf "$tarfile"
   else
     # shellcheck disable=SC2016 # runs on the TARGET's shell
     nh_ssh_sudo "$remote" --installer -- '
       t="$(mktemp)" || exit 1
       cat >"$t" || exit 1
-      nh_rsudo tar -C /mnt --no-same-owner -xf "$t"
+      nh_rsudo tar -C /mnt --no-same-owner --no-overwrite-dir -p -xf "$t"
       rc=$?
       rm -f "$t"
       exit $rc' <"$tarfile"
@@ -691,7 +698,7 @@ nh_install_phases() {
   # than after disko at the cost of an erased machine) and a fresh ssh
   # host key, whose pubkey this commits as keys/hosts/<name>.pub.
   extra="$(nh_tmpdir extra-files)" || return 1
-  mkdir -p "$extra/etc/ssh" || {
+  install -d -m 0755 "$extra/etc" "$extra/etc/ssh" || {
     nh_err "could not create the staging tree under $extra"
     return 1
   }

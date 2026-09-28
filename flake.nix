@@ -212,6 +212,12 @@
           clone-ssh = import ./checks/clone-ssh.nix {
             pkgs = nixpkgs.legacyPackages.${system};
           };
+
+          # The install's staging into /mnt, run against a stand-in:
+          # the keys keep their modes and the root keeps its own.
+          stage-tree = import ./checks/stage-tree.nix {
+            pkgs = nixpkgs.legacyPackages.${system};
+          };
         }
         // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
           vm-oneshots = import ./checks/vm/oneshots.nix { pkgs = nixpkgs.legacyPackages.${system}; };
