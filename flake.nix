@@ -206,6 +206,12 @@
           repositories-script = import ./checks/repositories-script.nix {
             pkgs = nixpkgs.legacyPackages.${system};
           };
+
+          # The clone key past git: the command a run exports for Nix's
+          # own fetch of a private input, and a remote installer's.
+          clone-ssh = import ./checks/clone-ssh.nix {
+            pkgs = nixpkgs.legacyPackages.${system};
+          };
         }
         // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
           vm-oneshots = import ./checks/vm/oneshots.nix { pkgs = nixpkgs.legacyPackages.${system}; };

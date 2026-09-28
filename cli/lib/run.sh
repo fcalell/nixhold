@@ -391,6 +391,42 @@ nh_sudo() {
   fi
 }
 
+# nh_clone_key_src — the clone key's ciphertext, when this run has one:
+# $NIXHOLD_CLONE_KEY_FILE, or the one the installer image bakes.
+nh_clone_key_src() {
+  local src="${NIXHOLD_CLONE_KEY_FILE:-}"
+  if [ -z "$src" ] && nh_installer_env && [ -f /etc/nixhold/keys/identity.age ]; then
+    src="/etc/nixhold/keys/identity.age"
+  fi
+  [ -n "$src" ] || return 1
+  printf '%s' "$src"
+}
+
+# nh_export_clone_ssh — GIT_SSH_COMMAND for the whole run, naming the
+# path nh_clone_key decrypts into, when the run has a clone key. Nix
+# fetches a private `git+ssh` flake input with its own git, and the
+# clone that decrypts the key runs in a `$(nh_fleet_root)` subshell,
+# so the command is exported up front rather than by nh_repo_git: from
+# the clone on, every evaluation and build in this process, a
+# subshell, or the pinned CLI the run is handed to reaches the forge
+# with the same key (ARCHITECTURE "The clone credential is the
+# `identity` key"). A command already set is kept: the pinned CLI
+# inherits its parent's, whose key stays in place while the child
+# runs, and an operator's own wins. A pinned CLI that inherits none
+# was handed the run by a CLI from before this export, so nothing
+# here would ever decrypt the key before its first evaluation: it
+# opens the key itself, up front, which is safe because the checkout
+# its operator route may read is already there.
+nh_export_clone_ssh() {
+  [ -z "${GIT_SSH_COMMAND:-}" ] || return 0
+  nh_clone_key_src >/dev/null || return 0
+  if [ -n "${NIXHOLD_REEXEC:-}" ]; then
+    nh_clone_key >/dev/null || return 1
+  fi
+  GIT_SSH_COMMAND="$(nh_clone_ssh_command "$(nh_scratch_root_path)/clone.key")"
+  export GIT_SSH_COMMAND
+}
+
 # nh_clone_key — plaintext path of the credential git clones and
 # pushes with, or nothing.
 #
@@ -409,12 +445,8 @@ nh_sudo() {
 # on the host's ssh config — on a fleet machine that names this same
 # key for the fleet repo's forge (modules/repositories/default.nix).
 nh_clone_key() {
-  local src="${NIXHOLD_CLONE_KEY_FILE:-}" root out
-  if [ -z "$src" ] && nh_installer_env; then
-    src="/etc/nixhold/keys/identity.age"
-    [ -f "$src" ] || src=""
-  fi
-  [ -n "$src" ] || return 1
+  local src root out
+  src="$(nh_clone_key_src)" || return 1
   if [ ! -f "$src" ]; then
     nh_err "no clone key at $src (from \$NIXHOLD_CLONE_KEY_FILE) — the installer image is incomplete"
     return 2
@@ -451,6 +483,15 @@ nh_clone_key() {
   printf '%s' "$out"
 }
 
+# nh_clone_ssh_command <key> — the ssh command git, and Nix's own git,
+# reach the forge with when the CLI holds the clone key. git re-splits
+# GIT_SSH_COMMAND through the shell, so the key path is quoted for it:
+# the scratch root lives under $XDG_RUNTIME_DIR or $TMPDIR, either of
+# which is the operator's and may contain spaces.
+nh_clone_ssh_command() {
+  printf 'ssh -i %q -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new' "$1"
+}
+
 # nh_repo_git <git-args…> — git against the fleet REMOTE (clone, push,
 # fetch, pull). Every network-facing git call goes through here so the
 # credential choice is made in exactly one place. Purely local git
@@ -460,16 +501,11 @@ nh_clone_key() {
 # plaintext lives in this process's scratch root, so a persisted
 # command would point at a path the next invocation has already wiped.
 nh_repo_git() {
-  local key="" rc=0 sshcmd
+  local key="" rc=0
   key="$(nh_clone_key)" || rc=$?
   case "$rc" in
     0)
-      # git re-splits GIT_SSH_COMMAND through the shell, so the key path
-      # is quoted for it: the scratch root lives under
-      # $XDG_RUNTIME_DIR or $TMPDIR, either of which is the operator's
-      # and may contain spaces.
-      printf -v sshcmd 'ssh -i %q -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new' "$key"
-      GIT_SSH_COMMAND="$sshcmd" git "$@"
+      GIT_SSH_COMMAND="$(nh_clone_ssh_command "$key")" git "$@"
       return $?
       ;;
     1) git "$@" ;;

@@ -1430,11 +1430,21 @@ on the forge for auth and signing: `secrets/identity.age`. The ISO
 bakes that ciphertext and exports `$NIXHOLD_CLONE_KEY_FILE`. Every
 network-facing git call (clone, pull, push) goes through one
 helper: with the variable set it opens the ciphertext over the
-operator route into the process scratch root and runs git with it,
-otherwise it runs git on the host's own ssh config — which, on
-every fleet host, names the same key for the fleet repo's forge
-(see Repositories: the `layout.repoUrl` block). The decrypted
-key is never persisted into the clone. This is what keeps the
+operator route into the process scratch root and exports
+`GIT_SSH_COMMAND` naming it, otherwise it runs git on the host's
+own ssh config — which, on every fleet host, names the same key
+for the fleet repo's forge (see Repositories: the
+`layout.repoUrl` block). The export is what reaches a private
+flake input: Nix fetches a `git+ssh` input with its own git, in
+this process or a child of it, so from the clone on every
+evaluation and build the CLI runs takes the same key, the pinned
+CLI it hands the run to included. A remote installer's disko and
+closure build run with the same command naming the copy the clone
+placed there. A private input is therefore one the `identity` key
+can read (an account key, or a deploy key on each private repo),
+on github.com, the one forge whose host keys the ISO pins; an
+input on another forge fails host-key verification on the
+installer. The decrypted key is never persisted into the clone. This is what keeps the
 passphrase route a *complete* seat — a passphrase, or a touch, and
 the repo is reachable — without a second ssh credential to mint,
 register, escrow and rotate.
@@ -2490,7 +2500,9 @@ ISO holds `identity.age`, not its plaintext, and the operator route
 that opens it is on the operator's seat. So the install ships the
 plaintext `identity` key into the installer's RAM (`/root/.ssh`, a
 tmpfs, the same boundary the ISO's own unwrapped identity lives in)
-and clones the fleet there at the same sha; every build on an
+and clones the fleet there at the same sha, and the disko and
+build that evaluate it there fetch a private input with the same
+key; every build on an
 installer is `<clone>#…`, a clean checkout at the pushed commit, so
 `self.rev` is the sha a running host would see. The ISO path is the
 same sequence with the clone the CLI already made, and a Mac's first

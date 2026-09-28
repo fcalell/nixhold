@@ -103,6 +103,7 @@ main() {
   # checkout replays exactly this on the CLI that checkout pins
   # (nh_reexec_at_fleet_pin).
   _NH_ARGV=("$@")
+  nh_export_clone_ssh || exit 1
   if [ "$#" -eq 0 ]; then
     usage
     exit 0

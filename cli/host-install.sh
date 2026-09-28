@@ -525,6 +525,15 @@ nh_identity_key_file() {
   return 1
 }
 
+# Where a remote installer holds the clone key, in its RAM, and the
+# GIT_SSH_COMMAND that names it, quoted for the installer's shell:
+# the clone uses it, and so do the disko and closure build that fetch
+# a private flake input there.
+_NH_INSTALLER_KEY=/root/.ssh/nixhold-identity
+nh_installer_ssh_command() {
+  printf '%q' "$(nh_clone_ssh_command "$_NH_INSTALLER_KEY")"
+}
+
 # nh_install_clone_remote <remote> <root> <sha> <dest> — the fleet on
 # the installer at <sha>: the identity key into the installer's RAM
 # (/root/.ssh on the ISO is a tmpfs, the same boundary the ISO's own
@@ -536,11 +545,11 @@ nh_install_clone_remote() {
   repo="$(nh_fleet_repo)" || return 1
   branch="$(nh_fleet_branch "$root")" || return 1
   nh_info "cloning the fleet onto the installer at ${sha:0:12}"
-  nh_ssh "$remote" --installer -- 'umask 077; mkdir -p /root/.ssh && cat >/root/.ssh/nixhold-identity' <"$key" || {
+  nh_ssh "$remote" --installer -- "umask 077; mkdir -p /root/.ssh && cat >'$_NH_INSTALLER_KEY'" <"$key" || {
     nh_err "could not place the identity key on the installer"
     return 1
   }
-  nh_ssh "$remote" --installer -- "rm -rf '$dest' && GIT_SSH_COMMAND='ssh -i /root/.ssh/nixhold-identity -o IdentitiesOnly=yes' git clone -q --branch '$branch' 'git@github.com:$repo.git' '$dest' && git -C '$dest' checkout -q '$sha'" </dev/null || {
+  nh_ssh "$remote" --installer -- "rm -rf '$dest' && GIT_SSH_COMMAND=$(nh_installer_ssh_command) git clone -q --branch '$branch' 'git@github.com:$repo.git' '$dest' && git -C '$dest' checkout -q '$sha'" </dev/null || {
     nh_err "the installer could not clone the fleet — it needs the forge reachable and its host key pinned (the fleet ISO pins github.com)"
     return 1
   }
@@ -646,7 +655,7 @@ nh_install_disk_passphrase() {
 nh_install_phases() {
   local name="$1" root="$2" remote="$3" facter_target="$4" carry="$5" hosts_file="$6"
   shift 6
-  local minted=("$@") extra keys_dir sha flake out encrypt pw_path="" pw_file="" rc
+  local minted=("$@") extra keys_dir sha flake fetch out encrypt pw_path="" pw_file="" rc
 
   # The tool belt the phases run on the target — baked into the ISO;
   # requiring it is what makes the sequence honest anywhere else.
@@ -711,11 +720,18 @@ nh_install_phases() {
     "${minted[@]+"${minted[@]}"}"
   sha="$(nh_fleet_rev "$root")" || return 1
   nh_fleet_push "$root" || return 1
+  # What the disko and closure build that evaluate the fleet fetch a
+  # private flake input with: the installer's copy of the clone key
+  # there, this run's export here. An argument to `env` rather than
+  # the inherited environment, because sudo resets it.
   if [ -z "$remote" ]; then
     flake="$root"
+    fetch=""
+    [ -z "${GIT_SSH_COMMAND:-}" ] || printf -v fetch 'GIT_SSH_COMMAND=%q' "$GIT_SSH_COMMAND"
   else
     flake="/root/nixhold-fleet"
     nh_install_clone_remote "$remote" "$root" "$sha" "$flake" || return 1
+    fetch="GIT_SSH_COMMAND=$(nh_installer_ssh_command)"
   fi
 
   if [ -n "$pw_file" ]; then
@@ -726,7 +742,7 @@ nh_install_phases() {
   fi
   nh_info "partitioning + mounting per $name's disko.devices"
   rc=0
-  nh_target_sudo_sh "$remote" "nh_rsudo disko --mode destroy,format,mount --yes-wipe-all-disks --flake '$flake#$name'" || rc=$?
+  nh_target_sudo_sh "$remote" "nh_rsudo env $fetch disko --mode destroy,format,mount --yes-wipe-all-disks --flake '$flake#$name'" || rc=$?
   if [ -n "$pw_file" ]; then
     nh_target_sudo_sh "$remote" "nh_rsudo rm -f '$pw_path'" ||
       nh_warn "could not remove $pw_path from the installer; it lives in RAM and goes at the reboot"
@@ -766,7 +782,7 @@ nh_install_phases() {
   # it as-is and copies nothing.
   nh_info "building $name's system closure at ${sha:0:12} into $name's own store"
   out="$(nh_target_sudo_sh "$remote" "nh_rsudo install -d -m 1777 /mnt/tmp || exit 1
-nh_rsudo env TMPDIR=/mnt/tmp nix build --no-link --print-out-paths --store /mnt --extra-substituters 'auto?trusted=1' '$flake#nixosConfigurations.$name.config.system.build.toplevel'")" || {
+nh_rsudo env $fetch TMPDIR=/mnt/tmp nix build --no-link --print-out-paths --store /mnt --extra-substituters 'auto?trusted=1' '$flake#nixosConfigurations.$name.config.system.build.toplevel'")" || {
     nh_err "closure build failed"
     return 1
   }
@@ -818,6 +834,7 @@ nh_bootstrap_fleet() {
   fi
   NIXHOLD_CLONE_KEY_FILE="$keys/identity.age"
   export NIXHOLD_CLONE_KEY_FILE
+  nh_export_clone_ssh || return 1
   # A token-only fleet ships no wrapped identity: the token is the
   # seat, and there is no checkout to read its recipient from yet, so
   # the route falls to whatever is plugged in.
