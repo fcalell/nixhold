@@ -45,6 +45,18 @@ let
       (
         peerName: addr:
         {
+          # ssh matches a block against the destination as typed, and
+          # the CLI types the address (nh_deploy_addr), not the fleet
+          # name. So the block answers to every name the peer's
+          # known_hosts pin does (modules/fleet/known-hosts.nix); the
+          # attribute stays the fleet name, a stable key for ordering.
+          header = "Host ${
+            lib.concatStringsSep " " (
+              lib.unique (
+                [ peerName ] ++ lib.filter (a: a != null) (lib.attrValues fleet.derived.address.${peerName})
+              )
+            )
+          }";
           HostName = addr;
           User = username;
         }

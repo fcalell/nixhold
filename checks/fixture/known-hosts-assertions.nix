@@ -76,9 +76,20 @@ in
       message = "fixture: StrictHostKeyChecking on the fleet-peer ssh blocks does not match which peers are pinned";
     }
   ]
-  ++ lib.optional (peerBlocks ? fixture-server) {
-    # Only fixture-mac reaches this: the one host with a pinned peer.
-    assertion = peerBlocks.fixture-server.data.StrictHostKeyChecking or null == "yes";
-    message = "fixture: ssh block for the pinned peer fixture-server must set StrictHostKeyChecking = \"yes\"";
-  };
+  ++ lib.optionals (peerBlocks ? fixture-server) [
+    {
+      # Only fixture-mac reaches this: the one host with a pinned peer.
+      assertion = peerBlocks.fixture-server.data.StrictHostKeyChecking or null == "yes";
+      message = "fixture: ssh block for the pinned peer fixture-server must set StrictHostKeyChecking = \"yes\"";
+    }
+    {
+      # The CLI connects by address (nh_deploy_addr), and ssh matches a
+      # block against the name as typed: a block that answers to the
+      # fleet name alone never lends the CLI its IdentityFile.
+      assertion =
+        sorted (lib.tail (lib.splitString " " peerBlocks.fixture-server.data.header))
+        == sorted (knownHosts.fixture-server.hostNames);
+      message = "fixture: the fixture-server ssh block answers to ${peerBlocks.fixture-server.data.header}, not every name its pin covers";
+    }
+  ];
 }

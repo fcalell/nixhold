@@ -34,9 +34,9 @@ let
   githubKnownHosts = import ../../lib/github-known-hosts.nix;
 
   # Names this host answers to: every address it is reachable at on
-  # any fleet network, plus the bare fleet key (which is both the
-  # MagicDNS short name and what the ssh client matchBlock in
-  # modules/home/common.nix is keyed by).
+  # any fleet network, plus the bare fleet key (the MagicDNS short
+  # name). The ssh client matchBlock in modules/home/common.nix
+  # answers to the same list.
   hostNamesOf =
     host:
     lib.unique ([ host ] ++ lib.filter (a: a != null) (lib.attrValues fleet.derived.address.${host}));
