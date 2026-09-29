@@ -9,8 +9,9 @@
 #     activate (every NixOS host, every Android host; a darwin host
 #     only when this Mac is it). Naming is the confirmation: no
 #     picker, no prompt.
-#   - The checkout is refused dirty and HEAD is pushed when the forge
-#     is behind it, once, before the first host.
+#   - The checkout meets the forge once, before the roster is read
+#     (nh_fleet_sync: refused dirty or diverged, fast-forwarded when
+#     behind), and HEAD is pushed when the forge is behind it.
 #   - NixOS: `nix build` of the toplevel as the operator, locally or
 #     over nh_ssh, then the profile set and switch-to-configuration
 #     as root, locally or over nh_ssh_sudo (one password per process).
@@ -66,7 +67,12 @@ EOF
   done
   case "$mode" in switch | boot | test) ;; *) nh_err "unknown mode: $mode"; return 1 ;; esac
   nh_require_cmd nix
-  nh_fleet_root >/dev/null || return 1
+  # The checkout meets the forge before the roster is read and before
+  # anything is prompted for or written: a host builds the fleet at a
+  # commit, the newest one pushed from anywhere.
+  local root
+  root="$(nh_fleet_root)" || return 1
+  nh_fleet_sync "$root" || return 1
 
   if [ "$all" -eq 1 ]; then
     if [ "${#names[@]}" -gt 0 ]; then
@@ -120,12 +126,11 @@ EOF
     done
   fi
 
-  # A dirty checkout is refused before anything is prompted for or
-  # written: a host builds the fleet at a commit. The reference each
-  # host builds is taken right before its build (nh_deploy_host),
-  # since the secret walk and a guest's minted key commit on the way.
+  # The plan line. The reference each host builds is taken right
+  # before its build (nh_deploy_host), since the secret walk and a
+  # guest's minted key commit on the way.
   local sha
-  sha="$(nh_fleet_rev "$(nh_fleet_root)")" || return 1
+  sha="$(nh_fleet_rev "$root")" || return 1
   nh_info "deploy: ${names[*]} @ ${sha:0:12} — mode=$mode$([ "$dry_run" -eq 1 ] && printf ' dry-run')"
 
   local name failed=()

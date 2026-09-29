@@ -1195,6 +1195,10 @@ EOF
   # Before any prompt and any write: if this run cloned the checkout,
   # the CLI that finishes the install is the one that checkout pins.
   nh_reexec_at_fleet_pin "$root"
+  # Then the checkout meets the forge, before the roster is read and
+  # before the install's own commit, which then lands on the forge's
+  # tip and pushes as a fast-forward.
+  nh_fleet_sync "$root" || return 1
 
   # Host selection.
   if [ -z "$name" ]; then

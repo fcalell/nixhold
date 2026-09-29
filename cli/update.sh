@@ -2,7 +2,7 @@
 #
 # The input-refresh workflow (lifecycle L6), runnable from any
 # directory — nh_fleet_root resolves the checkout.
-#   1. git pull --ff-only in the fleet root
+#   1. the checkout meets the forge (nh_fleet_sync), dirty allowed
 #   2. the pins that have no file yet, written (ARCHITECTURE "Pins")
 #   3. the baseline: every host evaluates as the checkout stands
 #   4. nix flake update (flake.lock)
@@ -342,9 +342,10 @@ nh_update_report() {
   return "$reboot"
 }
 
-# git pull --ff-only in the fleet root. A dirty tree is fine — the
-# pull only touches tracked state the operator hasn't edited, and
-# refusing would block the common "mid-edit, want fresh inputs" case.
+# The checkout meets the forge (nh_fleet_sync) on a tree allowed to be
+# dirty: a fast-forward only touches files the operator hasn't edited,
+# and refusing would block the common "mid-edit, want fresh inputs"
+# case.
 # No upstream (or no git at all) is legitimate for a local-only
 # fleet: warn and let the flake update proceed.
 _NH_UPDATE_HEAD_BEFORE=""
@@ -360,16 +361,7 @@ nh_update_pull() {
     nh_warn "no upstream for the current branch — skipping pull"
     return 0
   fi
-  # --no-rebase is load-bearing: with pull.rebase=true in the
-  # operator's gitconfig, even --ff-only goes through the rebase
-  # machinery, which refuses outright on unstaged changes.
-  # nh_repo_git: the one place that decides between the operator's own
-  # SSH credentials and the installer's baked deploy key.
-  nh_info "git pull --ff-only ($root)"
-  if ! nh_repo_git -C "$root" pull --ff-only --no-rebase >&2; then
-    nh_err "git pull --ff-only failed — reconcile the checkout (rebase/merge or stash), then re-run"
-    return 1
-  fi
+  nh_fleet_sync "$root" --allow-dirty
 }
 
 # nh_update_lock_diff <before> <after> — "<input>: <old> → <new>" per

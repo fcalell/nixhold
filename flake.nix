@@ -218,6 +218,12 @@
           stage-tree = import ./checks/stage-tree.nix {
             pkgs = nixpkgs.legacyPackages.${system};
           };
+
+          # The checkout meeting the forge before a verb commits or
+          # builds: fast-forward, divergence, dirt, an unreachable forge.
+          fleet-sync = import ./checks/fleet-sync.nix {
+            pkgs = nixpkgs.legacyPackages.${system};
+          };
         }
         // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
           vm-oneshots = import ./checks/vm/oneshots.nix { pkgs = nixpkgs.legacyPackages.${system}; };

@@ -2464,10 +2464,10 @@ reference every activation evaluates is the fleet repo at the
 forge, at one commit:
 `git+ssh://git@github.com/<layout.repoUrl>?ref=refs/heads/<branch>&rev=<sha>`,
 where the sha is the operator checkout's HEAD. Before a verb touches
-a target it refuses a dirty checkout, pushes HEAD when the forge is
-behind it, and prints its plan line `<host> @ <sha>`, so what the
-target builds is what the forge holds and what the operator can
-check out again. `system.configurationRevision` carries the same
+a target it syncs the checkout with the forge (below), pushes HEAD
+when the forge is behind it, and prints its plan line `<host> @
+<sha>`, so what the target builds is what the forge holds and what
+the operator can check out again. `system.configurationRevision` carries the same
 sha into the generation, and `nixhold status <host>` reads it back
 (`nixos-version --configuration-revision`; `darwin-version` on a
 Mac). Nothing but commands crosses the operator's ssh connection:
@@ -2476,6 +2476,20 @@ key (every host's baseline renders the `github.com` block on it,
 see "Repositories & env"), fetches its inputs by the lock from
 their forges, substitutes from the caches, and evaluates with its
 own eval cache.
+
+**The checkout meets the forge before a verb commits or builds.**
+Every seat holds its own clone, and nothing moves one when another
+pushes, so a verb that trusted its HEAD would build a checkout that
+fell behind, and its push check, read off a tracking ref nobody
+fetched, would agree. `deploy` and `host install` sync once, before
+they read the roster: a dirty checkout is refused, the branch is
+fetched, HEAD fast-forwards when the forge is ahead, and a checkout
+that has diverged from the forge is refused with the commits on
+each side named, never rebased or merged by the verb. An unreachable
+forge stops the verb on every platform. The verb's own commits then
+land on the forge's tip and push as a fast-forward. `update` runs
+the same sync on a tree it lets be dirty, since a fast-forward only
+touches files the operator has not edited and git refuses the rest.
 
 **Build as the operator, activate as root** — one shape on every
 platform, local or remote. `nix build --no-link --print-out-paths
@@ -2561,8 +2575,9 @@ the intent, and the verb prints its plan line, `<host> @ <sha>`,
 before the first host. Several deploy in order, continuing past a
 failure and reporting at the end.
 
-Before the first target: the checkout is refused dirty and HEAD is
-pushed when the forge is behind it. Per host: required secrets with
+Before the roster is read: the checkout meets the forge (see "Where
+a host is built"). Before the first target: HEAD is pushed when the
+forge is behind it. Per host: required secrets with
 no ciphertext are provisioned before the build; then the target's
 fleet key is ensured — read `/etc/nixhold/fleet.pub` over plain ssh
 (it is `0444`), and when it is missing or differs from
@@ -2590,8 +2605,8 @@ it needs the forge and the caches reachable.
 
 ### `nixhold update`
 
-`git pull --ff-only` in the fleet root (skipped without an
-upstream), the pins that have no file yet (see "Pins"), a baseline
+The checkout meets the forge, dirty allowed (see "Where a host is
+built"; skipped without an upstream), the pins that have no file yet (see "Pins"), a baseline
 eval of every host, `nix flake update`, every pin resolved against
 its `latest`, then what moved: inputs from the lock diff, `<input>:
 <old rev> → <new rev>`, and pins by manifest, `<pin>: <old> → <new>`.
