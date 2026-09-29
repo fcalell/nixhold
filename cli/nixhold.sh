@@ -46,6 +46,8 @@ export NIX_CONFIG
 . "$NIXHOLD_LIB_ROOT/lib/system.sh"
 # shellcheck source=lib/checkout.sh
 . "$NIXHOLD_LIB_ROOT/lib/checkout.sh"
+# shellcheck source=lib/table.sh
+. "$NIXHOLD_LIB_ROOT/lib/table.sh"
 
 # One process-wide exit path: wipes the scratch root (the fleet key,
 # freshly minted host keys, the clone key, unwrapped identities) and

@@ -3,9 +3,9 @@
 # Two views of the same declarations.
 #
 # No <host>: the fleet INVENTORY — one row per ciphertext, whoever
-# declares it:
+# declares it, in a section per category:
 #
-#   name  scope  hosts  status  category  description
+#   secret  scope  hosts  status  description
 #
 # `hosts` is the host the ciphertext belongs to (host scope) or the
 # hosts that declare it (fleet scope, "all" when that is the whole
@@ -114,27 +114,38 @@ nh_secret_list_inventory() {
 "
   done < <(nh_hosts)
 
-  printf '%-22s %-6s %-22s %-18s %-12s %s\n' SECRET SCOPE HOSTS STATUS CATEGORY DESCRIPTION
-  local name scope hosts req category desc target status found=0
-  while IFS=$'\t' read -r name scope hosts req category desc; do
-    [ -n "$name" ] || continue
-    found=1
-    target="$(nh_secret_file "$sdir" "${hosts%%,*}" "$name" "$scope")"
-    if [ -e "$target" ]; then
-      status="provisioned"
-    elif [ "$req" = "true" ]; then
-      status="missing (required)"
-    else
-      status="optional"
-    fi
-    # A fleet secret declared by every host is "all": naming a roster
-    # back to the operator who wrote it is noise.
-    if [ "$scope" = "fleet" ] && [ "$(printf '%s' "$hosts" | tr ',' '\n' | grep -c .)" = "$total" ]; then
-      hosts="all ($total)"
-    fi
-    printf '%-22s %-6s %-22s %-18s %-12s %s\n' "$name" "$scope" "$hosts" "$status" "$category" "$desc"
-  done < <(printf '%s' "$decls" | nh_secret_inventory_rows)
-  [ "$found" -eq 1 ] || printf '  no secret declared anywhere in the fleet\n'
+  local rows
+  rows="$(printf '%s' "$decls" | nh_secret_inventory_rows)"
+  if [ -z "$rows" ]; then
+    printf 'no secret declared anywhere in the fleet\n'
+  else
+    # One table, a section per category in the host view's order.
+    local category name scope hosts req cat desc target status
+    {
+      printf 'SECRET\tSCOPE\tHOSTS\tSTATUS\tDESCRIPTION\n'
+      for category in framework service repository operator; do
+        printf '%s\n' "$rows" | awk -F'\t' -v c="$category" '$5 == c { found = 1 } END { exit !found }' || continue
+        nh_table_section "$(nh_secret_category_label "$category")"
+        while IFS=$'\t' read -r name scope hosts req cat desc; do
+          [ "$cat" = "$category" ] || continue
+          target="$(nh_secret_file "$sdir" "${hosts%%,*}" "$name" "$scope")"
+          if [ -e "$target" ]; then
+            status="provisioned"
+          elif [ "$req" = "true" ]; then
+            status="missing (required)"
+          else
+            status="optional"
+          fi
+          # A fleet secret declared by every host is "all": naming a
+          # roster back to the operator who wrote it is noise.
+          if [ "$scope" = "fleet" ] && [ "$(printf '%s' "$hosts" | tr ',' '\n' | grep -c .)" = "$total" ]; then
+            hosts="all ($total)"
+          fi
+          printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$scope" "${hosts//,/, }" "$status" "$desc"
+        done <<<"$rows"
+      done
+    } | nh_table --color 4
+  fi
 
   echo
   nh_secret_list_keys || rc=1
@@ -179,22 +190,30 @@ nh_secret_inventory_rows() {
 # from the committed files only — nothing is decrypted, no token is
 # touched, no machine is contacted.
 nh_secret_list_keys() {
+  local rows rc=0
+  rows="$(nh_secret_list_keys_rows)" || rc=1
+  { printf 'KEYS\tSTATE\n'; printf '%s\n' "$rows"; } | nh_table
+  return "$rc"
+}
+
+# nh_secret_list_keys_rows — the keys table's rows, "<key>\t<state>";
+# non-zero when a key the fleet needs is missing or unusable.
+nh_secret_list_keys_rows() {
   local keys_dir fleet_pub fleet_key line n rc=0 host
   keys_dir="$(nh_worktree_keys_dir)" || return 1
   fleet_pub="$keys_dir/fleet.pub"
   fleet_key="$keys_dir/fleet.key.age"
 
-  printf 'keys\n'
   if line="$(nh_pubkey_line "$fleet_pub")" && [ -f "$fleet_key" ]; then
-    printf '  %-16s %s\n' "fleet key" "$line"
+    printf '%s\t%s\n' "fleet key" "$line"
   elif [ -f "$fleet_key" ]; then
-    printf '  %-16s %s\n' "fleet key" "$fleet_key exists but fleet.pub names no recipient"
+    printf '%s\t%s\n' "fleet key" "$fleet_key exists but fleet.pub names no recipient"
     rc=1
   elif [ -e "$fleet_pub" ]; then
-    printf '  %-16s %s\n' "fleet key" "fleet.pub names a key but fleet.key.age is missing"
+    printf '%s\t%s\n' "fleet key" "fleet.pub names a key but fleet.key.age is missing"
     rc=1
   else
-    printf '  %-16s %s\n' "fleet key" "none — 'nixhold secret rekey' mints it"
+    printf '%s\t%s\n' "fleet key" "none — 'nixhold secret rekey' mints it"
     rc=1
   fi
 
@@ -205,17 +224,17 @@ nh_secret_list_keys() {
   while IFS= read -r net; do
     [ -n "$net" ] || continue
     if [ -f "$keys_dir/networks/$net.age" ]; then
-      printf '  %-16s %s\n' "tailnet $net" "API client committed — auth keys are minted"
+      printf '%s\t%s\n' "tailnet $net" "API client committed — auth keys are minted"
     else
-      printf '  %-16s %s\n' "tailnet $net" "no API client — auth keys are pasted from the admin console (nixhold secret edit network/$net)"
+      printf '%s\t%s\n' "tailnet $net" "no API client — auth keys are pasted from the admin console (nixhold secret edit network/$net)"
     fi
   done < <(nh_tailnet_networks 2>/dev/null)
 
   n="$(nh_pubkey_lines "$keys_dir/login.pub" 2>/dev/null | grep -c . || true)"
   if [ "${n:-0}" -gt 0 ]; then
-    printf '  %-16s %s\n' "login keys" "$n in keys/login.pub"
+    printf '%s\t%s\n' "login keys" "$n in keys/login.pub"
   else
-    printf '  %-16s %s\n' "login keys" "none — no host authorizes anyone and the ISO boots unreachable"
+    printf '%s\t%s\n' "login keys" "none — no host authorizes anyone and the ISO boots unreachable"
   fi
 
   local have=() missing=()
@@ -227,7 +246,7 @@ nh_secret_list_keys() {
       missing+=("$host")
     fi
   done < <(nh_all_hosts)
-  printf '  %-16s %s\n' "host pubkeys" \
+  printf '%s\t%s\n' "host pubkeys" \
     "${#have[@]} recorded${have[0]+ (${have[*]})}${missing[0]+, missing for ${missing[*]}}"
 
   nh_probe_recipient_inputs
@@ -235,10 +254,10 @@ nh_secret_list_keys() {
   nh_age_has_token_recipient && routes+=("FIDO2 token recipient")
   nh_age_wrapped_identity >/dev/null && routes+=("passphrase identity")
   if [ "${#routes[@]}" -eq 0 ]; then
-    printf '  %-16s %s\n' "operator" "NO route — nothing in this checkout can decrypt anything"
+    printf '%s\t%s\n' "operator" "NO route — nothing in this checkout can decrypt anything"
     rc=1
   else
-    printf '  %-16s %s\n' "operator" "$(printf '%s, ' "${routes[@]}" | sed 's/, $//')"
+    printf '%s\t%s\n' "operator" "$(printf '%s, ' "${routes[@]}" | sed 's/, $//')"
   fi
   return "$rc"
 }
@@ -261,42 +280,48 @@ nh_secret_list_host() {
   fi
 
   printf '%s (%s)\n' "$host" "$platform"
-  local category label found=0
-  # Fixed order: the framework's own first, then what the host's
-  # services and repositories brought, then whatever the operator
-  # declared directly.
-  for category in framework service repository operator; do
-    case "$category" in
-      framework) label="framework" ;;
-      service) label="services" ;;
-      repository) label="repositories" ;;
-      operator) label="operator" ;;
-    esac
-    local rows
-    rows="$(printf '%s' "$json" | jq -r --arg c "$category" '
-      to_entries
-      | map(select((.value.category // "operator") == $c))
-      | sort_by(.key)[]
-      | [ .key, (.value.scope // "host"),
-          (if .value.required then "required" else "optional" end),
-          (.value.description // "") ]
-      | @tsv')"
-    [ -n "$rows" ] || continue
-    found=1
-    printf '  %s\n' "$label"
-    local name scope req desc target status
-    while IFS=$'\t' read -r name scope req desc; do
-      [ -n "$name" ] || continue
-      target="$(nh_secret_file "$sdir" "$host" "$name" "$scope")"
-      if [ -e "$target" ]; then
-        status="provisioned"
-      elif [ "$req" = "required" ]; then
-        status="missing (required)"
-      else
-        status="optional"
-      fi
-      printf '    %-22s %-6s %-18s %s\n' "$name" "$scope" "$status" "$desc"
-    done <<<"$rows"
-  done
-  [ "$found" -eq 1 ] || printf '  no secrets declared\n'
+  if [ "$(printf '%s' "$json" | jq 'length')" -eq 0 ]; then
+    printf 'no secrets declared\n'
+    return 0
+  fi
+  local category rows name scope req desc target status
+  {
+    printf 'SECRET\tSCOPE\tSTATUS\tDESCRIPTION\n'
+    for category in framework service repository operator; do
+      rows="$(printf '%s' "$json" | jq -r --arg c "$category" '
+        to_entries
+        | map(select((.value.category // "operator") == $c))
+        | sort_by(.key)[]
+        | [ .key, (.value.scope // "host"),
+            (if .value.required then "required" else "optional" end),
+            ((.value.description // "") | gsub("\t"; " ")) ]
+        | @tsv')"
+      [ -n "$rows" ] || continue
+      nh_table_section "$(nh_secret_category_label "$category")"
+      while IFS=$'\t' read -r name scope req desc; do
+        [ -n "$name" ] || continue
+        target="$(nh_secret_file "$sdir" "$host" "$name" "$scope")"
+        if [ -e "$target" ]; then
+          status="provisioned"
+        elif [ "$req" = "required" ]; then
+          status="missing (required)"
+        else
+          status="optional"
+        fi
+        printf '%s\t%s\t%s\t%s\n' "$name" "$scope" "$status" "$desc"
+      done <<<"$rows"
+    done
+  } | nh_table --color 3
+}
+
+# nh_secret_category_label <category> — a category's section title.
+# Both views list the categories in one fixed order: the framework's
+# own first, then what the host's services and repositories brought,
+# then whatever the operator declared directly.
+nh_secret_category_label() {
+  case "$1" in
+    service) printf services ;;
+    repository) printf repositories ;;
+    *) printf '%s' "$1" ;;
+  esac
 }

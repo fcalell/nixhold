@@ -48,20 +48,21 @@ nh_checkout_counts() {
   git -C "$1" rev-list --left-right --count "HEAD...$2"
 }
 
-# nh_checkout_line <name> <dir> <fetch rc|-> — the status line: the
-# branch, where it stands against its upstream, the dirty count; or why
-# there is nothing to compare.
+# nh_checkout_line <name> <dir> <fetch rc|-> — the status row,
+# "<name>\t<branch>\t<sync>\t<tree>": the branch, where it stands
+# against its upstream, the dirty count; or why there is nothing to
+# compare.
 nh_checkout_line() {
   local name="$1" dir="$2" fetch="$3" branch upstream counts ahead behind sync dirty
   if ! nh_checkout_present "$dir"; then
-    printf '%-16s %s\n' "$name" "missing (its clone unit has not run)"
+    printf '%s\t-\tmissing (its clone unit has not run)\t-\n' "$name"
     return 0
   fi
   dirty="$(git -C "$dir" status --porcelain | wc -l)"
   dirty="${dirty//[[:space:]]/}"
   [ "$dirty" -eq 0 ] && dirty=clean || dirty="$dirty dirty"
   if ! branch="$(git -C "$dir" symbolic-ref --short -q HEAD)"; then
-    printf '%-16s %-20s %-22s %s\n' "$name" "(detached)" "-" "$dirty"
+    printf '%s\t(detached)\t-\t%s\n' "$name" "$dirty"
     return 0
   fi
   if ! upstream="$(git -C "$dir" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)"; then
@@ -75,9 +76,9 @@ nh_checkout_line() {
       0:*) sync="behind $behind" ;;
       *) sync="diverged +$ahead -$behind" ;;
     esac
-    case "$fetch" in 0 | -) ;; *) sync="$sync unreachable" ;; esac
+    case "$fetch" in 0 | -) ;; *) sync="$sync, unreachable" ;; esac
   fi
-  printf '%-16s %-20s %-22s %s\n' "$name" "$branch" "$sync" "$dirty"
+  printf '%s\t%s\t%s\t%s\n' "$name" "$branch" "$sync" "$dirty"
 }
 
 # nh_checkout_sync <dir> [--allow-dirty] [--no-offer] [--fetched] — the

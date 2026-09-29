@@ -74,40 +74,60 @@ nh_status_host() {
   machine="$(nh_host_machine "$host")"
   [ -z "$machine" ] || printf '  guest of: %s  (deploys with it)\n' "$machine"
   echo
-  printf '  services:\n'
   printf '%s' "$services_json" | jq -r '
     to_entries[]
-    | "    \(.key)\t\(if (.value.enable // false) then "enabled" else "disabled" end)"
-  '
-  echo
-  printf '  endpoints:\n'
+    | [ .key, (if (.value.enable // false) then "enabled" else "disabled" end) ]
+    | @tsv
+  ' | nh_status_table services 'SERVICE\tSTATE' 2
   printf '%s' "$services_json" | jq -r '
     to_entries[]
     | select(.value.enable // false)
     | .key as $svc
     | ((.value.expose // {}) | to_entries[])
-    | [ "\($svc)/\(.key)", (.value.network // "localhost"), (.value.subdomain // "-"), (.value.pathPrefix // "") ]
+    | [ "\($svc)/\(.key)", (.value.network // "localhost"), (.value.subdomain // "-"), (.value.pathPrefix // "-") ]
     | @tsv
-  ' | awk -F'\t' '{ printf "    %-28s %-12s %-20s %s\n", $1, $2, $3, $4 }'
+  ' | nh_status_table endpoints 'ENDPOINT\tNETWORK\tSUBDOMAIN\tPATH' ""
+  nh_status_secrets "$host" "$sdir" "$secrets_json"
+  printf 'revision: %s\n' "$(nh_status_revision "$host" "$platform")"
+  printf 'provisioning: %s\n' "$(nh_status_provisioning "$host" "$platform")"
+}
+
+# nh_status_table <title> <header> <color columns> — the rows on stdin
+# as a titled table, or the title and "none" when there are none.
+nh_status_table() {
+  local title="$1" header="$2" color="$3" rows
+  rows="$(cat)"
+  printf '%s\n' "$title"
+  if [ -z "$rows" ]; then
+    printf '  none\n\n'
+    return 0
+  fi
+  { printf '%b\n' "$header"; printf '%s\n' "$rows"; } | nh_table --color "$color"
   echo
-  # Category and scope are what tell the operator whether a missing
-  # secret is theirs to write at all: `nixhold secret list` is the
-  # full per-secret view, this is the one-glance summary.
-  printf '  secrets:\n'
-  printf '%s' "$secrets_json" | jq -r '
+}
+
+# nh_status_secrets <host> <secrets-dir> <secrets-json> — the one-glance
+# summary: category and scope are what tell the operator whether a
+# missing secret is theirs to write at all; `nixhold secret list
+# <host>` is the full per-secret view.
+nh_status_secrets() {
+  local host="$1" sdir="$2" json="$3" name category scope req desc status
+  printf '%s' "$json" | jq -r '
     to_entries | sort_by((.value.category // "operator"), .key)[]
     | [ .key, (.value.category // "operator"), (.value.scope // "host"),
         (if .value.required then "required" else "optional" end),
-        (.value.description // "") ]
+        ((.value.description // "") | gsub("\t"; " ")) ]
     | @tsv
   ' | while IFS=$'\t' read -r name category scope req desc; do
-    local state="missing"
-    [ -e "$(nh_secret_file "$sdir" "$host" "$name" "$scope")" ] && state="present"
-    printf '    %-24s %-12s %-6s %-8s %-8s %s\n' "$name" "$category" "$scope" "$state" "$req" "$desc"
-  done
-  echo
-  printf '  revision: %s\n' "$(nh_status_revision "$host" "$platform")"
-  printf '  provisioning: %s\n' "$(nh_status_provisioning "$host" "$platform")"
+    if [ -e "$(nh_secret_file "$sdir" "$host" "$name" "$scope")" ]; then
+      status="provisioned"
+    elif [ "$req" = "required" ]; then
+      status="missing (required)"
+    else
+      status="optional"
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$category" "$scope" "$status" "$desc"
+  done | nh_status_table secrets 'SECRET\tCATEGORY\tSCOPE\tSTATUS\tDESCRIPTION' 4
 }
 
 # nh_status_target <host> <platform> — where the live lines read the
@@ -174,7 +194,7 @@ nh_status_provisioning() {
   fi
   state="$(nh_provision_state "$host" "$platform" "$local_host" "$target")" || rc=$?
   case "$rc" in
-    0) printf '%s' "$state" | awk 'NR > 1 { printf "\n                " } { printf "%s", $0 }' ;;
+    0) printf '%s' "$state" | awk 'NR > 1 { printf "\n              " } { printf "%s", $0 }' ;;
     2) printf 'unreachable' ;;
     3) printf 'no user session yet (units run at the first login)' ;;
     4) printf 'read it on %s itself (launchd)' "$host" ;;
@@ -209,21 +229,10 @@ nh_status_android() {
   printf '  launcher: %s\n' "$(printf '%s' "$summary" | jq -r '.launcher // "-"')"
   printf '  device owner: %s\n' "$(printf '%s' "$summary" | jq -r '.deviceOwner // "-"')"
   echo
-  printf '  secrets:\n'
-  printf '%s' "$secrets_json" | jq -r '
-    to_entries[]
-    | [ .key, (.value.category // "operator"), (.value.scope // "host"),
-        (if .value.required then "required" else "optional" end),
-        (.value.description // "") ]
-    | @tsv
-  ' | while IFS=$'\t' read -r name category scope req desc; do
-    local state="missing"
-    [ -e "$(nh_secret_file "$sdir" "$host" "$name" "$scope")" ] && state="present"
-    printf '    %-24s %-12s %-6s %-8s %-8s %s\n' "$name" "$category" "$scope" "$state" "$req" "$desc"
-  done
+  nh_status_secrets "$host" "$sdir" "$secrets_json"
 }
 
-# One table row. A host that fails to evaluate is marked and the walk
+# One table row, tab-separated. A host that fails to evaluate is marked and the walk
 # continues — one broken host must not hide the rest of the fleet —
 # but the verb's exit status remembers it. An Android host has no
 # services column: its plan is `nixhold status <name>`. A guest is
@@ -238,13 +247,13 @@ nh_status_row() {
     services_json="{}"
     services="-"
   elif ! services_json="$(nh_host_eval "$host" "$platform" nixhold.services 2>/dev/null)"; then
-    printf '%-16s %-8s %-9s %-8s %s\n' "$host" "$platform" eval-err eval-err ""
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$host" "$platform" eval-err eval-err - "${note:--}"
     return 1
   else
     services="$(printf '%s' "$services_json" | jq '[.[] | select(.enable // false)] | length')"
   fi
   if ! secrets_json="$(nh_host_secrets "$host" "$platform" 2>/dev/null)"; then
-    printf '%-16s %-8s %-9s %-8s %s\n' "$host" "$platform" "$services" eval-err ""
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$host" "$platform" "$services" eval-err - "${note:--}"
     return 1
   fi
   secrets="$(printf '%s' "$secrets_json" | jq 'length')"
@@ -255,17 +264,19 @@ nh_status_row() {
     [ -e "$(nh_secret_file "$sdir" "$host" "$name" "$scope")" ] || missing=$((missing + 1))
   done < <(printf '%s' "$secrets_json" | jq -r '
     to_entries[] | [ .key, (.value.scope // "host") ] | @tsv')
-  printf '%-16s %-8s %-9s %-8s %s%s\n' "$host" "$platform" "$services" "$secrets" \
-    "$([ "$missing" -eq 0 ] || printf '%s missing  ' "$missing")" "$note"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$host" "$platform" "$services" "$secrets" "$missing" "${note:--}"
 }
 
 nh_status_fleet() {
-  local rc=0 line hosts
+  local rc=0 line hosts rows="" row
   hosts="$(nh_hosts)" || return 1
-  printf '%-16s %-8s %-9s %-8s %s\n' HOST PLATFORM SERVICES SECRETS ""
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    nh_status_row "${line%% *}" "${line##* }" || rc=1
+    row="$(nh_status_row "${line%% *}" "${line##* }")" || rc=1
+    rows="$rows$row"$'\n'
   done <<<"$hosts"
+  # MISSING counts every declared secret with no ciphertext, optional
+  # ones included: `nixhold status <host>` says which.
+  { printf 'HOST\tPLATFORM\tSERVICES\tSECRETS\tMISSING\tNOTE\n'; printf '%s' "$rows"; } | nh_table --color 3,4
   return "$rc"
 }

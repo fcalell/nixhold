@@ -2273,8 +2273,18 @@ by `host key` — the dispatcher says so when the old name is typed.
 one exception to "no listing verbs": once secrets are declared by
 their consumers the operator no longer knows what exists, and the
 answer is the plan `secret edit` will follow — grouping, optional
-vs required, what the fleet holds. `status`'s secret line
-stays the one-glance present/missing summary.
+vs required, what the fleet holds. `status`'s secrets table stays
+the one-glance summary, in the same three states.
+
+**Tables.** Every listing a verb prints (`secret list`, `status`,
+`repo status`) is one renderer, `nh_table`: a rounded box with
+columns as wide as their widest cell, and sections as rules across
+it. On a terminal, the last column, the free text, is cut with `…`
+so the box fits the screen, the header is bold and state words are
+colored (done green, a look yellow, a block red). Piped, every cell
+is whole and no escape is written, because a pipe reads the data.
+`gum table` is not the renderer: its print mode ignores the terminal
+width.
 
 **Walkthrough shape.** The operator is walked, not quizzed:
 
@@ -2841,10 +2851,11 @@ one value.
 
 With no host, the **fleet inventory**: one row per ciphertext
 under `secrets/` — name, scope, the hosts that declare it, status,
-category, description — so an orphan and a declared-but-missing
-secret are both visible in one list. Under it, the keys tree: the
-fleet key and its recipient line, the login keys, the committed
-host pubkeys, and which operator routes the fleet holds. `--fleet`
+description — in a section per category, in the host view's order,
+so an orphan and a declared-but-missing secret are both visible in
+one list. Under it, the keys table: the fleet key and its recipient
+line, the login keys, the committed host pubkeys, and which operator
+routes the fleet holds. `--fleet`
 is the per-host walk over every host. Declaration-side like
 `status`; no host is contacted.
 

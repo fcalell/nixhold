@@ -51,10 +51,10 @@ pkgs.runCommand "nixhold-repo"
     commit work/beta b1
 
     nixhold status >out || fail "status failed: $(cat out)"
-    grep -Eq '^fleet +main +up to date' out || fail "the fleet is not the first checkout: $(cat out)"
-    grep -Eq '^alpha +main +behind 1 ' out || fail "alpha is not behind by one: $(cat out)"
-    grep -Eq '^beta +main +ahead 1 ' out || fail "beta is not ahead by one: $(cat out)"
-    grep -Eq '^gamma +missing' out || fail "gamma is not missing: $(cat out)"
+    sed -n 4p out | grep -Eq '│ fleet +│ main +│ up to date ' || fail "the fleet is not the first checkout: $(cat out)"
+    grep -Eq '│ alpha +│ main +│ behind 1 ' out || fail "alpha is not behind by one: $(cat out)"
+    grep -Eq '│ beta +│ main +│ ahead 1 ' out || fail "beta is not ahead by one: $(cat out)"
+    grep -Eq '│ gamma +│ - +│ missing' out || fail "gamma is not missing: $(cat out)"
 
     nixhold pull 2>err || fail "pull failed: $(cat err)"
     [ "$(head work/alpha)" = "$(head elsewhere/alpha)" ] || fail "pull did not fast-forward alpha"
@@ -77,7 +77,7 @@ pkgs.runCommand "nixhold-repo"
     # A forge out of reach fails status and marks its line.
     git -C work/beta remote set-url origin "$PWD/gone.git"
     if nixhold status >out 2>/dev/null; then fail "status accepted an unreachable forge"; fi
-    grep -Eq '^beta .*unreachable' out || fail "status did not mark beta unreachable: $(cat out)"
+    grep -Eq '│ beta .*unreachable' out || fail "status did not mark beta unreachable: $(cat out)"
 
     # The draft hook: run in the checkout, the staged change on stdin.
     echo change >work/fleet/flake.nix
