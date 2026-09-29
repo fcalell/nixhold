@@ -364,7 +364,7 @@ all `mkDefault` unless named:
 | outbound ssh | `nixhold.secrets.identity` — the fleet's single outbound key, **fleet scope**. `IdentityFile ~/.ssh/identity` on every fleet-peer matchBlock, gated on the secret being `active`. A peer's block answers to its fleet name and every address, the names its known_hosts pin covers, because ssh matches the destination as typed and the CLI types the address; never `IdentitiesOnly`, there or in the framework-owned `Host *` block, so an agent-held token key is offered alongside it (see "Login keys") |
 | git signing | `programs.git.signing = { format = "ssh"; key = "~/.ssh/identity.pub"; }`, gated on `identity.active` + `programs.git.enable`. Named, never automatic: `signByDefault` stays off, so `git commit -S` signs and a plain commit does not (see "Signing is opt-in") |
 | global env | `nixhold.secrets.env` (fleet scope) sourced into every login shell of the operator, both platforms, gated on `env.active` (see Repositories & env) |
-| forge ssh | one matchBlock per distinct forge host derived from `nixhold.repositories.*.url`, plus github.com for the fleet repo itself whenever `layout.repoUrl` is set — `IdentityFile ~/.ssh/identity`, `IdentitiesOnly`, no `User` |
+| forge ssh | one matchBlock per distinct forge host derived from `nixhold.repositories.*.url`, plus github.com for the fleet repo itself whenever `layout.repoUrl` is set — `IdentityFile ~/.ssh/identity`, `IdentitiesOnly`, no `User`, `ConnectTimeout 10` and `ServerAliveInterval 15`. The two timeouts make a forge that stops answering fail a fetch or push in under a minute. Without them the connection waits out the kernel's SYN retries, or forever once connected, and the CLI's background fetches show nothing while they wait. The installer's clone command carries the same two |
 | sudo | nothing. `wheel` membership is the whole grant; the framework writes no `security.sudo.extraRules`, so sudo asks for the operator's password like it does on any NixOS box (see "Sudo asks") |
 | store hygiene | every shipped profile runs weekly `nix.gc` (`--delete-older-than 14d`) and `nix.optimise`; on darwin with the explicit launchd interval `nix.gc.automatic` needs |
 
@@ -2689,7 +2689,8 @@ unit's job (see "Repositories & env"), never the verb's. Each
 repository gets one line, a failure in one never stops the others,
 and the verb exits non-zero when any failed.
 
-- **status** fetches every checkout in parallel, then prints one line
+- **status** fetches every checkout in parallel, after one line
+  naming how many (`pull` and `push` fetch the same way), then prints one line
   each: branch, ahead/behind its upstream, the dirty count, or why
   there is nothing to compare (`missing`, `detached`, `no upstream`,
   `unreachable`).
@@ -2700,11 +2701,12 @@ and the verb exits non-zero when any failed.
   ahead and not behind. A diverged branch is refused (pull first) and
   never forced; other branches are not touched.
 - **commit** walks the dirty checkouts. For each it shows the short
-  status and asks. What is staged is what commits; a checkout with
-  nothing staged has everything staged first (`git add -A`). The
+  status and asks. A yes commits the whole tree (`git add -A`), so
+  every checkout the walk commits ends clean, and the draft sees
+  exactly what commits. A partial commit is plain `git commit`. The
   message opens in `$EDITOR`, drafted when a draft hook is set. An
-  empty message skips the checkout and puts back the index the verb
-  staged.
+  empty message skips the checkout and puts the index back as it
+  was.
 
 **Offers, on a terminal.** Where the sync stops, an interactive run
 offers the next step, per checkout. `deploy`, `host install` and

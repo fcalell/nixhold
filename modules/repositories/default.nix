@@ -360,6 +360,11 @@ in
           # different key on a different journey, and does not reach
           # a forge. A block waits for its key to be provisioned:
           # naming a file that never lands would pin ssh to nothing.
+          #
+          # Bounded: a forge that stops answering fails a fetch or
+          # push in under a minute (ConnectTimeout, then three missed
+          # keepalives). The CLI fetches every checkout in the
+          # background, where a hang has nothing to show.
 
           programs.ssh.settings = lib.concatMapAttrs (
             host: entries:
@@ -370,6 +375,8 @@ in
               ${host} = {
                 IdentityFile = lib.mkDefault "~/${secret.homePath}";
                 IdentitiesOnly = lib.mkDefault true;
+                ConnectTimeout = lib.mkDefault 10;
+                ServerAliveInterval = lib.mkDefault 15;
               };
             }
           ) forges;

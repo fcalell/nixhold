@@ -28,17 +28,20 @@ nh_checkout_present() {
 # nh_checkouts_fetch <tmp> — fetch every present checkout named on
 # stdin ("<name>\t<path>") at once; <tmp>/<name>.rc holds each fetch's
 # exit code. No prompt reaches a background fetch: a forge that wants
-# one fails it.
+# one fails it, and the forge ssh blocks bound each connection
+# (modules/repositories/default.nix).
 nh_checkouts_fetch() {
-  local tmp="$1" name path
+  local tmp="$1" name path n=0
   while IFS=$'\t' read -r name path; do
     nh_checkout_present "$path" || continue
+    n=$((n + 1))
     (
       rc=0
       GIT_TERMINAL_PROMPT=0 nh_repo_git -C "$path" fetch -q </dev/null >/dev/null 2>&1 || rc=$?
       echo "$rc" >"$tmp/$name.rc"
     ) &
   done
+  [ "$n" -eq 0 ] || nh_info "fetching $n checkout$([ "$n" -eq 1 ] || printf s)"
   wait
 }
 
@@ -165,25 +168,27 @@ nh_checkout_sync() {
 
 # nh_checkout_commit <dir> — offer to commit a dirty checkout: its
 # short status, a yes, then the message in $EDITOR, starting from the
-# draft hook's when one is set. What is staged commits; nothing staged
-# stages everything. A no or an empty message commits nothing and puts
-# back an index the offer staged. 0 when a commit was made.
+# draft hook's when one is set. A yes commits the whole tree, so the
+# draft and the commit see the same change and the checkout ends
+# clean. A no or an empty message commits nothing and puts the index
+# back as it was. 0 when a commit was made.
 nh_checkout_commit() {
-  local dir="$1" name staged=0 tmp
+  local dir="$1" name index tmp
   name="${dir##*/}"
   git -C "$dir" status --short | sed 's/^/    /' >&2
   nh_prompt_confirm "Commit $name?" || return 1
-  if git -C "$dir" diff --cached --quiet; then
-    git -C "$dir" add -A || return 1
-    staged=1
-  fi
+  index="$(git -C "$dir" write-tree)" || {
+    nh_err "$name has unmerged paths: resolve them, then re-run"
+    return 1
+  }
+  git -C "$dir" add -A || return 1
   tmp="$(nh_tmpdir commit)" || return 1
   nh_checkout_draft "$dir" >"$tmp/MSG"
   if git -C "$dir" commit -q -e -F "$tmp/MSG"; then
     nh_ok "$name: committed $(git -C "$dir" log -1 --format='%h %s')"
     return 0
   fi
-  [ "$staged" -eq 0 ] || git -C "$dir" reset -q
+  git -C "$dir" read-tree "$index"
   nh_warn "$name: nothing committed"
   return 1
 }

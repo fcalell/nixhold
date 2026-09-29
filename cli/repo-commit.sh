@@ -3,9 +3,9 @@
 # A walk over the dirty checkouts on this machine (ARCHITECTURE
 # "nixhold repo"): for each, its short status, a yes, then the message
 # in $EDITOR — starting from the draft hook's (programs.nixhold.repo.
-# draft) when one is set. What is staged commits; a checkout with
-# nothing staged has everything staged first. A no or an empty message
-# skips it. Nothing is pushed: that is `nixhold repo push`.
+# draft) when one is set. A yes commits the whole tree. A no or an
+# empty message skips it. Nothing is pushed: that is `nixhold repo
+# push`.
 
 cmd_repo_commit() {
   case "${1:-}" in

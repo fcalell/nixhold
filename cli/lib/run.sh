@@ -487,9 +487,10 @@ nh_clone_key() {
 # reach the forge with when the CLI holds the clone key. git re-splits
 # GIT_SSH_COMMAND through the shell, so the key path is quoted for it:
 # the scratch root lives under $XDG_RUNTIME_DIR or $TMPDIR, either of
-# which is the operator's and may contain spaces.
+# which is the operator's and may contain spaces. The timeouts are the
+# forge ssh blocks' (modules/repositories/default.nix).
 nh_clone_ssh_command() {
-  printf 'ssh -i %q -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new' "$1"
+  printf 'ssh -i %q -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=15' "$1"
 }
 
 # nh_repo_git <git-args…> — git against the fleet REMOTE (clone, push,

@@ -33,7 +33,7 @@ pkgs.runCommand "nixhold-clone-ssh" { nativeBuildInputs = [ pkgs.bash ]; } ''
   got=$(NIXHOLD_CLONE_KEY_FILE=$PWD/identity.age run '
     nh_export_clone_ssh
     [ "$opened" = 0 ] || { echo "opened the key before the clone" >&2; exit 1; }
-    want="ssh -i $(nh_scratch_root_path)/clone.key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+    want="ssh -i $(nh_scratch_root_path)/clone.key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=15"
     [ "$(bash -c "printf %s \"\$GIT_SSH_COMMAND\"")" = "$want" ] || { echo "child saw: $GIT_SSH_COMMAND" >&2; exit 1; }
     echo ok')
   [ "$got" = ok ] || fail "the clone key's command did not reach a child"
@@ -52,7 +52,7 @@ pkgs.runCommand "nixhold-clone-ssh" { nativeBuildInputs = [ pkgs.bash ]; } ''
   # A remote installer: the command names the copy the clone placed,
   # quoted so the installer's shell reads it back as one word.
   got=$(run 'eval "x=$(nh_installer_ssh_command)"; printf %s "$x"')
-  want="ssh -i /root/.ssh/nixhold-identity -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+  want="ssh -i /root/.ssh/nixhold-identity -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=15"
   [ "$got" = "$want" ] || fail "the installer's command reads back as: $got"
 
   touch $out
