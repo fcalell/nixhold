@@ -6,10 +6,11 @@
 # Imported by fixture-server, fixture-desktop and fixture-mac, so the
 # same expectations are checked on both platforms — the wiring is
 # home-manager and the delivery of `env` is a platform half, and a
-# drift between them would otherwise only show up on a real Mac —
-# and on both sides of `nixhold.home.checkouts`: the server carries
-# the declarations and no checkout unit, the two seats carry one
-# unit per repository, systemd on NixOS and launchd on darwin.
+# drift between them would otherwise only show up on a real Mac. Every
+# host that imports it declares the repositories, so every one of
+# them, the server included, carries one checkout unit per
+# repository: systemd on NixOS, launchd on darwin. fixture-node is the
+# host that declares none, and carries none.
 {
   config,
   lib,
@@ -19,7 +20,6 @@
 let
   hm = config.home-manager.users.${config.nixhold.identity.username};
   isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
-  checkouts = config.nixhold.home.checkouts;
   units = if isDarwin then hm.launchd.agents else hm.systemd.user.services;
   secrets = config.nixhold.secrets;
   direnvLib = hm.xdg.configFile."direnv/lib/nixhold.sh".text or "";
@@ -138,8 +138,8 @@ in
     }
     {
       # An unprovisioned key is the unit's to wait for (exit 1, retry),
-      # so the unit exists like any other on a seat.
-      assertion = !checkouts || units ? nixhold-repo-legacy;
+      # so the unit exists like any other.
+      assertion = units ? nixhold-repo-legacy;
       message = "fixture: no checkout unit was emitted for the legacy repository";
     }
     {
@@ -207,23 +207,22 @@ in
       assertion = !(lib.hasInfix "work/docs" direnvLib);
       message = "fixture: a repository with no provisioned env must not appear in the direnv library";
     }
-    # --- the checkout: a provisioning unit on a seat, never an
-    #     activation step ("Provisioning") ---
+    # --- the checkout: a provisioning unit for every declared
+    #     repository, never an activation step ("Provisioning") ---
     {
       assertion = !(lib.any (n: lib.hasPrefix "nixhold-repo-" n) (lib.attrNames hm.home.activation));
       message = "fixture: a repository clone is an activation step again; it must be a provisioning unit";
     }
     {
-      assertion = checkouts == (units ? nixhold-repo-notes);
-      message = "fixture: checkout units must follow nixhold.home.checkouts = ${lib.boolToString checkouts}, got ${builtins.toJSON (lib.attrNames units)}";
+      assertion = units ? nixhold-repo-notes;
+      message = "fixture: a declared repository must get a checkout unit, got ${builtins.toJSON (lib.attrNames units)}";
     }
     {
       # The retry IS the network dependency (no network-online.target
       # in the user manager), bounded on NixOS; the marker is the
       # managed .envrc; exec so sd-switch never waits on a clone.
       assertion =
-        !checkouts
-        || isDarwin
+        isDarwin
         || (
           let
             u = units.nixhold-repo-notes;
@@ -239,8 +238,7 @@ in
     }
     {
       assertion =
-        !checkouts
-        || !isDarwin
+        !isDarwin
         || (
           let
             c = units.nixhold-repo-notes.config;

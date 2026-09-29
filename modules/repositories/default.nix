@@ -1,17 +1,15 @@
 # `nixhold.repositories` — the operator's git checkouts as fleet data.
 #
 # One declaration ("I work on this repo") produces everything a
-# checkout needs on every host: a fleet-scoped env secret named after
-# it, the ssh client wiring that reaches its forge with the fleet's
-# outbound key (`identity`, or `identity-<type>` for a forge that
-# cannot take ed25519 — declared here the moment a repository names
-# it), a direnv library that exports that env inside the checkout,
-# and, on a host with `nixhold.home.checkouts`, a provisioning unit
-# that clones it (ARCHITECTURE "Provisioning": never at activation,
-# which runs before the network). The declaration is fleet-wide: a
-# repository is declared once and every host carries its secret, its
-# forge block and its direnv entry; only the checkout follows the
-# seat.
+# checkout needs on the host that declares it: a fleet-scoped env
+# secret named after it, the ssh client wiring that reaches its forge
+# with the fleet's outbound key (`identity`, or `identity-<type>` for
+# a forge that cannot take ed25519 — declared here the moment a
+# repository names it), a direnv library that exports that env inside
+# the checkout, and a provisioning unit that clones it (ARCHITECTURE
+# "Provisioning": never at activation, which runs before the
+# network). A declared repository is a checkout: a host that declares
+# none gets none, and hosts share a list by importing one module.
 #
 # The fleet repo itself is declared nowhere — `layout.repoUrl` names
 # it and the CLI clones it — but its forge takes the same key, so it
@@ -334,7 +332,7 @@ in
               script = checkoutScript name r;
               done = "${expand r.path}/.envrc";
             };
-          checkoutUnits = lib.optionalAttrs config.nixhold.home.checkouts (
+          checkoutUnits =
             if pkgs.stdenv.hostPlatform.isDarwin then
               {
                 launchd.agents = lib.mapAttrs' (
@@ -346,8 +344,7 @@ in
                 systemd.user.services = lib.mapAttrs' (
                   name: r: lib.nameValuePair "nixhold-repo-${name}" (checkoutUnit name r).systemd
                 ) repos;
-              }
-          );
+              };
         in
         {
           # One matchBlock per distinct forge host, not per

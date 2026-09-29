@@ -520,8 +520,6 @@ auto-wiring shape as identity).
 nixhold.repositories.<name> = "<url>";        # or { url; path?; key?; }
 nixhold.home.repositoriesDir = "~/projects";  # default; sits next to
                                               # nixhold.home.extraModules
-nixhold.home.checkouts = true;                # the seat hostkinds set it:
-                                              # desktopLinux, workstationDarwin
 ```
 
 A bare string is the url; the submodule adds `path`, defaulting to
@@ -550,7 +548,7 @@ keeps its own `~` expansion, against the same home.
 | one HM `programs.ssh.settings."<forge host>"` per **distinct** forge host | the url's host, parsed from scp-like `user@host:path` and `ssh://user@host/path` (https urls get none), and github.com for the fleet repo itself whenever `layout.repoUrl` is set — the checkout the CLI clones is no declared repository, but its forge takes the same key, so a host that declares nothing still reaches the fleet as the fleet. `IdentityFile = "~/.ssh/<key secret>"; IdentitiesOnly = true;`, `mkDefault`, gated on that secret's `active` — and **no `User`**: the url carries it. Every repository on one forge host names the same `key` (assertion) |
 | `nixhold.secrets.identity-<key>` | for every `key` a repository names other than `ed25519`: `sshKey = true`, `sshKeyType = <key>`, and `mkDefault` fleet scope, `category = "framework"`, owner user, `required = false` — the same posture as `identity` |
 | `~/.config/direnv/lib/nixhold.sh` | an HM `xdg.configFile` direnv library, emitted only under `mkIf programs.direnv.enable` (the framework never enables direnv). For the directory being loaded it finds the declared repository path containing `$PWD` (longest prefix wins, `~` expanded) and `dotenv_if_exists`es that repository's decrypted age path |
-| a provisioning unit per repository, on a host with `nixhold.home.checkouts` | `nixhold-repo-<name>`: a systemd user service (NixOS) or launchd agent (darwin), per "Provisioning". Its script (`modules/repositories/checkout.nix`, a function of the repository so a check runs the same one) clones the url to `path` when `path` is absent (an ssh url first checks that the repository's key file is readable and exits 1, a retry, when it is not), then — testing again, because the clone may have brought one — writes the managed `.envrc` when there is none, appending it to `<path>/.git/info/exclude` once unless the repository tracks a file of that name, and `direnv allow`s when direnv is available. That `.envrc`, the repository's own or the managed one, is the done marker: `ConditionPathExists=!<path>/.envrc` |
+| a provisioning unit per repository | `nixhold-repo-<name>`: a systemd user service (NixOS) or launchd agent (darwin), per "Provisioning". Its script (`modules/repositories/checkout.nix`, a function of the repository so a check runs the same one) clones the url to `path` when `path` is absent (an ssh url first checks that the repository's key file is readable and exits 1, a retry, when it is not), then — testing again, because the clone may have brought one — writes the managed `.envrc` when there is none, appending it to `<path>/.git/info/exclude` once unless the repository tracks a file of that name, and `direnv allow`s when direnv is available. That `.envrc`, the repository's own or the managed one, is the done marker: `ConditionPathExists=!<path>/.envrc` |
 
 **The first clone is not TOFU.** Both baselines pin github.com's
 published SSH host keys in `programs.ssh.knownHosts` (see Host-key
@@ -564,12 +562,19 @@ unpinned forge is otherwise a unit that fails `Host key verification
 failed` every 30 s until its start limit, which is a fleet-data
 mistake wearing a runtime failure's clothes.
 
-**The clone is a unit, on the seat.** A declaration is fleet-wide:
-the secret, the forge block and the direnv library reach every
-host. The checkout follows the operator's seat:
-`nixhold.home.checkouts` is the hostkind's to set (`desktopLinux`
-and `workstationDarwin` do; `server` and guests do not), and only a
-host with it renders the units. Each runs at login and retries
+**A declared repository is a checkout.** `nixhold.repositories` on
+a host is the list of checkouts that host has: the secret, the forge
+block, the direnv library and the clone unit all follow from the one
+declaration, and a host that declares none gets none. No hostkind
+decides it; a fleet shares one list between hosts the way it shares
+any module, by importing it. A declaration without its checkout
+would be dead weight: the env loads only inside the checkout, the
+direnv library points at it, and the forge block serves its clone
+and pushes (the fleet repo's own block comes from `layout.repoUrl`,
+declared or not).
+
+**The clone is a unit.** Each runs when the operator's user manager
+starts (at login, or at boot where the operator lingers) and retries
 until it succeeds (`~/.ssh/identity` may not be readable yet:
 agenix on darwin decrypts asynchronously under launchd, the network
 may not be up, the key may not have been minted at all; each is an
@@ -577,8 +582,7 @@ exit 1 and a retry, never a silent skip). It never pulls, and it
 never touches an existing `.envrc`: the framework's write is a
 comment pointing at the direnv library, and the exclude entry
 keeps it out of a repo whose other contributors never asked for
-it. A host without a seat that wants a checkout sets `checkouts`
-itself.
+it.
 
 **One outbound key, and a named exception.** The fleet has one
 outbound key, `identity`, and registers it everywhere. Per-forge

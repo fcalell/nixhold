@@ -75,5 +75,12 @@ in
         && github.IdentitiesOnly or null == true;
       message = "fixture-node: with no repository declared, the fleet repo's forge (github.com, from layout.repoUrl) must still get the identity-key matchBlock — got ${builtins.toJSON github}";
     }
+    {
+      # A declared repository is a checkout, so a host that declares
+      # none renders no checkout unit.
+      assertion =
+        !(lib.any (lib.hasPrefix "nixhold-repo-") (lib.attrNames hm.systemd.user.services));
+      message = "fixture-node: a host with no repository declared must carry no checkout unit";
+    }
   ];
 }

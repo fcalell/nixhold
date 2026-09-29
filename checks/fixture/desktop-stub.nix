@@ -17,8 +17,8 @@
   ...
 }:
 {
-  # The NixOS side of the checkout units: the desktop is the one
-  # NixOS fixture host with a seat (`nixhold.home.checkouts`).
+  # The desktop declares the fixture's repositories like the server
+  # and the mac (./repositories.nix).
   imports = [
     ./repositories.nix
     # The receiving end of the fixture's synced folder, on a host that
