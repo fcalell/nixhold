@@ -83,6 +83,9 @@ nixhold deploy [<name>…|--all] # build + switch this machine, the names, or al
                                # the machine that runs it)
 nixhold update [--all]         # pull, update every input and pin, eval-gate
                                # every host, deploy this machine (or all)
+nixhold repo [pull|push|commit]
+                               # every checkout here: status, fast-forward,
+                               # push the ones ahead, commit the dirty ones
 nixhold secret edit [<host>] [<name>]
                                # provision a missing secret, or edit one
 nixhold secret show [<host>] <name>

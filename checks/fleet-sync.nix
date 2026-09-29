@@ -1,4 +1,4 @@
-# The checkout meeting the forge (nh_fleet_sync; ARCHITECTURE "Where
+# The checkout meeting the forge (nh_checkout_sync; ARCHITECTURE "Where
 # a host is built"), run for real against a bare repository standing
 # in for the forge: a checkout behind it fast-forwards, one ahead is
 # left alone, a diverged one and a dirty one are refused, a dirty one
@@ -23,8 +23,10 @@ pkgs.runCommand "nixhold-fleet-sync"
       bash -c '
         NIXHOLD_LIB_ROOT=${../cli}
         . "$NIXHOLD_LIB_ROOT/lib/run.sh"
-        . "$NIXHOLD_LIB_ROOT/lib/system.sh"
-        nh_fleet_sync "$@"
+        . "$NIXHOLD_LIB_ROOT/lib/prompt.sh"
+        . "$NIXHOLD_LIB_ROOT/lib/fleet.sh"
+        . "$NIXHOLD_LIB_ROOT/lib/checkout.sh"
+        nh_checkout_sync "$@"
       ' sync "$@"
     }
     fail() { echo "$1" >&2; exit 1; }

@@ -44,6 +44,8 @@ export NIX_CONFIG
 . "$NIXHOLD_LIB_ROOT/lib/tailnet.sh"
 # shellcheck source=lib/system.sh
 . "$NIXHOLD_LIB_ROOT/lib/system.sh"
+# shellcheck source=lib/checkout.sh
+. "$NIXHOLD_LIB_ROOT/lib/checkout.sh"
 
 # One process-wide exit path: wipes the scratch root (the fleet key,
 # freshly minted host keys, the clone key, unwrapped identities) and
@@ -76,6 +78,12 @@ Daily:
   update [--all]                    Pull, update inputs, show what moved, deploy.
   status [<name>] [--fleet]         Declared services, endpoints, secrets.
   logs [<host>] [<service>]         Tail journald for a unit on a host.
+
+Repositories:
+  repo [status]                     Every checkout here: branch, ahead/behind, dirty.
+  repo pull                         Fetch all, fast-forward; offer rebases on a terminal.
+  repo push                         Push the ones ahead; never forced.
+  repo commit                       Walk the dirty ones: a (drafted) message each.
 
 Secrets:
   secret list [<host>] [--fleet]    No host: the fleet inventory and its keys.
@@ -187,6 +195,22 @@ main() {
           ;;
         *)
           nh_err "unknown 'operator' subcommand: $sub"
+          exit 1
+          ;;
+      esac
+      ;;
+    repo)
+      shift
+      # A bare 'repo' is the status view.
+      sub="${1:-status}"
+      [ "$#" -eq 0 ] || shift
+      case "$sub" in
+        status | pull | push | commit)
+          . "$NIXHOLD_LIB_ROOT/repo-$sub.sh"
+          cmd_repo_"$sub" "$@"
+          ;;
+        *)
+          nh_err "unknown 'repo' subcommand: $sub"
           exit 1
           ;;
       esac

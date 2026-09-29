@@ -1197,8 +1197,11 @@ EOF
   nh_reexec_at_fleet_pin "$root"
   # Then the checkout meets the forge, before the roster is read and
   # before the install's own commit, which then lands on the forge's
-  # tip and pushes as a fast-forward.
-  nh_fleet_sync "$root" || return 1
+  # tip and pushes as a fast-forward. --yes asks nothing, so a refusal
+  # comes without its offer.
+  local offer=()
+  [ "$yes" -eq 0 ] || offer=(--no-offer)
+  nh_checkout_sync "$root" "${offer[@]}" || return 1
 
   # Host selection.
   if [ -z "$name" ]; then

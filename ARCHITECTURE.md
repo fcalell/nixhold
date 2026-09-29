@@ -2193,7 +2193,7 @@ untouched (ISO is NixOS-only).
 
 ## CLI
 
-One bash CLI, 19 verbs. Access: bare `nixhold` post-install
+One bash CLI, 23 verbs. Access: bare `nixhold` post-install
 (`programs.nixhold.enable`, default on) or `nix run .#nixhold --
 <verb>` pre-install. No separate installer apps, no
 per-subcommand flake apps.
@@ -2233,6 +2233,12 @@ nixhold update [--all]                              git pull → new pin files �
                                                     nix flake update → moved inputs and pins →
                                                     eval gate → commit → deploy (same host rule); a failed
                                                     gate restores the lock and the pin files
+nixhold repo [status]                               every checkout on this machine: branch,
+                                                    ahead/behind, dirty, missing
+nixhold repo pull                                   fetch all, fast-forward; offers for the rest
+nixhold repo push                                   the ones ahead, current branch, never forced
+nixhold repo commit                                 walk the dirty ones: a message each, drafted
+                                                    when programs.nixhold.repo.draft is set
 nixhold status [<name>] [--fleet]
 nixhold lint [--strict]
 nixhold logs [<host>] [<service>] [--lines N] [--since <when>] [--follow]
@@ -2489,11 +2495,15 @@ fetched, would agree. `deploy` and `host install` sync once, before
 they read the roster: a dirty checkout is refused, the branch is
 fetched, HEAD fast-forwards when the forge is ahead, and a checkout
 that has diverged from the forge is refused with the commits on
-each side named, never rebased or merged by the verb. An unreachable
-forge stops the verb on every platform. The verb's own commits then
-land on the forge's tip and push as a fast-forward. `update` runs
-the same sync on a tree it lets be dirty, since a fast-forward only
-touches files the operator has not edited and git refuses the rest.
+each side named. An unreachable forge stops the verb on every
+platform. The verb's own commits then land on the forge's tip and
+push as a fast-forward. `update` runs the same sync on a tree it
+lets be dirty, since a fast-forward only touches files the operator
+has not edited and git refuses the rest. On a terminal a refusal
+comes with the offer `nixhold repo pull` makes (commit the dirty
+work, rebase the diverged branch; see `nixhold repo`); declined, or
+with nobody to ask, the refusal stands. No verb rebases, merges or
+commits the operator's work unasked.
 
 **Build as the operator, activate as root** — one shape on every
 platform, local or remote. `nix build --no-link --print-out-paths
@@ -2654,6 +2664,77 @@ kernel is the one state a deploy cannot see.
 Not caught: a combination that evaluates, builds, boots and then
 misbehaves. That is `deploy --mode boot` and the previous
 generation, as before.
+
+### `nixhold repo`
+
+**Every checkout on the machine, as one set.** `status`, `pull`,
+`push` and `commit` act on the fleet checkout (the resolved fleet
+root) and on each `nixhold.repositories` entry, in that order. The
+list is the declaration: `programs.nixhold` bakes the host's
+repository names and expanded paths into the wrapped CLI, so there
+is no directory scan and no second registry. Run in-tree, where no
+module baked a list, the verb knows the fleet checkout alone. A
+declared checkout not on disk is listed `missing`: cloning it is its
+unit's job (see "Repositories & env"), never the verb's. Each
+repository gets one line, a failure in one never stops the others,
+and the verb exits non-zero when any failed.
+
+- **status** fetches every checkout in parallel, then prints one line
+  each: branch, ahead/behind its upstream, the dirty count, or why
+  there is nothing to compare (`missing`, `detached`, `no upstream`,
+  `unreachable`).
+- **pull** runs the sync every verb runs (see "Where a host is
+  built") on each checkout, dirty allowed: the ones behind
+  fast-forward, and the ones it refuses get the offers below.
+- **push** pushes the current branch to its upstream when it is
+  ahead and not behind. A diverged branch is refused (pull first) and
+  never forced; other branches are not touched.
+- **commit** walks the dirty checkouts. For each it shows the short
+  status and asks. What is staged is what commits; a checkout with
+  nothing staged has everything staged first (`git add -A`). The
+  message opens in `$EDITOR`, drafted when a draft hook is set. An
+  empty message skips the checkout and puts back the index the verb
+  staged.
+
+**Offers, on a terminal.** Where the sync stops, an interactive run
+offers the next step, per checkout. `deploy`, `host install` and
+`update` sync the fleet checkout the same way, so they make the same
+offers:
+
+| Stop | Offer |
+|---|---|
+| dirty (`deploy`, `host install`) | commit it: the walk above, for that checkout |
+| diverged | rebase HEAD's commits onto the upstream (`--autostash` where dirty is allowed) |
+| a fast-forward refused because it touches an edited file | commit, then rebase |
+| a rebase stopped on a conflict | the resolve hook when one is set, then the state is read again |
+
+Declined, with no terminal, or under `host install --yes`, the
+refusal stands as the sync writes it. An offer is only ever the
+operator's yes: nothing is pushed by it, and a verb that pushes
+(`deploy`) pushes the rebased HEAD as a fast-forward. A rebase the
+resolve session leaves unfinished is aborted, so the checkout is
+back where it was, and the refusal stands.
+
+**Two hooks, no vendor.** The framework drafts nothing and resolves
+nothing itself. A fleet names the tools:
+
+```nix
+programs.nixhold.repo.draft = null;    # executable: the change on stdin, a message on stdout
+programs.nixhold.repo.resolve = null;  # executable: a brief as $1, run in the checkout, on the terminal
+```
+
+The draft reads `git status --short` and `git diff --cached`, which
+is exactly what the commit will hold. Its output is the editor's
+starting text, and the operator commits only what they save. A draft
+that fails or prints nothing leaves the editor empty, with a warning.
+The resolve hook runs with the checkout mid-rebase as its working
+directory. Its brief names the repository, the branch, the upstream,
+the commits on each side and the conflicted files. When it exits,
+the verb reads the state: a finished rebase continues the verb, and
+one still in progress is aborted. Both are null by default, and a
+null hook takes its step out of the flow: the editor starts empty,
+and a conflict is aborted and reported. Which assistant runs behind
+them, if any, is the fleet's choice, the same way its editor is.
 
 ### Inputs: who pins what
 

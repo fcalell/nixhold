@@ -224,6 +224,11 @@
           fleet-sync = import ./checks/fleet-sync.nix {
             pkgs = nixpkgs.legacyPackages.${system};
           };
+          # `nixhold repo` over several forges: the set, status, pull,
+          # push, and the draft hook's contract.
+          repo = import ./checks/repo.nix {
+            pkgs = nixpkgs.legacyPackages.${system};
+          };
         }
         // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
           vm-oneshots = import ./checks/vm/oneshots.nix { pkgs = nixpkgs.legacyPackages.${system}; };

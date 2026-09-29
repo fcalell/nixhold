@@ -28,10 +28,21 @@ let
   # loose at the top of their home.
   repoBasename = lib.last (lib.splitString "/" layout.repoUrl);
 
+  # The checkouts `nixhold repo` walks besides the fleet: this host's
+  # repositories, "<name>\t<absolute path>" per line.
+  expandHome = import ../../lib/expand-home.nix;
+  operatorHome = config.users.users.${config.nixhold.identity.username}.home;
+  repositories = lib.concatStrings (
+    lib.mapAttrsToList (
+      name: r: "${name}\t${expandHome operatorHome r.path}\n"
+    ) config.nixhold.repositories
+  );
+
   # Baked-in defaults for the CLI's fleet-root resolution
   # (`$NIXHOLD_FLEET` → upward walk from `$PWD` → this). Assigned
   # with `:=` so an exported value from the operator's shell always
-  # wins over what the module baked in.
+  # wins over what the module baked in. The repository list and the
+  # hooks are this host's declarations, so they are set outright.
   wrapped = pkgs.writeShellScriptBin "nixhold" ''
     ${lib.optionalString (cfg.fleetDir != null) ''
       : "''${NIXHOLD_FLEET_DEFAULT:=${cfg.fleetDir}}"
@@ -40,6 +51,13 @@ let
     ${lib.optionalString (layout.repoUrl != null) ''
       : "''${NIXHOLD_REPO_URL:=${layout.repoUrl}}"
       export NIXHOLD_REPO_URL
+    ''}
+    export NIXHOLD_REPOSITORIES=${lib.escapeShellArg repositories}
+    ${lib.optionalString (cfg.repo.draft != null) ''
+      export NIXHOLD_REPO_DRAFT=${lib.escapeShellArg cfg.repo.draft}
+    ''}
+    ${lib.optionalString (cfg.repo.resolve != null) ''
+      export NIXHOLD_REPO_RESOLVE=${lib.escapeShellArg cfg.repo.resolve}
     ''}
     exec ${cfg.package}/bin/nixhold "$@"
   '';
@@ -82,6 +100,37 @@ in
         `repoUrl` is unset, leaving the CLI with no fallback.
       '';
       example = "/home/alice/nix";
+    };
+
+    # The framework drafts and resolves nothing itself: which
+    # assistant, if any, runs here is the fleet's choice
+    # (ARCHITECTURE "nixhold repo").
+    repo = {
+      draft = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = ''
+          An executable that drafts a commit message. It runs in the
+          checkout with the short status and the staged diff on stdin
+          and prints the message on stdout, which becomes the
+          editor's starting text in `nixhold repo commit` and in the
+          commit a sync offers. Null starts the editor empty.
+        '';
+        example = lib.literalExpression ''pkgs.writeShellScript "draft" "exec my-assistant --commit-message"'';
+      };
+
+      resolve = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = ''
+          An executable handed a rebase that stopped on a conflict. It
+          runs in the checkout, on the operator's terminal, with a
+          brief of the rebase as `$1`; a rebase still in progress
+          when it exits is aborted. Null aborts every conflicted
+          rebase.
+        '';
+        example = lib.literalExpression ''pkgs.writeShellScript "resolve" "exec my-assistant \"$1\""'';
+      };
     };
   };
 

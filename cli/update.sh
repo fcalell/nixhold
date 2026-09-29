@@ -2,7 +2,7 @@
 #
 # The input-refresh workflow (lifecycle L6), runnable from any
 # directory — nh_fleet_root resolves the checkout.
-#   1. the checkout meets the forge (nh_fleet_sync), dirty allowed
+#   1. the checkout meets the forge (nh_checkout_sync), dirty allowed
 #   2. the pins that have no file yet, written (ARCHITECTURE "Pins")
 #   3. the baseline: every host evaluates as the checkout stands
 #   4. nix flake update (flake.lock)
@@ -342,7 +342,7 @@ nh_update_report() {
   return "$reboot"
 }
 
-# The checkout meets the forge (nh_fleet_sync) on a tree allowed to be
+# The checkout meets the forge (nh_checkout_sync) on a tree allowed to be
 # dirty: a fast-forward only touches files the operator hasn't edited,
 # and refusing would block the common "mid-edit, want fresh inputs"
 # case.
@@ -361,7 +361,7 @@ nh_update_pull() {
     nh_warn "no upstream for the current branch — skipping pull"
     return 0
   fi
-  nh_fleet_sync "$root" --allow-dirty
+  nh_checkout_sync "$root" --allow-dirty
 }
 
 # nh_update_lock_diff <before> <after> — "<input>: <old> → <new>" per

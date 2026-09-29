@@ -10,8 +10,9 @@
 #     only when this Mac is it). Naming is the confirmation: no
 #     picker, no prompt.
 #   - The checkout meets the forge once, before the roster is read
-#     (nh_fleet_sync: refused dirty or diverged, fast-forwarded when
-#     behind), and HEAD is pushed when the forge is behind it.
+#     (nh_checkout_sync: fast-forwarded when behind, refused dirty or
+#     diverged, with the offer to commit or rebase on a terminal), and
+#     HEAD is pushed when the forge is behind it.
 #   - NixOS: `nix build` of the toplevel as the operator, locally or
 #     over nh_ssh, then the profile set and switch-to-configuration
 #     as root, locally or over nh_ssh_sudo (one password per process).
@@ -72,7 +73,7 @@ EOF
   # commit, the newest one pushed from anywhere.
   local root
   root="$(nh_fleet_root)" || return 1
-  nh_fleet_sync "$root" || return 1
+  nh_checkout_sync "$root" || return 1
 
   if [ "$all" -eq 1 ]; then
     if [ "${#names[@]}" -gt 0 ]; then

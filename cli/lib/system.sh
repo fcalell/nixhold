@@ -43,49 +43,12 @@ nh_fleet_upstream() {
   }
 }
 
-# nh_fleet_sync <root> [--allow-dirty] — the checkout meets the forge
-# (ARCHITECTURE "Where a host is built"), run once before a verb's
-# first commit: dirty refused (unless --allow-dirty: a fast-forward
-# only touches files nobody edited, and git refuses the rest), the
-# branch fetched, HEAD fast-forwarded when the forge is ahead, a
-# checkout that diverged refused with both sides named. Without it a
-# checkout that fell behind builds its stale HEAD, and the tracking
-# ref nh_fleet_push reads says the forge agrees. An unreachable forge
-# stops the verb: the target fetches the fleet from it anyway.
-nh_fleet_sync() {
-  local root="$1" allow_dirty="${2:-}" upstream counts ahead behind
-  if [ "$allow_dirty" != --allow-dirty ]; then
-    nh_fleet_rev "$root" >/dev/null || return 1
-  fi
-  upstream="$(nh_fleet_upstream "$root")" || return 1
-  nh_repo_git -C "$root" fetch -q || {
-    nh_err "could not fetch ${upstream%%/*} — the forge has to be reachable: every build fetches the fleet from it"
-    return 1
-  }
-  counts="$(git -C "$root" rev-list --left-right --count "HEAD...$upstream")" || return 1
-  read -r ahead behind <<<"$counts"
-  [ "$behind" -gt 0 ] || return 0
-  if [ "$ahead" -gt 0 ]; then
-    nh_err "the checkout and $upstream have diverged — rebase or merge, then re-run"
-    nh_err "  here only ($ahead):"
-    git -C "$root" log --oneline "$upstream..HEAD" | sed 's/^/      /' >&2
-    nh_err "  $upstream only ($behind):"
-    git -C "$root" log --oneline "HEAD..$upstream" | sed 's/^/      /' >&2
-    return 1
-  fi
-  nh_info "fast-forwarding to $upstream ($behind new commit$([ "$behind" -eq 1 ] || printf s))"
-  git -C "$root" merge --ff-only -q "$upstream" >&2 || {
-    nh_err "the fast-forward to $upstream failed — a local edit touches a file it moves; commit or stash it, then re-run"
-    return 1
-  }
-}
-
 # nh_fleet_push <root> — HEAD reaches the branch's upstream. Nothing
 # to do when the upstream already contains it; a push otherwise, over
 # nh_repo_git so the installer's clone key is used where there is one.
 # A diverged upstream fails the push, and that failure is the answer:
 # the target fetches from the forge, so HEAD has to be there. The
-# tracking ref is as fresh as the verb's nh_fleet_sync.
+# tracking ref is as fresh as the verb's nh_checkout_sync (lib/checkout.sh).
 nh_fleet_push() {
   local root="$1" branch upstream
   branch="$(nh_fleet_branch "$root")" || return 1
