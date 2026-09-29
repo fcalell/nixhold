@@ -172,6 +172,27 @@ nh_secret_file() {
   fi
 }
 
+# nh_secret_owner <host> <scope> — whose secret it is, as every label,
+# commit header and buffer name says it: `fleet` for the one fleet-wide
+# ciphertext, the host otherwise. The host a fleet secret is resolved
+# through only supplies its declaration.
+nh_secret_owner() {
+  if [ "$2" = "fleet" ]; then printf fleet; else printf '%s' "$1"; fi
+}
+
+# nh_secret_next_deploy <host> <scope> <name> — the deploy that puts a
+# changed ciphertext live: the host's own, or, for a fleet secret,
+# every host that declares it.
+nh_secret_next_deploy() {
+  local host="$1" scope="$2" name="$3" hosts
+  if [ "$scope" != "fleet" ]; then
+    nh_info "next: nixhold deploy $host"
+    return 0
+  fi
+  hosts="$(nh_secret_declarers "$name" 2>/dev/null | cut -f1 | sort -u | paste -sd' ')" || hosts=""
+  nh_info "next: deploy every host that declares $name${hosts:+: $hosts}"
+}
+
 # nh_secret_declarers <name> — every host that declares <name>, as
 # "<host>\t<scope>" lines. The fleet-wide question `secret list` and
 # `secret edit <name>` both ask; a host's own eval can only answer for

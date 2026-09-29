@@ -19,9 +19,10 @@
 #
 # The walk (no name) prints the plan exactly as `secret list` renders
 # it before the first editor opens — once $EDITOR owns the screen the
-# buffer name <host>.<name> in its titlebar is the only identification
-# left. It prompts only for **required and missing** secrets; an
-# optional one is listed with the command that would provision it, and
+# buffer name <owner>.<name> in its titlebar (`fleet` for a fleet
+# secret, the host otherwise) is the only identification left. It
+# prompts only for **required and missing** secrets; an optional one
+# is listed with the command that would provision it, and
 # never opens an editor unasked — most of a fleet's secrets are
 # optional (`identity`, `env`, every repository's), and prompting for
 # each would make provisioning one a chore of skipping the rest. The
@@ -179,9 +180,16 @@ EOF
 nh_secret_provision() {
   local host="$1" json="$2" sdir="$3"
   shift 3
-  local total="$#" plan name root keys_dir
+  local total="$#" plan name root keys_dir whose=fleet whom
   plan="$(printf '%s, ' "$@")"
-  nh_info "$total secret(s) to provision on $host: ${plan%, }"
+  # A batch of fleet secrets is the fleet's, whichever host it was
+  # resolved through; one host secret in it makes it that host's walk.
+  for name in "$@"; do
+    [ "$(nh_secret_scope "$json" "$name")" = fleet ] || whose="$host"
+  done
+  whom="$whose"
+  [ "$whose" != fleet ] || whom="the fleet"
+  nh_info "$total secret(s) to provision for $whom: ${plan%, }"
   root="$(nh_fleet_root)" || return 1
   keys_dir="$(nh_worktree_keys_dir 2>/dev/null)" || keys_dir=""
 
@@ -196,12 +204,14 @@ nh_secret_provision() {
   # Iterated over "$@", not a here-string-fed `read` loop: a redirect
   # on the loop would hand $EDITOR (and the gate prompt) a stdin that
   # is not the operator's terminal.
-  local added=0 failed=0 rc idx=0 target scope generator template desc sshkey choice tsnet oppass
+  local added=0 failed=0 rc idx=0 target scope generator template desc sshkey choice tsnet oppass owner ref
   local written=() public=() pubfile
   for name in "$@"; do
     idx=$((idx + 1))
     scope="$(nh_secret_scope "$json" "$name")"
     target="$(nh_secret_file "$sdir" "$host" "$name" "$scope")"
+    owner="$(nh_secret_owner "$host" "$scope")"
+    ref="$name"; [ "$owner" = fleet ] || ref="$host $name"
     # Provisioning is for a secret that has NO ciphertext: `age -R -o`
     # truncates whatever sits at the target, so an existing one is
     # never walked into. The realistic case is fleet scope — one
@@ -209,7 +219,7 @@ nh_secret_provision() {
     # that declares it finds it already there, and the walk must be a
     # no-op rather than an overwrite.
     if [ -e "$target" ]; then
-      nh_info "[$idx/$total] $name already provisioned at $target — left as it is (edit it with 'nixhold secret edit $host $name')"
+      nh_info "[$idx/$total] $name already provisioned at $target — left as it is (edit it with 'nixhold secret edit $ref')"
       continue
     fi
     generator="$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].generator // ""')"
@@ -240,7 +250,7 @@ nh_secret_provision() {
     # offer to adopt it rather than mint a replacement. Pasting is
     # the editor path; Esc skips the secret.
     if [ -z "$tsnet" ] && [ -n "$generator" ] && [ "$sshkey" = "true" ] && nh_tty; then
-      choice="$(nh_prompt_choose "$host/$name is an SSH key:" \
+      choice="$(nh_prompt_choose "$owner/$name is an SSH key:" \
         "generate a new $sshkeytype key" "paste an existing private key")" || choice=""
       case "$choice" in
         generate*) ;;
@@ -265,7 +275,7 @@ nh_secret_provision() {
     (
       set -euo pipefail
       # One 0700 dir per secret so the buffer can carry an identifying
-      # name (<host>.<name>, what the editor shows) without publishing
+      # name (<owner>.<name>, what the editor shows) without publishing
       # it in a world-readable /tmp listing. Under the process scratch
       # root, not a bare mktemp: a trap installed in this subshell does
       # not run on Ctrl-C (bash resets trapped signals inside one), and
@@ -275,7 +285,7 @@ nh_secret_provision() {
       rfile="$workdir/recipients"
       # Attr names are normally filename-safe; sanitized anyway so a
       # quoted name cannot escape the workdir.
-      safe="$host.$name"
+      safe="$owner.$name"
       safe="${safe//[^A-Za-z0-9._-]/_}"
       tmp="$workdir/$safe"
       : >"$tmp"
@@ -309,7 +319,7 @@ nh_secret_provision() {
         if [ -n "$template" ]; then
           printf '%s' "$template" >"$tmp"
         fi
-        if nh_prompt_gate "edit $host/$name"; then
+        if nh_prompt_gate "edit $owner/$name"; then
           nh_run_editor "$tmp" || exit 1
         else
           # Declining at the gate and saving an empty buffer are one
@@ -327,7 +337,7 @@ nh_secret_provision() {
       # ciphertext provisioned meanwhile — from another terminal, or by
       # the same walk on another host — must not be truncated here.
       if [ -e "$target" ]; then
-        nh_warn "$target appeared while $name was being written — NOT overwritten (edit it with 'nixhold secret edit $host $name')"
+        nh_warn "$target appeared while $name was being written — NOT overwritten (edit it with 'nixhold secret edit $ref')"
         exit 2
       fi
       if ! age -R "$rfile" -o "$target" "$tmp"; then
@@ -364,20 +374,20 @@ nh_secret_provision() {
   done
 
   if [ "$added" -gt 0 ]; then
-    nh_ok "provisioned $added secret(s) on $host"
+    nh_ok "provisioned $added secret(s) for $whom"
     local header
-    header="secrets($host): provision $(printf '%s ' "${written[@]##*/}" | sed 's/\.age / /g; s/ $//')"
+    header="secrets($whose): provision $(printf '%s ' "${written[@]##*/}" | sed 's/\.age / /g; s/ $//')"
     # The fleet's commit hook caps a header at 60 characters, so a batch
     # whose names overflow it commits as a count instead.
-    [ "${#header}" -le 60 ] || header="secrets($host): provision $added secret(s)"
+    [ "${#header}" -le 60 ] || header="secrets($whose): provision $added secret(s)"
     local commit=("${written[@]}" "${public[@]}")
     [ -z "$keys_dir" ] || commit+=("$keys_dir/login.pub" "$keys_dir/fleet.key.age" "$keys_dir/fleet.pub" "$keys_dir/operator.age")
     nh_commit_paths "$root" "$header" "${commit[@]}"
   elif [ "$failed" -eq 0 ]; then
-    nh_info "nothing provisioned on $host ($total skipped)"
+    nh_info "nothing provisioned for $whom ($total skipped)"
   fi
   if [ "$failed" -ne 0 ]; then
-    nh_err "some secrets on $host were NOT provisioned — fix the errors above and re-run"
+    nh_err "some secrets for $whom were NOT provisioned — fix the errors above and re-run"
     return 1
   fi
 }
@@ -388,29 +398,30 @@ nh_secret_provision() {
 # Checked explicitly rather than through errexit: -e is ignored in a
 # subshell whose exit code the caller tests.
 nh_secret_edit_one() {
-  local host="$1" json="$2" sdir="$3" name="$4" target scope tsnet
+  local host="$1" json="$2" sdir="$3" name="$4" target scope tsnet owner
   scope="$(nh_secret_scope "$json" "$name")"
   target="$(nh_secret_file "$sdir" "$host" "$name" "$scope")"
+  owner="$(nh_secret_owner "$host" "$scope")"
   # A committed auth key is a SPENT key: the host joined with it, and
   # it was single-use. Asking to edit one is asking for a new one, so a
   # network whose API client the fleet commits re-mints instead of
   # opening an editor on something that cannot work again.
   tsnet="$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].tailscaleAuthKey // ""')"
   if [ -n "$tsnet" ] && [ -f "$(nh_tailnet_client_file "$tsnet")" ]; then
-    nh_info "$host/$name is minted through the '$tsnet' tailnet's API client — replacing the spent key with a fresh single-use one"
+    nh_info "$owner/$name is minted through the '$tsnet' tailnet's API client — replacing the spent key with a fresh single-use one"
     nh_tailnet_write_key "$tsnet" "$host" "$target" >/dev/null || return 1
-    nh_commit_paths "$(nh_fleet_root)" "secrets($host): re-mint $name" "$target"
-    nh_info "next: nixhold deploy $host"
+    nh_commit_paths "$(nh_fleet_root)" "secrets($owner): re-mint $name" "$target"
+    nh_secret_next_deploy "$host" "$scope" "$name"
     return 0
   fi
   if [ "$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].operatorPassphrase // false')" = "true" ]; then
-    nh_secret_passphrase_remint "$host" "$name" "$target"
+    nh_secret_passphrase_remint "$owner" "$name" "$target"
     return $?
   fi
   (
     set -euo pipefail
     # One 0700 dir so the buffer can carry an identifying name
-    # (<host>.<name>, what the editor shows) without publishing it in a
+    # (<owner>.<name>, what the editor shows) without publishing it in a
     # world-readable /tmp listing. It lives under the process scratch
     # root: bash resets trapped signals inside this subshell, so a trap
     # here would NOT run on Ctrl-C and would leave the decrypted secret
@@ -418,7 +429,7 @@ nh_secret_edit_one() {
     # alike.
     workdir="$(nh_tmpdir secret)" || exit 2
     rfile="$workdir/recipients"
-    safe="$host.$name"
+    safe="$owner.$name"
     safe="${safe//[^A-Za-z0-9._-]/_}"
     tmp="$workdir/$safe"
     : >"$tmp"
@@ -428,7 +439,7 @@ nh_secret_edit_one() {
     nh_age_decrypt "$target" "$tmp" || exit 1
     # The plaintext is encrypted back byte-for-byte, so nothing is ever
     # prefilled into the buffer: identity lives in its filename.
-    nh_info "opening $(nh_editor_cmd) for $host/$name"
+    nh_info "opening $(nh_editor_cmd) for $owner/$name"
     nh_run_editor "$tmp" || exit 1
     # Encrypt to a sibling temp + rename so an age failure can't
     # leave the committed ciphertext truncated.
@@ -456,20 +467,20 @@ nh_secret_edit_one() {
         paths+=("$login")
       fi
     fi
-    nh_commit_paths "$(nh_fleet_root)" "secrets($host): update $name" "${paths[@]}"
-    nh_info "next: nixhold deploy $host"
+    nh_commit_paths "$(nh_fleet_root)" "secrets($owner): update $name" "${paths[@]}"
+    nh_secret_next_deploy "$host" "$scope" "$name"
   )
 }
 
-# nh_secret_passphrase_remint <host> <name> <target> — `secret edit`
+# nh_secret_passphrase_remint <owner> <name> <target> — `secret edit`
 # on an `operatorPassphrase` secret that exists: a hash has no editor,
 # so the string is prompted for, the operator identity re-wrapped with
 # it, and the hash written in place of the old one (ARCHITECTURE "One
 # passphrase"). The commit carries both files, and "next" is every
 # host that declares the secret, since the hash is live on each.
 nh_secret_passphrase_remint() {
-  local host="$1" name="$2" target="$3" d rfile wrapped paths
-  nh_info "$host/$name is the fleet passphrase's hash — a new passphrase replaces it and re-wraps the operator identity (no editor)"
+  local owner="$1" name="$2" target="$3" d rfile wrapped paths
+  nh_info "$owner/$name is the fleet passphrase's hash — a new passphrase replaces it and re-wraps the operator identity (no editor)"
   d="$(nh_tmpdir secret)" || return 1
   rfile="$d/recipients"
   nh_recipients_file "$rfile" || return 1
@@ -490,7 +501,7 @@ nh_secret_passphrase_remint() {
   nh_ok "updated $target"
   paths=("$target")
   [ -z "$wrapped" ] || paths+=("$wrapped")
-  nh_commit_paths "$(nh_fleet_root)" "secrets($host): update $name" "${paths[@]}"
+  nh_commit_paths "$(nh_fleet_root)" "secrets($owner): update $name" "${paths[@]}"
   nh_info "next: nixhold deploy <host>, for every host that declares $name — the hash is live on each of them"
   nh_secret_passphrase_disks
 }
