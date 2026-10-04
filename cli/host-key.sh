@@ -19,15 +19,15 @@
 # next activation.
 
 cmd_host_key() {
-  local name="" remote=""
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      --remote)
-        remote="${2:-}"
-        shift 2
-        ;;
-      -h | --help)
-        cat <<'EOF'
+	local name="" remote=""
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+			--remote)
+				remote="${2:-}"
+				shift 2
+				;;
+			-h | --help)
+				cat <<'EOF'
 Usage: nixhold host key <name> [--remote <user>@<ip>]
 
   Records the SSH host pubkey <name>'s machine is running as
@@ -40,70 +40,70 @@ Usage: nixhold host key <name> [--remote <user>@<ip>]
                 its sudo password is prompted for once). Without it
                 the machine is THIS one, which must be <name>.
 EOF
-        return 0
-        ;;
-      -*)
-        nh_err "unknown flag: $1"
-        return 1
-        ;;
-      *)
-        if [ -z "$name" ]; then
-          name="$1"
-          shift
-        else
-          nh_err "extra arg: $1"
-          return 1
-        fi
-        ;;
-    esac
-  done
-  if [ -z "$name" ]; then
-    nh_err "expected: nixhold host key <name>"
-    return 1
-  fi
-  nh_require_cmd ssh-keygen age jq nix || return 1
+				return 0
+				;;
+			-*)
+				nh_err "unknown flag: $1"
+				return 1
+				;;
+			*)
+				if [ -z "$name" ]; then
+					name="$1"
+					shift
+				else
+					nh_err "extra arg: $1"
+					return 1
+				fi
+				;;
+		esac
+	done
+	if [ -z "$name" ]; then
+		nh_err "expected: nixhold host key <name>"
+		return 1
+	fi
+	nh_require_cmd ssh-keygen age jq nix || return 1
 
-  local platform
-  platform="$(nh_host_platform "$name")" || {
-    nh_err "host '$name' is not in this fleet — 'nixhold status --fleet' lists the roster"
-    return 1
-  }
-  if [ "$platform" = "android" ]; then
-    nh_err "$name is an Android host — it runs no sshd and has no host key to record"
-    return 1
-  fi
+	local platform
+	platform="$(nh_host_platform "$name")" || {
+		nh_err "host '$name' is not in this fleet — 'nixhold status --fleet' lists the roster"
+		return 1
+	}
+	if [ "$platform" = "android" ]; then
+		nh_err "$name is an Android host — it runs no sshd and has no host key to record"
+		return 1
+	fi
 
-  local target
-  target="$(nh_key_target "$name" "$remote")" || {
-    nh_err "this machine is '$(nh_hostname)', not '$name' — run this on $name, or pass --remote <user>@<ip>"
-    return 1
-  }
+	local target
+	target="$(nh_key_target "$name" "$remote")" || {
+		nh_err "this machine is '$(nh_hostname)', not '$name' — run this on $name, or pass --remote <user>@<ip>"
+		return 1
+	}
 
-  # A Mac that has never run sshd has no host key to record; mint one
-  # in place rather than recording nothing.
-  if [ -z "$target" ] && [ "$(uname -s)" = "Darwin" ]; then
-    nh_ensure_darwin_host_key || return 1
-  fi
+	# A Mac that has never run sshd has no host key to record; mint one
+	# in place rather than recording nothing.
+	if [ -z "$target" ] && [ "$(uname -s)" = "Darwin" ]; then
+		nh_ensure_darwin_host_key || return 1
+	fi
 
-  local live
-  live="$(nh_read_live_host_pub "$target" "$name")" || return 1
+	local live
+	live="$(nh_read_live_host_pub "$target" "$name")" || return 1
 
-  local out keys_dir root
-  keys_dir="$(nh_worktree_keys_dir)" || return 2
-  root="$(nh_fleet_root)" || return 1
-  out="$(nh_commit_host_pub "$name" "$live")" || return 1
-  nh_ok "$name's live host pubkey is recorded at $out"
-  nh_commit_paths "$root" "host($name): pubkey" "$keys_dir/hosts/$name.pub"
+	local out keys_dir root
+	keys_dir="$(nh_worktree_keys_dir)" || return 2
+	root="$(nh_fleet_root)" || return 1
+	out="$(nh_commit_host_pub "$name" "$live")" || return 1
+	nh_ok "$name's live host pubkey is recorded at $out"
+	nh_commit_paths "$root" "host($name): pubkey" "$keys_dir/hosts/$name.pub"
 
-  # The fleet key, while the connection is open. Reads
-  # /etc/nixhold/fleet.pub and installs only on a mismatch, so a
-  # machine that already holds the current key costs no unlock.
-  local sync=()
-  [ -z "$target" ] || sync=(--remote "$target" --host "$name")
-  nh_fleet_key_sync "${sync[@]}" || {
-    nh_err "$name does not hold the fleet key — it decrypts nothing until it does; fix the operator route and re-run"
-    return 1
-  }
+	# The fleet key, while the connection is open. Reads
+	# /etc/nixhold/fleet.pub and installs only on a mismatch, so a
+	# machine that already holds the current key costs no unlock.
+	local sync=()
+	[ -z "$target" ] || sync=(--remote "$target" --host "$name")
+	nh_fleet_key_sync "${sync[@]}" || {
+		nh_err "$name does not hold the fleet key — it decrypts nothing until it does; fix the operator route and re-run"
+		return 1
+	}
 
-  nh_info "next: nixhold deploy $name"
+	nh_info "next: nixhold deploy $name"
 }

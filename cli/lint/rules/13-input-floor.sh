@@ -21,50 +21,50 @@ fleet_lock="$root/flake.lock"
 nixhold_lock="${NIXHOLD_LOCK:-}"
 
 if [ ! -f "$fleet_lock" ]; then
-  echo "VIOLATION: no flake.lock at $root — 'nix flake lock' writes it"
-  exit 3
+	echo "VIOLATION: no flake.lock at $root — 'nix flake lock' writes it"
+	exit 3
 fi
 if [ -z "$nixhold_lock" ] || [ ! -f "$nixhold_lock" ]; then
-  echo "VIOLATION: nixhold's own flake.lock is not at \$NIXHOLD_LOCK (${nixhold_lock:-unset})"
-  exit 3
+	echo "VIOLATION: nixhold's own flake.lock is not at \$NIXHOLD_LOCK (${nixhold_lock:-unset})"
+	exit 3
 fi
 
 worst=0
 problems=0
 
 report() {
-  problems=$((problems + 1))
-  if [ "$strict" = "1" ]; then
-    echo "VIOLATION: $1"
-    worst=3
-  else
-    echo "WARNING: $1"
-  fi
+	problems=$((problems + 1))
+	if [ "$strict" = "1" ]; then
+		echo "VIOLATION: $1"
+		worst=3
+	else
+		echo "WARNING: $1"
+	fi
 }
 
 violation() {
-  problems=$((problems + 1))
-  echo "VIOLATION: $1"
-  worst=3
+	problems=$((problems + 1))
+	echo "VIOLATION: $1"
+	worst=3
 }
 
 # One line per nixhold root input: "<state> <input> [<fleet input> <fleet date> <floor date>]".
 # In a lock, a followed input is an array (the path from the root:
 # `["nixpkgs"]`), a locked one a node name (string).
 while IFS=' ' read -r state input fleet_name have floor; do
-  [ -n "$state" ] || continue
-  case "$state" in
-    ok) ;;
-    missing)
-      report "$input — nixhold declares it and the fleet does not, so the fleet inherits nixhold's pin and 'nixhold update' never moves it (declare it at the fleet root with inputs.nixhold.inputs.$input.follows)"
-      ;;
-    unfollowed)
-      violation "$input — declared at the fleet root but nixhold is not pointed at it (inputs.nixhold.inputs.$input.follows = \"$input\"): two copies of one input in the closure"
-      ;;
-    behind)
-      report "$input — the fleet's '$fleet_name' is locked at $have, older than nixhold's own pin ($floor): framework code on a base it was not written for ('nixhold update' moves it)"
-      ;;
-  esac
+	[ -n "$state" ] || continue
+	case "$state" in
+		ok) ;;
+		missing)
+			report "$input — nixhold declares it and the fleet does not, so the fleet inherits nixhold's pin and 'nixhold update' never moves it (declare it at the fleet root with inputs.nixhold.inputs.$input.follows)"
+			;;
+		unfollowed)
+			violation "$input — declared at the fleet root but nixhold is not pointed at it (inputs.nixhold.inputs.$input.follows = \"$input\"): two copies of one input in the closure"
+			;;
+		behind)
+			report "$input — the fleet's '$fleet_name' is locked at $have, older than nixhold's own pin ($floor): framework code on a base it was not written for ('nixhold update' moves it)"
+			;;
+	esac
 done < <(jq -r -n --slurpfile f "$fleet_lock" --slurpfile n "$nixhold_lock" '
   def day: todate | .[0:10];
   ($f[0].nodes) as $fn
@@ -82,6 +82,6 @@ done < <(jq -r -n --slurpfile f "$fleet_lock" --slurpfile n "$nixhold_lock" '
     else "missing \($x)" end')
 
 if [ "$problems" -eq 0 ]; then
-  echo "OK: every input nixhold declares is pinned by the fleet, no older than nixhold's own lock"
+	echo "OK: every input nixhold declares is pinned by the fleet, no older than nixhold's own lock"
 fi
 exit "$worst"

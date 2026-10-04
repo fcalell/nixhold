@@ -15,8 +15,8 @@ worst=0
 
 hosts="$(nh_all_hosts)"
 if [ -z "$hosts" ]; then
-  echo "OK: no hosts to probe layout from"
-  exit 0
+	echo "OK: no hosts to probe layout from"
+	exit 0
 fi
 
 # File- and dir-valued keys only; `repoUrl` is a string, not a path.
@@ -26,23 +26,23 @@ fi
 # fleet that authors no fleet modules/profiles legitimately has no
 # such dir.
 for key in secrets hostsFile keysDir ageRecipient; do
-  # stderr is NOT suppressed: exit 3 means the value resolves into
-  # another flake input, and the helper's message names it.
-  p="$(nh_worktree_layout_file "$key")" || {
-    rc=$?
-    if [ "$rc" -eq 3 ]; then
-      echo "VIOLATION: nixhold.layout.$key resolves outside the fleet checkout (see the error above) — the CLI reads and writes only inside it"
-      worst=3
-    else
-      echo "ERROR: could not probe nixhold.layout.$key — existence check skipped"
-      [ "$worst" -lt 2 ] && worst=2
-    fi
-    continue
-  }
-  if [ ! -e "$p" ]; then
-    echo "VIOLATION: nixhold.layout.$key resolves to $p, which does not exist"
-    worst=3
-  fi
+	# stderr is NOT suppressed: exit 3 means the value resolves into
+	# another flake input, and the helper's message names it.
+	p="$(nh_worktree_layout_file "$key")" || {
+		rc=$?
+		if [ "$rc" -eq 3 ]; then
+			echo "VIOLATION: nixhold.layout.$key resolves outside the fleet checkout (see the error above) — the CLI reads and writes only inside it"
+			worst=3
+		else
+			echo "ERROR: could not probe nixhold.layout.$key — existence check skipped"
+			[ "$worst" -lt 2 ] && worst=2
+		fi
+		continue
+	}
+	if [ ! -e "$p" ]; then
+		echo "VIOLATION: nixhold.layout.$key resolves to $p, which does not exist"
+		worst=3
+	fi
 done
 
 # `ageIdentityWrapped` is nullOr path: a fleet whose operator seat is a
@@ -53,17 +53,17 @@ done
 # checks that SOME route into the ciphertexts exists.
 p="$(nh_worktree_layout_file ageIdentityWrapped 2>/dev/null)" || p=""
 if [ -n "$p" ] && [ ! -e "$p" ]; then
-  echo "VIOLATION: nixhold.layout.ageIdentityWrapped resolves to $p, which does not exist (set it to null if this fleet has no passphrase identity)"
-  worst=3
+	echo "VIOLATION: nixhold.layout.ageIdentityWrapped resolves to $p, which does not exist (set it to null if this fleet has no passphrase identity)"
+	worst=3
 fi
 
 sdir="$(nh_worktree_secrets_dir)" || {
-  [ "$worst" -lt 2 ] && worst=2
-  exit "$worst"
+	[ "$worst" -lt 2 ] && worst=2
+	exit "$worst"
 }
 repo="$(nh_layout repoUrl 2>/dev/null | jq -r '. // empty')"
 if [ -n "$repo" ] && [ ! -e "$sdir/identity.age" ]; then
-  echo "WARNING: layout.repoUrl is set ($repo) but $sdir/identity.age is missing — the ISO cannot clone the fleet repo, since the fleet's own identity key is what it clones with ('nixhold secret edit <host> identity' provisions it)"
+	echo "WARNING: layout.repoUrl is set ($repo) but $sdir/identity.age is missing — the ISO cannot clone the fleet repo, since the fleet's own identity key is what it clones with ('nixhold secret edit <host> identity' provisions it)"
 fi
 
 [ "$worst" -eq 0 ] && echo "OK: every layout path exists in the worktree"

@@ -25,71 +25,71 @@
 # and touches nothing there, the same trade as the fleet key above.
 
 cmd_host_remove() {
-  local name="" yes=0
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      --yes)
-        yes=1
-        shift
-        ;;
-      -h | --help)
-        echo "Usage: nixhold host remove [<name>] [--yes]"
-        return 0
-        ;;
-      -*)
-        nh_err "unknown flag: $1"
-        return 1
-        ;;
-      *)
-        if [ -z "$name" ]; then
-          name="$1"
-          shift
-        else
-          nh_err "extra arg: $1"
-          return 1
-        fi
-        ;;
-    esac
-  done
+	local name="" yes=0
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+			--yes)
+				yes=1
+				shift
+				;;
+			-h | --help)
+				echo "Usage: nixhold host remove [<name>] [--yes]"
+				return 0
+				;;
+			-*)
+				nh_err "unknown flag: $1"
+				return 1
+				;;
+			*)
+				if [ -z "$name" ]; then
+					name="$1"
+					shift
+				else
+					nh_err "extra arg: $1"
+					return 1
+				fi
+				;;
+		esac
+	done
 
-  local root
-  root="$(nh_fleet_root)" || return 1
+	local root
+	root="$(nh_fleet_root)" || return 1
 
-  if [ -z "$name" ]; then
-    if ! nh_tty; then
-      nh_err "expected: nixhold host remove <name>"
-      return 1
-    fi
-    name="$(nh_pick_host "Remove which host from the fleet?")" || return 1
-  fi
+	if [ -z "$name" ]; then
+		if ! nh_tty; then
+			nh_err "expected: nixhold host remove <name>"
+			return 1
+		fi
+		name="$(nh_pick_host "Remove which host from the fleet?")" || return 1
+	fi
 
-  # Resolve worktree paths BEFORE rewriting hosts.nix — the layout
-  # probe evals the fleet, and the worktree helpers (not raw
-  # nh_layout) are required because layout.* eval to read-only
-  # /nix/store source paths.
-  local secrets_dir keys_dir hosts_dir machine
-  secrets_dir="$(nh_worktree_secrets_dir)" || return 1
-  keys_dir="$(nh_worktree_keys_dir)" || return 1
-  hosts_dir="$(nh_worktree_hosts_dir)" || return 1
-  # Read here too: once the entry is gone, so is the answer.
-  machine="$(nh_host_machine "$name" 2>/dev/null || true)"
+	# Resolve worktree paths BEFORE rewriting hosts.nix — the layout
+	# probe evals the fleet, and the worktree helpers (not raw
+	# nh_layout) are required because layout.* eval to read-only
+	# /nix/store source paths.
+	local secrets_dir keys_dir hosts_dir machine
+	secrets_dir="$(nh_worktree_secrets_dir)" || return 1
+	keys_dir="$(nh_worktree_keys_dir)" || return 1
+	hosts_dir="$(nh_worktree_hosts_dir)" || return 1
+	# Read here too: once the entry is gone, so is the answer.
+	machine="$(nh_host_machine "$name" 2>/dev/null || true)"
 
-  nh_info "remove $name: its entry in hosts.nix, $hosts_dir/$name, $secrets_dir/$name, $keys_dir/hosts/$name.pub"
-  if [ "$yes" -ne 1 ] && ! nh_prompt_confirm "Remove $name from the fleet?"; then
-    nh_info "aborted"
-    return 0
-  fi
+	nh_info "remove $name: its entry in hosts.nix, $hosts_dir/$name, $secrets_dir/$name, $keys_dir/hosts/$name.pub"
+	if [ "$yes" -ne 1 ] && ! nh_prompt_confirm "Remove $name from the fleet?"; then
+		nh_info "aborted"
+		return 0
+	fi
 
-  # Strip the host's attrset entry from hosts.nix. Conservative
-  # range-delete from `^[[:space:]]+<name>[[:space:]]*=[[:space:]]*{`
-  # through the matching closing `};` at the SAME indentation as the
-  # opening line, so nested `{ ... };` blocks inside the entry don't
-  # terminate the range early.
-  local hosts_file="$root/hosts.nix"
-  if [ -f "$hosts_file" ]; then
-    local tmp
-    tmp="$(mktemp -t nixhold-hosts-remove.XXXXXX)"
-    awk -v name="$name" '
+	# Strip the host's attrset entry from hosts.nix. Conservative
+	# range-delete from `^[[:space:]]+<name>[[:space:]]*=[[:space:]]*{`
+	# through the matching closing `};` at the SAME indentation as the
+	# opening line, so nested `{ ... };` blocks inside the entry don't
+	# terminate the range early.
+	local hosts_file="$root/hosts.nix"
+	if [ -f "$hosts_file" ]; then
+		local tmp
+		tmp="$(mktemp -t nixhold-hosts-remove.XXXXXX)"
+		awk -v name="$name" '
       BEGIN { skip = 0 }
       {
         if (!skip && $0 ~ ("^[[:space:]]+" name "[[:space:]]*=[[:space:]]*\\{")) {
@@ -105,30 +105,30 @@ cmd_host_remove() {
         if (!skip) print
       }
     ' "$hosts_file" >"$tmp"
-    mv "$tmp" "$hosts_file"
-    nh_ok "removed entry from $hosts_file"
-    # A machine that named it as a guest stops naming it.
-    nh_remove_guest_entries "$hosts_file" "$name" || return 1
-    nh_fleet_view_reset
-  fi
+		mv "$tmp" "$hosts_file"
+		nh_ok "removed entry from $hosts_file"
+		# A machine that named it as a guest stops naming it.
+		nh_remove_guest_entries "$hosts_file" "$name" || return 1
+		nh_fleet_view_reset
+	fi
 
-  if [ -d "$hosts_dir/$name" ]; then
-    rm -rf "${hosts_dir:?}/$name"
-    nh_ok "removed $hosts_dir/$name"
-  fi
-  if [ -d "$secrets_dir/$name" ]; then
-    rm -rf "${secrets_dir:?}/$name"
-    nh_ok "removed $secrets_dir/$name"
-  fi
-  if [ -e "$keys_dir/hosts/$name.pub" ]; then
-    rm -f "$keys_dir/hosts/$name.pub"
-    nh_ok "removed $keys_dir/hosts/$name.pub"
-  fi
+	if [ -d "$hosts_dir/$name" ]; then
+		rm -rf "${hosts_dir:?}/$name"
+		nh_ok "removed $hosts_dir/$name"
+	fi
+	if [ -d "$secrets_dir/$name" ]; then
+		rm -rf "${secrets_dir:?}/$name"
+		nh_ok "removed $secrets_dir/$name"
+	fi
+	if [ -e "$keys_dir/hosts/$name.pub" ]; then
+		rm -f "$keys_dir/hosts/$name.pub"
+		nh_ok "removed $keys_dir/hosts/$name.pub"
+	fi
 
-  nh_commit_paths "$root" "host($name): remove" \
-    "$hosts_file" "$hosts_dir/$name" "$secrets_dir/$name" "$keys_dir/hosts/$name.pub"
-  nh_warn "$name still holds the fleet key at /etc/nixhold/fleet.key — if that machine is not being wiped, run 'nixhold secret rotate' (new fleet key, every secret re-encrypted) and then 'nixhold deploy'"
-  if [ -n "$machine" ]; then
-    nh_warn "$name was a guest of $machine and its whole root is still there, at $machine:/var/lib/nixos-containers/$name — the vault database, the syncthing keys and the tailscale node key among them. Nothing here deletes it: copy out what you want, then 'sudo rm -rf /var/lib/nixos-containers/$name' on $machine"
-  fi
+	nh_commit_paths "$root" "host($name): remove" \
+		"$hosts_file" "$hosts_dir/$name" "$secrets_dir/$name" "$keys_dir/hosts/$name.pub"
+	nh_warn "$name still holds the fleet key at /etc/nixhold/fleet.key — if that machine is not being wiped, run 'nixhold secret rotate' (new fleet key, every secret re-encrypted) and then 'nixhold deploy'"
+	if [ -n "$machine" ]; then
+		nh_warn "$name was a guest of $machine and its whole root is still there, at $machine:/var/lib/nixos-containers/$name — the vault database, the syncthing keys and the tailscale node key among them. Nothing here deletes it: copy out what you want, then 'sudo rm -rf /var/lib/nixos-containers/$name' on $machine"
+	fi
 }

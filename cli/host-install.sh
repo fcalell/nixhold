@@ -82,12 +82,12 @@
 # devices; the host key itself never travels over them (it goes as a
 # tar into /mnt/etc, nh_install_stage_tree).
 nh_target_sh() {
-  local remote="$1" script="$2"
-  if [ -z "$remote" ]; then
-    sh -c "$script"
-  else
-    nh_ssh "$remote" --installer -- "$script"
-  fi
+	local remote="$1" script="$2"
+	if [ -z "$remote" ]; then
+		sh -c "$script"
+	else
+		nh_ssh "$remote" --installer -- "$script"
+	fi
 }
 
 # nh_target_sudo_sh <remote> <sh-snippet> — nh_target_sh for a snippet
@@ -98,26 +98,26 @@ nh_target_sh() {
 # nowhere — the escalation only matters when the operator points
 # --remote at an already-installed machine.
 nh_target_sudo_sh() {
-  local remote="$1" script="$2"
-  if [ -z "$remote" ]; then
-    sh -c "$(nh_sudo_preamble_local)
+	local remote="$1" script="$2"
+	if [ -z "$remote" ]; then
+		sh -c "$(nh_sudo_preamble_local)
 $script"
-  else
-    nh_ssh_sudo "$remote" --installer -- "$script" </dev/null
-  fi
+	else
+		nh_ssh_sudo "$remote" --installer -- "$script" </dev/null
+	fi
 }
 
 # nh_facter_target <name> — where this install writes the hardware
 # report: `nixhold.hardware.facterReport` as the host evaluates it,
 # re-rooted from the store copy to the operator's working tree.
 nh_facter_target() {
-  local name="$1" abspath
-  abspath="$(nh_host_eval "$name" nixos nixhold.hardware.facterReport | jq -r '. // empty')" || return 2
-  if [ -z "$abspath" ]; then
-    nh_err "$name sets nixhold.hardware.facterReport = null — the install has nowhere to write the hardware report"
-    return 1
-  fi
-  nh_reroot_layout hostsDir "$abspath"
+	local name="$1" abspath
+	abspath="$(nh_host_eval "$name" nixos nixhold.hardware.facterReport | jq -r '. // empty')" || return 2
+	if [ -z "$abspath" ]; then
+		nh_err "$name sets nixhold.hardware.facterReport = null — the install has nowhere to write the hardware report"
+		return 1
+	fi
+	nh_reroot_layout hostsDir "$abspath"
 }
 
 # nh_disk_json <remote> — the target's block devices with their
@@ -126,13 +126,13 @@ nh_facter_target() {
 # the picker described. PTTYPE/PARTTYPE are dropped on older util-linux
 # builds that lack the columns.
 nh_disk_json() {
-  local remote="$1" json
-  json="$(nh_target_sh "$remote" \
-    "lsblk -J -o NAME,SIZE,MODEL,TRAN,TYPE,PTTYPE,FSTYPE,LABEL,PARTTYPE,MOUNTPOINT" 2>/dev/null)" ||
-    json="$(nh_target_sh "$remote" \
-      "lsblk -J -o NAME,SIZE,MODEL,TRAN,TYPE,FSTYPE,LABEL,MOUNTPOINT" 2>/dev/null)" ||
-    return 1
-  printf '%s' "$json"
+	local remote="$1" json
+	json="$(nh_target_sh "$remote" \
+		"lsblk -J -o NAME,SIZE,MODEL,TRAN,TYPE,PTTYPE,FSTYPE,LABEL,PARTTYPE,MOUNTPOINT" 2>/dev/null)" ||
+		json="$(nh_target_sh "$remote" \
+			"lsblk -J -o NAME,SIZE,MODEL,TRAN,TYPE,FSTYPE,LABEL,MOUNTPOINT" 2>/dev/null)" ||
+		return 1
+	printf '%s' "$json"
 }
 
 # nh_disk_rows — lsblk JSON on stdin, one padded picker row per
@@ -146,7 +146,7 @@ nh_disk_json() {
 # child, which is the only mount present that early. Removable disks
 # are NOT excluded — a target may be an SSD in a USB enclosure.
 nh_disk_rows() {
-  jq -r '
+	jq -r '
     def orq(d): if (. == null or . == "") then d else . end;
     def mounts: ([ .mountpoint ] + (.mountpoints // []))
       | map(select(. != null and . != ""));
@@ -191,8 +191,8 @@ nh_disk_rows() {
 # partitions about to be erased (name, size, fstype, label) for the
 # destructive confirmation. Empty output = no partitions.
 nh_disk_partitions() {
-  local name="$1"
-  jq -r --arg n "$name" '
+	local name="$1"
+	jq -r --arg n "$name" '
     def orq(d): if (. == null or . == "") then d else . end;
     .blockdevices[]
     | select(.type == "disk" and .name == $n)
@@ -207,27 +207,27 @@ nh_disk_partitions() {
 # committed disko.nix) and picks deterministically by sort order;
 # falls back to /dev/<name> when the target exposes no alias.
 nh_disk_byid() {
-  local remote="$1" name="$2" links byid
-  links="$(nh_target_sh "$remote" "
+	local remote="$1" name="$2" links byid
+	links="$(nh_target_sh "$remote" "
     for l in /dev/disk/by-id/*; do
       [ -e \"\$l\" ] || continue
       [ \"\$(readlink -f \"\$l\")\" = \"/dev/$name\" ] && printf '%s\n' \"\$l\"
     done | sort" 2>/dev/null || true)"
-  byid="$(printf '%s\n' "$links" | grep -v '/wwn-' | head -n1 || true)"
-  [ -n "$byid" ] || byid="$(printf '%s\n' "$links" | head -n1 || true)"
-  if [ -n "$byid" ]; then
-    printf '%s' "$byid"
-  else
-    nh_warn "no /dev/disk/by-id alias for $name; using /dev/$name (less stable)"
-    printf '/dev/%s' "$name"
-  fi
+	byid="$(printf '%s\n' "$links" | grep -v '/wwn-' | head -n1 || true)"
+	[ -n "$byid" ] || byid="$(printf '%s\n' "$links" | head -n1 || true)"
+	if [ -n "$byid" ]; then
+		printf '%s' "$byid"
+	else
+		nh_warn "no /dev/disk/by-id alias for $name; using /dev/$name (less stable)"
+		printf '/dev/%s' "$name"
+	fi
 }
 
 # nh_disk_esps <disk-name> — lsblk JSON on stdin, the names of the
 # EFI system partitions on that disk (by partition type GUID, or
 # vfat when the lsblk build lacks PARTTYPE), one per line.
 nh_disk_esps() {
-  jq -r --arg n "$1" '
+	jq -r --arg n "$1" '
     def orq(d): if (. == null or . == "") then d else . end;
     .blockdevices[]
     | select(.type == "disk" and .name == $n)
@@ -242,9 +242,9 @@ nh_disk_esps() {
 # (root on the ISO, root or sudo elsewhere). Empty when it cannot be
 # mounted or holds no /EFI.
 nh_esp_loaders() {
-  local remote="$1" part="$2"
-  # shellcheck disable=SC2016 # runs on the TARGET's shell
-  nh_target_sudo_sh "$remote" '
+	local remote="$1" part="$2"
+	# shellcheck disable=SC2016 # runs on the TARGET's shell
+	nh_target_sudo_sh "$remote" '
     d="$(mktemp -d)" || exit 0
     if nh_rsudo mount -o ro "/dev/'"$part"'" "$d" 2>/dev/null; then
       ls "$d/EFI" 2>/dev/null
@@ -258,16 +258,16 @@ nh_esp_loaders() {
 # systemd-boot's own (BOOT, systemd, Linux, nixos) on stdout: another
 # OS's loader lives there.
 nh_foreign_loaders() {
-  awk 'BEGIN { IGNORECASE = 1 } NF && $0 !~ /^(BOOT|systemd|Linux|nixos)$/ { print }'
+	awk 'BEGIN { IGNORECASE = 1 } NF && $0 !~ /^(BOOT|systemd|Linux|nixos)$/ { print }'
 }
 
 # nh_name_os <efi-entry> — what the operator calls the OS behind an
 # /EFI entry.
 nh_name_os() {
-  case "$1" in
-    Microsoft | microsoft) printf 'Windows' ;;
-    *) printf 'another OS (EFI/%s)' "$1" ;;
-  esac
+	case "$1" in
+		Microsoft | microsoft) printf 'Windows' ;;
+		*) printf 'another OS (EFI/%s)' "$1" ;;
+	esac
 }
 
 # nh_windows_disks <remote> <lsblk-json> <target-disk> — the disks
@@ -286,23 +286,23 @@ nh_name_os() {
 #   a refused read-only mount  Fast Startup or hibernation left the
 #              filesystem with a dirty log, which ntfs3 will not touch.
 nh_windows_disks() {
-  local remote="$1" json="$2" target="$3" pairs scan locked
-  locked="$(printf '%s' "$json" | jq -r --arg t "$target" '
+	local remote="$1" json="$2" target="$3" pairs scan locked
+	locked="$(printf '%s' "$json" | jq -r --arg t "$target" '
     .blockdevices[] | select(.type == "disk" and .name != $t)
     | (.children // [])[]
     | select(((.fstype // "") | ascii_downcase) == "bitlocker")
     | " /dev/\(.name)"' | tr -d '\n')"
-  if [ -n "$locked" ]; then
-    nh_err "BitLocker on$locked — the install cannot tell whether Windows lives there, so it cannot decide whether to carry Windows' loader across the format. Suspend BitLocker in Windows, reboot into the installer, and re-run (nothing has been erased)."
-    return 1
-  fi
-  pairs="$(printf '%s' "$json" | jq -r --arg t "$target" '
+	if [ -n "$locked" ]; then
+		nh_err "BitLocker on$locked — the install cannot tell whether Windows lives there, so it cannot decide whether to carry Windows' loader across the format. Suspend BitLocker in Windows, reboot into the installer, and re-run (nothing has been erased)."
+		return 1
+	fi
+	pairs="$(printf '%s' "$json" | jq -r --arg t "$target" '
     .blockdevices[] | select(.type == "disk" and .name != $t) | .name as $d
     | (.children // [])[] | select((.fstype // "") == "ntfs")
     | "\($d) \(.name)"')"
-  [ -n "$pairs" ] || return 0
-  # shellcheck disable=SC2016 # runs on the TARGET's shell
-  scan="$(nh_target_sudo_sh "$remote" '
+	[ -n "$pairs" ] || return 0
+	# shellcheck disable=SC2016 # runs on the TARGET's shell
+	scan="$(nh_target_sudo_sh "$remote" '
     d="$(mktemp -d)" || exit 1
     printf "%s\n" '"'$pairs'"' | while read -r disk part; do
       [ -n "$part" ] || continue
@@ -316,15 +316,15 @@ nh_windows_disks() {
     done
     rmdir "$d" 2>/dev/null
     exit 0')" || {
-    nh_err "could not look for Windows on the disks this install keeps — nothing has been erased"
-    return 1
-  }
-  locked="$(printf '%s\n' "$scan" | awk '$1 == "unreadable" { printf " /dev/%s", $2 }')"
-  if [ -n "$locked" ]; then
-    nh_err "the NTFS filesystem on$locked refused a read-only mount — Fast Startup or hibernation left it with a dirty log, so the install cannot tell whether Windows lives there and cannot decide whether to carry Windows' loader across the format. Boot Windows and shut it down with Fast Startup off (or 'shutdown /s /t 0'), then re-run (nothing has been erased)."
-    return 1
-  fi
-  printf '%s\n' "$scan" | awk '$1 == "windows" { print $2 }' | sort -u
+		nh_err "could not look for Windows on the disks this install keeps — nothing has been erased"
+		return 1
+	}
+	locked="$(printf '%s\n' "$scan" | awk '$1 == "unreadable" { printf " /dev/%s", $2 }')"
+	if [ -n "$locked" ]; then
+		nh_err "the NTFS filesystem on$locked refused a read-only mount — Fast Startup or hibernation left it with a dirty log, so the install cannot tell whether Windows lives there and cannot decide whether to carry Windows' loader across the format. Boot Windows and shut it down with Fast Startup off (or 'shutdown /s /t 0'), then re-run (nothing has been erased)."
+		return 1
+	fi
+	printf '%s\n' "$scan" | awk '$1 == "windows" { print $2 }' | sort -u
 }
 
 # nh_windows_carry <remote> <lsblk-json> <disk-name> — the partition
@@ -334,25 +334,25 @@ nh_windows_disks() {
 # on the target disk goes with it, loader included. Non-zero when the
 # Windows walk could not reach a verdict (nh_windows_disks).
 nh_windows_carry() {
-  local remote="$1" json="$2" target="$3" part disks
-  disks="$(nh_windows_disks "$remote" "$json" "$target")" || return 1
-  [ -n "$disks" ] || return 0
-  while IFS= read -r part; do
-    [ -n "$part" ] || continue
-    if nh_esp_loaders "$remote" "$part" | grep -qix microsoft; then
-      printf '%s' "$part"
-      return 0
-    fi
-  done < <(printf '%s' "$json" | nh_disk_esps "$target")
+	local remote="$1" json="$2" target="$3" part disks
+	disks="$(nh_windows_disks "$remote" "$json" "$target")" || return 1
+	[ -n "$disks" ] || return 0
+	while IFS= read -r part; do
+		[ -n "$part" ] || continue
+		if nh_esp_loaders "$remote" "$part" | grep -qix microsoft; then
+			printf '%s' "$part"
+			return 0
+		fi
+	done < <(printf '%s' "$json" | nh_disk_esps "$target")
 }
 
 # nh_esp_tar <remote> <partition-name> — EFI/Microsoft of that ESP as
 # a tar stream on stdout, read through a read-only mount on the
 # target. The directory name is taken as the filesystem stores it.
 nh_esp_tar() {
-  local remote="$1" part="$2"
-  # shellcheck disable=SC2016 # runs on the TARGET's shell
-  nh_target_sudo_sh "$remote" '
+	local remote="$1" part="$2"
+	# shellcheck disable=SC2016 # runs on the TARGET's shell
+	nh_target_sudo_sh "$remote" '
     d="$(mktemp -d)" || exit 1
     nh_rsudo mount -o ro "/dev/'"$part"'" "$d" || exit 1
     m="$(ls "$d/EFI" | grep -ix microsoft | head -n1)"
@@ -373,9 +373,9 @@ nh_esp_tar() {
 # into sudo's own stdin, so `nh_rsudo tar -xf -` would read that pipe
 # rather than the session (lib/ssh.sh).
 nh_carry_install_remote() {
-  local remote="$1" carry="$2"
-  # shellcheck disable=SC2016 # runs on the TARGET's shell
-  nh_ssh_sudo "$remote" --installer -- '
+	local remote="$1" carry="$2"
+	# shellcheck disable=SC2016 # runs on the TARGET's shell
+	nh_ssh_sudo "$remote" --installer -- '
     t="$(mktemp)" || exit 1
     cat >"$t" || exit 1
     nh_rsudo install -d /mnt/boot/EFI && nh_rsudo tar -xf "$t" -C /mnt/boot/EFI
@@ -387,7 +387,7 @@ nh_carry_install_remote() {
 # nh_disk_name <remote> <by-id> — the kernel name behind a by-id path,
 # resolved on the target.
 nh_disk_name() {
-  nh_target_sh "$1" "basename \"\$(readlink -f '$2')\""
+	nh_target_sh "$1" "basename \"\$(readlink -f '$2')\""
 }
 
 # nh_esp_guard <remote> <lsblk-json> <disk-name> — the second OS walk.
@@ -399,102 +399,104 @@ nh_disk_name() {
 # the one line that lists it in systemd-boot's menu (the firmware
 # menu boots it regardless).
 nh_esp_guard() {
-  local remote="$1" json="$2" target="$3" part entry other names="" carry
-  local -a parts entries
-  carry="$(nh_windows_carry "$remote" "$json" "$target")" || return 1
-  # Collected before the prompt: gum reads its answer from stdin, and a
-  # loop fed by a process substitution hands it the pipe's EOF, which
-  # counts as No. One decision per disk, so every foreign loader is
-  # named first and the question comes once.
-  mapfile -t parts < <(printf '%s' "$json" | nh_disk_esps "$target")
-  for part in "${parts[@]}"; do
-    [ -n "$part" ] || continue
-    mapfile -t entries < <(nh_esp_loaders "$remote" "$part" | nh_foreign_loaders)
-    for entry in "${entries[@]}"; do
-      [ -n "$entry" ] || continue
-      if [ "$part" = "$carry" ] && printf '%s' "$entry" | grep -qix microsoft; then
-        nh_info "the ESP /dev/$part holds Windows' boot files and Windows lives on another disk — they are carried into the new ESP, and systemd-boot lists Windows"
-        continue
-      fi
-      nh_warn "the ESP /dev/$part on /dev/$target holds the boot files of $(nh_name_os "$entry") — that OS stops booting when this disk is erased; move it to an ESP on its own disk first"
-      names="${names:+$names, }$(nh_name_os "$entry")"
-    done
-  done
-  if [ -n "$names" ]; then
-    gum confirm --default=false "Erase /dev/$target anyway and leave $names unbootable?" || return 1
-  fi
+	local remote="$1" json="$2" target="$3" part entry other names="" carry
+	local -a parts entries
+	carry="$(nh_windows_carry "$remote" "$json" "$target")" || return 1
+	# Collected before the prompt: gum reads its answer from stdin, and a
+	# loop fed by a process substitution hands it the pipe's EOF, which
+	# counts as No. One decision per disk, so every foreign loader is
+	# named first and the question comes once.
+	mapfile -t parts < <(printf '%s' "$json" | nh_disk_esps "$target")
+	for part in "${parts[@]}"; do
+		[ -n "$part" ] || continue
+		mapfile -t entries < <(nh_esp_loaders "$remote" "$part" | nh_foreign_loaders)
+		for entry in "${entries[@]}"; do
+			[ -n "$entry" ] || continue
+			if [ "$part" = "$carry" ] && printf '%s' "$entry" | grep -qix microsoft; then
+				nh_info "the ESP /dev/$part holds Windows' boot files and Windows lives on another disk — they are carried into the new ESP, and systemd-boot lists Windows"
+				continue
+			fi
+			nh_warn "the ESP /dev/$part on /dev/$target holds the boot files of $(nh_name_os "$entry") — that OS stops booting when this disk is erased; move it to an ESP on its own disk first"
+			names="${names:+$names, }$(nh_name_os "$entry")"
+		done
+	done
+	if [ -n "$names" ]; then
+		gum confirm --default=false "Erase /dev/$target anyway and leave $names unbootable?" || return 1
+	fi
 
-  while IFS= read -r other; do
-    [ -n "$other" ] || continue
-    while IFS= read -r part; do
-      [ -n "$part" ] || continue
-      if nh_esp_loaders "$remote" "$part" | grep -qix microsoft; then
-        nh_info "Windows boots from its own ESP /dev/$part on /dev/$other, which this install never touches. To list it in systemd-boot's menu, set in the host module:"
-        nh_info "  boot.loader.systemd-boot.windows.\"11\".efiDeviceHandle = \"HD0b\";  # key = the version shown in the menu; the handle is what \`map -c\` prints for that ESP in the UEFI shell"
-      fi
-    done < <(printf '%s' "$json" | nh_disk_esps "$other")
-  done < <(printf '%s' "$json" | jq -r --arg t "$target" '.blockdevices[] | select(.type == "disk" and .name != $t) | .name')
+	while IFS= read -r other; do
+		[ -n "$other" ] || continue
+		while IFS= read -r part; do
+			[ -n "$part" ] || continue
+			if nh_esp_loaders "$remote" "$part" | grep -qix microsoft; then
+				nh_info "Windows boots from its own ESP /dev/$part on /dev/$other, which this install never touches. To list it in systemd-boot's menu, set in the host module:"
+				nh_info "  boot.loader.systemd-boot.windows.\"11\".efiDeviceHandle = \"HD0b\";  # key = the version shown in the menu; the handle is what \`map -c\` prints for that ESP in the UEFI shell"
+			fi
+		done < <(printf '%s' "$json" | nh_disk_esps "$other")
+	done < <(printf '%s' "$json" | jq -r --arg t "$target" '.blockdevices[] | select(.type == "disk" and .name != $t) | .name')
 }
 
 # nh_pick_disk <remote> — enriched picker plus the destructive
 # confirmation (default NO); prints the chosen disk as a by-id path.
 # The operator never types or copies a device path.
 nh_pick_disk() {
-  local remote="$1" json rows chosen name parts
-  json="$(nh_disk_json "$remote")" || {
-    nh_err "lsblk failed${remote:+ over ssh against $remote}"
-    return 1
-  }
-  rows="$(printf '%s' "$json" | nh_disk_rows)" || return 1
-  if [ -z "$rows" ]; then
-    nh_err "no installable whole disk found${remote:+ on $remote} (the installer medium is excluded)"
-    return 1
-  fi
-  chosen="$(printf '%s\n' "$rows" | gum choose --header "Root disk to install onto (ERASED):")" || return 1
-  name="$(printf '%s' "$chosen" | awk '{ print $1 }')"
-  [ -n "$name" ] || return 1
+	local remote="$1" json rows chosen name parts
+	json="$(nh_disk_json "$remote")" || {
+		nh_err "lsblk failed${remote:+ over ssh against $remote}"
+		return 1
+	}
+	rows="$(printf '%s' "$json" | nh_disk_rows)" || return 1
+	if [ -z "$rows" ]; then
+		nh_err "no installable whole disk found${remote:+ on $remote} (the installer medium is excluded)"
+		return 1
+	fi
+	chosen="$(printf '%s\n' "$rows" | gum choose --header "Root disk to install onto (ERASED):")" || return 1
+	name="$(printf '%s' "$chosen" | awk '{ print $1 }')"
+	[ -n "$name" ] || return 1
 
-  parts="$(printf '%s' "$json" | nh_disk_partitions "$name")"
-  nh_warn "/dev/$name is about to be ERASED — this is destroyed:"
-  if [ -n "$parts" ]; then
-    printf '%s\n' "$parts" >&2
-  else
-    printf '    (no partitions — the disk is empty)\n' >&2
-  fi
-  nh_esp_guard "$remote" "$json" "$name" || return 1
-  gum confirm --default=false "Erase /dev/$name and install?" || return 1
+	parts="$(printf '%s' "$json" | nh_disk_partitions "$name")"
+	nh_warn "/dev/$name is about to be ERASED — this is destroyed:"
+	if [ -n "$parts" ]; then
+		printf '%s\n' "$parts" >&2
+	else
+		printf '    (no partitions — the disk is empty)\n' >&2
+	fi
+	nh_esp_guard "$remote" "$json" "$name" || return 1
+	gum confirm --default=false "Erase /dev/$name and install?" || return 1
 
-  nh_disk_byid "$remote" "$name"
+	nh_disk_byid "$remote" "$name"
 }
 
 # nh_pick_install_host — the install picker: every host this machine
 # can install as a reformat candidate, plus "new host…". Prints the
 # chosen name, or "new" for the add hand-off.
 nh_pick_install_host() {
-  local rows="" line name platform chosen
-  while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    name="${line%% *}"
-    platform="${line##* }"
-    case "$platform" in
-      nixos)
-        # A guest has no disk: it starts with its machine's deploy.
-        [ -z "$(nh_host_machine "$name")" ] || continue
-        rows="${rows}${name}	(reformat — erases its disk)
-" ;;
-      darwin)
-        [ "$(uname -s)" = "Darwin" ] || continue
-        rows="${rows}${name}	(darwin — activates this Mac)
-" ;;
-    esac
-  done < <(nh_hosts)
-  rows="${rows}new host…"
-  chosen="$(printf '%s\n' "$rows" | gum choose --header "Install which host?")" || return 1
-  if [ "$chosen" = "new host…" ]; then
-    printf 'new'
-  else
-    printf '%s' "$chosen" | awk '{ print $1 }'
-  fi
+	local rows="" line name platform chosen
+	while IFS= read -r line; do
+		[ -n "$line" ] || continue
+		name="${line%% *}"
+		platform="${line##* }"
+		case "$platform" in
+			nixos)
+				# A guest has no disk: it starts with its machine's deploy.
+				[ -z "$(nh_host_machine "$name")" ] || continue
+				rows="${rows}${name}	(reformat — erases its disk)
+"
+				;;
+			darwin)
+				[ "$(uname -s)" = "Darwin" ] || continue
+				rows="${rows}${name}	(darwin — activates this Mac)
+"
+				;;
+		esac
+	done < <(nh_hosts)
+	rows="${rows}new host…"
+	chosen="$(printf '%s\n' "$rows" | gum choose --header "Install which host?")" || return 1
+	if [ "$chosen" = "new host…" ]; then
+		printf 'new'
+	else
+		printf '%s' "$chosen" | awk '{ print $1 }'
+	fi
 }
 
 # nh_stage_host_key <name> <dir> — a fresh SSH host key for <name> in
@@ -504,10 +506,10 @@ nh_pick_install_host() {
 # never leaves the process scratch root and the fleet never keeps a
 # copy: it identifies the machine, and nothing is encrypted to it.
 nh_stage_host_key() {
-  local name="$1" dir="$2"
-  nh_generate_host_key "$name" "$dir" || return 1
-  nh_commit_host_pub "$name" "$dir/ssh_host_ed25519_key.pub" >/dev/null || return 1
-  nh_ok "generated $name's SSH host key; its pubkey is committed as keys/hosts/$name.pub"
+	local name="$1" dir="$2"
+	nh_generate_host_key "$name" "$dir" || return 1
+	nh_commit_host_pub "$name" "$dir/ssh_host_ed25519_key.pub" >/dev/null || return 1
+	nh_ok "generated $name's SSH host key; its pubkey is committed as keys/hosts/$name.pub"
 }
 
 # nh_identity_key_file — the plaintext of the fleet's `identity` key,
@@ -516,13 +518,13 @@ nh_stage_host_key() {
 # (agenix, the operator's own); the installer ISO and a --keys seat
 # open the ciphertext they carry (nh_clone_key).
 nh_identity_key_file() {
-  if [ -r "$HOME/.ssh/identity" ]; then
-    printf '%s' "$HOME/.ssh/identity"
-    return 0
-  fi
-  nh_clone_key && return 0
-  nh_err "no identity key to clone with: ~/.ssh/identity is not readable here and no clone key is baked in"
-  return 1
+	if [ -r "$HOME/.ssh/identity" ]; then
+		printf '%s' "$HOME/.ssh/identity"
+		return 0
+	fi
+	nh_clone_key && return 0
+	nh_err "no identity key to clone with: ~/.ssh/identity is not readable here and no clone key is baked in"
+	return 1
 }
 
 # Where a remote installer holds the clone key, in its RAM, and the
@@ -531,7 +533,7 @@ nh_identity_key_file() {
 # a private flake input there.
 _NH_INSTALLER_KEY=/root/.ssh/nixhold-identity
 nh_installer_ssh_command() {
-  printf '%q' "$(nh_clone_ssh_command "$_NH_INSTALLER_KEY")"
+	printf '%q' "$(nh_clone_ssh_command "$_NH_INSTALLER_KEY")"
 }
 
 # nh_install_clone_remote <remote> <root> <sha> <dest> — the fleet on
@@ -540,29 +542,29 @@ nh_installer_ssh_command() {
 # unwrapped identity lives in), then a clone over it. The ISO pins the
 # forge's host keys, so the clone verifies rather than asks.
 nh_install_clone_remote() {
-  local remote="$1" root="$2" sha="$3" dest="$4" key repo branch
-  key="$(nh_identity_key_file)" || return 1
-  repo="$(nh_fleet_repo)" || return 1
-  branch="$(nh_fleet_branch "$root")" || return 1
-  nh_info "cloning the fleet onto the installer at ${sha:0:12}"
-  nh_ssh "$remote" --installer -- "umask 077; mkdir -p /root/.ssh && cat >'$_NH_INSTALLER_KEY'" <"$key" || {
-    nh_err "could not place the identity key on the installer"
-    return 1
-  }
-  nh_ssh "$remote" --installer -- "rm -rf '$dest' && GIT_SSH_COMMAND=$(nh_installer_ssh_command) git clone -q --branch '$branch' 'git@github.com:$repo.git' '$dest' && git -C '$dest' checkout -q '$sha'" </dev/null || {
-    nh_err "the installer could not clone the fleet — it needs the forge reachable and its host key pinned (the fleet ISO pins github.com)"
-    return 1
-  }
+	local remote="$1" root="$2" sha="$3" dest="$4" key repo branch
+	key="$(nh_identity_key_file)" || return 1
+	repo="$(nh_fleet_repo)" || return 1
+	branch="$(nh_fleet_branch "$root")" || return 1
+	nh_info "cloning the fleet onto the installer at ${sha:0:12}"
+	nh_ssh "$remote" --installer -- "umask 077; mkdir -p /root/.ssh && cat >'$_NH_INSTALLER_KEY'" <"$key" || {
+		nh_err "could not place the identity key on the installer"
+		return 1
+	}
+	nh_ssh "$remote" --installer -- "rm -rf '$dest' && GIT_SSH_COMMAND=$(nh_installer_ssh_command) git clone -q --branch '$branch' 'git@github.com:$repo.git' '$dest' && git -C '$dest' checkout -q '$sha'" </dev/null || {
+		nh_err "the installer could not clone the fleet — it needs the forge reachable and its host key pinned (the fleet ISO pins github.com)"
+		return 1
+	}
 }
 
 # nh_install_carry <remote> <carry> — Windows' loader onto the new ESP.
 nh_install_carry() {
-  local remote="$1" carry="$2"
-  if [ -z "$remote" ]; then
-    nh_sudo install -d /mnt/boot/EFI && nh_sudo tar -xf "$carry" -C /mnt/boot/EFI
-  else
-    nh_carry_install_remote "$remote" "$carry"
-  fi
+	local remote="$1" carry="$2"
+	if [ -z "$remote" ]; then
+		nh_sudo install -d /mnt/boot/EFI && nh_sudo tar -xf "$carry" -C /mnt/boot/EFI
+	else
+		nh_carry_install_remote "$remote" "$carry"
+	fi
 }
 
 # nh_install_stage_tree <remote> <dir> — <dir>'s tree (etc/ssh, the
@@ -577,41 +579,41 @@ nh_install_carry() {
 # stdin, so the remote side writes the stream to a file first (see
 # nh_carry_install_remote).
 nh_install_stage_tree() {
-  local remote="$1" dir="$2" tarfile
-  tarfile="$(nh_tmpdir stage)/tree.tar" || return 1
-  find "$dir" -mindepth 1 -maxdepth 1 -printf '%P\0' |
-    tar -C "$dir" --null -T - -cf "$tarfile" || return 1
-  if [ -z "$remote" ]; then
-    nh_sudo tar -C /mnt --no-same-owner --no-overwrite-dir -p -xf "$tarfile"
-  else
-    # shellcheck disable=SC2016 # runs on the TARGET's shell
-    nh_ssh_sudo "$remote" --installer -- '
+	local remote="$1" dir="$2" tarfile
+	tarfile="$(nh_tmpdir stage)/tree.tar" || return 1
+	find "$dir" -mindepth 1 -maxdepth 1 -printf '%P\0' |
+		tar -C "$dir" --null -T - -cf "$tarfile" || return 1
+	if [ -z "$remote" ]; then
+		nh_sudo tar -C /mnt --no-same-owner --no-overwrite-dir -p -xf "$tarfile"
+	else
+		# shellcheck disable=SC2016 # runs on the TARGET's shell
+		nh_ssh_sudo "$remote" --installer -- '
       t="$(mktemp)" || exit 1
       cat >"$t" || exit 1
       nh_rsudo tar -C /mnt --no-same-owner --no-overwrite-dir -p -xf "$t"
       rc=$?
       rm -f "$t"
       exit $rc' <"$tarfile"
-  fi
+	fi
 }
 
 # nh_install_place_file <remote> <src> <dest> — <src> onto the
 # installer at <dest>, root-owned and 0400, the same stream-to-a-file
 # shape as nh_install_stage_tree.
 nh_install_place_file() {
-  local remote="$1" src="$2" dest="$3"
-  if [ -z "$remote" ]; then
-    nh_sudo install -D -m 0400 "$src" "$dest"
-  else
-    # shellcheck disable=SC2016 # runs on the TARGET's shell
-    nh_ssh_sudo "$remote" --installer -- '
+	local remote="$1" src="$2" dest="$3"
+	if [ -z "$remote" ]; then
+		nh_sudo install -D -m 0400 "$src" "$dest"
+	else
+		# shellcheck disable=SC2016 # runs on the TARGET's shell
+		nh_ssh_sudo "$remote" --installer -- '
       t="$(mktemp)" || exit 1
       cat >"$t" || exit 1
       nh_rsudo install -D -m 0400 "$t" '"'$dest'"'
       rc=$?
       rm -f "$t"
       exit $rc' <"$src"
-  fi
+	fi
 }
 
 # nh_install_disk_passphrase <name> -> path of the held fleet
@@ -621,31 +623,31 @@ nh_install_place_file() {
 # that commits a wrap, the held string opens it first, which fills the
 # identity memo every later decrypt in this run reads.
 nh_install_disk_passphrase() {
-  local name="$1" pf json line sdir target d
-  pf="$(nh_passphrase_file)" || return 1
-  if nh_age_wrapped_identity >/dev/null 2>&1; then
-    nh_passphrase_identity_file >/dev/null || return 1
-  fi
-  json="$(nh_host_secrets "$name" nixos)" || return 1
-  line="$(printf '%s' "$json" | jq -r '
+	local name="$1" pf json line sdir target d
+	pf="$(nh_passphrase_file)" || return 1
+	if nh_age_wrapped_identity >/dev/null 2>&1; then
+		nh_passphrase_identity_file >/dev/null || return 1
+	fi
+	json="$(nh_host_secrets "$name" nixos)" || return 1
+	line="$(printf '%s' "$json" | jq -r '
     [ to_entries[] | select(.value.operatorPassphrase == true)
       | [ .key, (.value.scope // "host") ] | @tsv ] | first // empty')"
-  if [ -z "$line" ]; then
-    nh_err "$name declares no operatorPassphrase secret to prove the disk passphrase against"
-    return 1
-  fi
-  sdir="$(nh_worktree_secrets_dir)" || return 1
-  target="$(nh_secret_file "$sdir" "$name" "${line%%$'\t'*}" "${line#*$'\t'}")"
-  d="$(nh_tmpdir disk-passphrase)" || return 1
-  nh_age_decrypt "$target" "$d/hash" || return 1
-  if ! nh_passphrase_verify "$d/hash"; then
-    rm -f "$d/hash"
-    nh_err "that is not the fleet passphrase: it does not hash to $target"
-    return 1
-  fi
-  rm -f "$d/hash"
-  nh_ok "the fleet passphrase is proved; $name's disk is formatted under it"
-  printf '%s' "$pf"
+	if [ -z "$line" ]; then
+		nh_err "$name declares no operatorPassphrase secret to prove the disk passphrase against"
+		return 1
+	fi
+	sdir="$(nh_worktree_secrets_dir)" || return 1
+	target="$(nh_secret_file "$sdir" "$name" "${line%%$'\t'*}" "${line#*$'\t'}")"
+	d="$(nh_tmpdir disk-passphrase)" || return 1
+	nh_age_decrypt "$target" "$d/hash" || return 1
+	if ! nh_passphrase_verify "$d/hash"; then
+		rm -f "$d/hash"
+		nh_err "that is not the fleet passphrase: it does not hash to $target"
+		return 1
+	fi
+	rm -f "$d/hash"
+	nh_ok "the fleet passphrase is proved; $name's disk is formatted under it"
+	printf '%s' "$pf"
 }
 
 # nh_install_phases <name> <root> <remote> <facter> <carry> <hosts-file>
@@ -660,154 +662,154 @@ nh_install_disk_passphrase() {
 # Called as `nh_install_phases … || rc=$?`, so errexit is off in here:
 # every step is checked explicitly.
 nh_install_phases() {
-  local name="$1" root="$2" remote="$3" facter_target="$4" carry="$5" hosts_file="$6"
-  shift 6
-  local minted=("$@") extra keys_dir sha flake fetch out encrypt pw_path="" pw_file="" rc
+	local name="$1" root="$2" remote="$3" facter_target="$4" carry="$5" hosts_file="$6"
+	shift 6
+	local minted=("$@") extra keys_dir sha flake fetch out encrypt pw_path="" pw_file="" rc
 
-  # The tool belt the phases run on the target — baked into the ISO;
-  # requiring it is what makes the sequence honest anywhere else.
-  # shellcheck disable=SC2016 # runs on the TARGET's shell
-  nh_target_sh "$remote" 'for c in disko nixos-facter nixos-install git nix; do command -v "$c" >/dev/null 2>&1 || { echo "missing on the installer: $c" >&2; exit 1; }; done' || {
-    nh_err "the target is not a nixhold installer — boot the fleet ISO on it (disko, nixos-facter, nixos-install, git and nix ship on it)"
-    return 1
-  }
+	# The tool belt the phases run on the target — baked into the ISO;
+	# requiring it is what makes the sequence honest anywhere else.
+	# shellcheck disable=SC2016 # runs on the TARGET's shell
+	nh_target_sh "$remote" 'for c in disko nixos-facter nixos-install git nix; do command -v "$c" >/dev/null 2>&1 || { echo "missing on the installer: $c" >&2; exit 1; }; done' || {
+		nh_err "the target is not a nixhold installer — boot the fleet ISO on it (disko, nixos-facter, nixos-install, git and nix ship on it)"
+		return 1
+	}
 
-  # Before the disk is touched AND before the build, so a host
-  # first-boots with every required secret decryptable.
-  nh_provision_required_secrets "$name" nixos || {
-    nh_err "secret provisioning failed — fix the secrets above, then re-run install (nothing has been erased)"
-    return 1
-  }
+	# Before the disk is touched AND before the build, so a host
+	# first-boots with every required secret decryptable.
+	nh_provision_required_secrets "$name" nixos || {
+		nh_err "secret provisioning failed — fix the secrets above, then re-run install (nothing has been erased)"
+		return 1
+	}
 
-  # An encrypting host's disk is formatted under the fleet passphrase,
-  # proved here and before the fleet key is opened below, so a wrapped
-  # identity opens with the same held string and nothing prompts twice.
-  encrypt="$(nh_host_eval "$name" nixos nixhold.hardware.encrypt)" || return 1
-  if [ "$encrypt" = "true" ]; then
-    pw_path="$(nh_host_eval "$name" nixos disko.devices.disk.main.content.partitions.root.content.passwordFile | jq -r '.')" || return 1
-    pw_file="$(nh_install_disk_passphrase "$name")" || {
-      nh_err "the disk passphrase is unproven (nothing has been erased)"
-      return 1
-    }
-  fi
+	# An encrypting host's disk is formatted under the fleet passphrase,
+	# proved here and before the fleet key is opened below, so a wrapped
+	# identity opens with the same held string and nothing prompts twice.
+	encrypt="$(nh_host_eval "$name" nixos nixhold.hardware.encrypt)" || return 1
+	if [ "$encrypt" = "true" ]; then
+		pw_path="$(nh_host_eval "$name" nixos disko.devices.disk.main.content.partitions.root.content.passwordFile | jq -r '.')" || return 1
+		pw_file="$(nh_install_disk_passphrase "$name")" || {
+			nh_err "the disk passphrase is unproven (nothing has been erased)"
+			return 1
+		}
+	fi
 
-  # What the machine needs before its first activation, staged into a
-  # tree that lands in /mnt/etc after disko: the fleet key (agenix
-  # decrypts with it on the first pass — opened here over the
-  # operator's route, discovered now at the cost of a re-run rather
-  # than after disko at the cost of an erased machine) and a fresh ssh
-  # host key, whose pubkey this commits as keys/hosts/<name>.pub.
-  extra="$(nh_tmpdir extra-files)" || return 1
-  install -d -m 0755 "$extra/etc" "$extra/etc/ssh" || {
-    nh_err "could not create the staging tree under $extra"
-    return 1
-  }
-  nh_stage_host_key "$name" "$extra/etc/ssh" || return 1
-  nh_fleet_key_install --stage "$extra" || {
-    nh_err "the fleet key could not be staged — $name would first-boot unable to decrypt anything (nothing has been erased)"
-    return 1
-  }
+	# What the machine needs before its first activation, staged into a
+	# tree that lands in /mnt/etc after disko: the fleet key (agenix
+	# decrypts with it on the first pass — opened here over the
+	# operator's route, discovered now at the cost of a re-run rather
+	# than after disko at the cost of an erased machine) and a fresh ssh
+	# host key, whose pubkey this commits as keys/hosts/<name>.pub.
+	extra="$(nh_tmpdir extra-files)" || return 1
+	install -d -m 0755 "$extra/etc" "$extra/etc/ssh" || {
+		nh_err "could not create the staging tree under $extra"
+		return 1
+	}
+	nh_stage_host_key "$name" "$extra/etc/ssh" || return 1
+	nh_fleet_key_install --stage "$extra" || {
+		nh_err "the fleet key could not be staged — $name would first-boot unable to decrypt anything (nothing has been erased)"
+		return 1
+	}
 
-  # The hardware report, off the target, before anything is written to
-  # its disk: the build below reads it out of the committed tree.
-  nh_info "generating the hardware report"
-  if ! nh_target_sudo_sh "$remote" "nh_rsudo nixos-facter" >"$facter_target.tmp" || [ ! -s "$facter_target.tmp" ]; then
-    rm -f "$facter_target.tmp"
-    nh_err "nixos-facter failed on the target"
-    return 1
-  fi
-  mv "$facter_target.tmp" "$facter_target" || return 1
-  nh_ok "wrote $facter_target"
+	# The hardware report, off the target, before anything is written to
+	# its disk: the build below reads it out of the committed tree.
+	nh_info "generating the hardware report"
+	if ! nh_target_sudo_sh "$remote" "nh_rsudo nixos-facter" >"$facter_target.tmp" || [ ! -s "$facter_target.tmp" ]; then
+		rm -f "$facter_target.tmp"
+		nh_err "nixos-facter failed on the target"
+		return 1
+	fi
+	mv "$facter_target.tmp" "$facter_target" || return 1
+	nh_ok "wrote $facter_target"
 
-  # The tree the target builds: committed and pushed first, so the
-  # sha the machine boots from is one the fleet repo holds.
-  keys_dir="$(nh_worktree_keys_dir 2>/dev/null)" || keys_dir="$root/keys"
-  nh_commit_paths "$root" "host($name): install (disk + facter)" \
-    "$hosts_file" "$facter_target" "$keys_dir/hosts/$name.pub" \
-    "${minted[@]+"${minted[@]}"}"
-  sha="$(nh_fleet_rev "$root")" || return 1
-  nh_fleet_push "$root" || return 1
-  # What the disko and closure build that evaluate the fleet fetch a
-  # private flake input with: the installer's copy of the clone key
-  # there, this run's export here. An argument to `env` rather than
-  # the inherited environment, because sudo resets it.
-  if [ -z "$remote" ]; then
-    flake="$root"
-    fetch=""
-    [ -z "${GIT_SSH_COMMAND:-}" ] || printf -v fetch 'GIT_SSH_COMMAND=%q' "$GIT_SSH_COMMAND"
-  else
-    flake="/root/nixhold-fleet"
-    nh_install_clone_remote "$remote" "$root" "$sha" "$flake" || return 1
-    fetch="GIT_SSH_COMMAND=$(nh_installer_ssh_command)"
-  fi
+	# The tree the target builds: committed and pushed first, so the
+	# sha the machine boots from is one the fleet repo holds.
+	keys_dir="$(nh_worktree_keys_dir 2>/dev/null)" || keys_dir="$root/keys"
+	nh_commit_paths "$root" "host($name): install (disk + facter)" \
+		"$hosts_file" "$facter_target" "$keys_dir/hosts/$name.pub" \
+		"${minted[@]+"${minted[@]}"}"
+	sha="$(nh_fleet_rev "$root")" || return 1
+	nh_fleet_push "$root" || return 1
+	# What the disko and closure build that evaluate the fleet fetch a
+	# private flake input with: the installer's copy of the clone key
+	# there, this run's export here. An argument to `env` rather than
+	# the inherited environment, because sudo resets it.
+	if [ -z "$remote" ]; then
+		flake="$root"
+		fetch=""
+		[ -z "${GIT_SSH_COMMAND:-}" ] || printf -v fetch 'GIT_SSH_COMMAND=%q' "$GIT_SSH_COMMAND"
+	else
+		flake="/root/nixhold-fleet"
+		nh_install_clone_remote "$remote" "$root" "$sha" "$flake" || return 1
+		fetch="GIT_SSH_COMMAND=$(nh_installer_ssh_command)"
+	fi
 
-  if [ -n "$pw_file" ]; then
-    nh_install_place_file "$remote" "$pw_file" "$pw_path" || {
-      nh_err "could not place the disk passphrase on the installer (nothing has been erased)"
-      return 1
-    }
-  fi
-  nh_info "partitioning + mounting per $name's disko.devices"
-  rc=0
-  nh_target_sudo_sh "$remote" "nh_rsudo env $fetch disko --mode destroy,format,mount --yes-wipe-all-disks --flake '$flake#$name'" || rc=$?
-  if [ -n "$pw_file" ]; then
-    nh_target_sudo_sh "$remote" "nh_rsudo rm -f '$pw_path'" ||
-      nh_warn "could not remove $pw_path from the installer; it lives in RAM and goes at the reboot"
-  fi
-  [ "$rc" -eq 0 ] || {
-    nh_err "disko failed — nothing was installed"
-    return 1
-  }
+	if [ -n "$pw_file" ]; then
+		nh_install_place_file "$remote" "$pw_file" "$pw_path" || {
+			nh_err "could not place the disk passphrase on the installer (nothing has been erased)"
+			return 1
+		}
+	fi
+	nh_info "partitioning + mounting per $name's disko.devices"
+	rc=0
+	nh_target_sudo_sh "$remote" "nh_rsudo env $fetch disko --mode destroy,format,mount --yes-wipe-all-disks --flake '$flake#$name'" || rc=$?
+	if [ -n "$pw_file" ]; then
+		nh_target_sudo_sh "$remote" "nh_rsudo rm -f '$pw_path'" ||
+			nh_warn "could not remove $pw_path from the installer; it lives in RAM and goes at the reboot"
+	fi
+	[ "$rc" -eq 0 ] || {
+		nh_err "disko failed — nothing was installed"
+		return 1
+	}
 
-  # Windows' loader, read off the old ESP before the format, onto the
-  # new one before the closure is built beside it.
-  if [ -n "$carry" ]; then
-    nh_install_carry "$remote" "$carry" || {
-      nh_err "could not put Windows' boot files onto the new ESP — the disk is already formatted, so re-run the install"
-      return 1
-    }
-    nh_ok "carried Windows' boot files into the new ESP"
-  fi
+	# Windows' loader, read off the old ESP before the format, onto the
+	# new one before the closure is built beside it.
+	if [ -n "$carry" ]; then
+		nh_install_carry "$remote" "$carry" || {
+			nh_err "could not put Windows' boot files onto the new ESP — the disk is already formatted, so re-run the install"
+			return 1
+		}
+		nh_ok "carried Windows' boot files into the new ESP"
+	fi
 
-  nh_install_stage_tree "$remote" "$extra" || {
-    nh_err "could not stage the host key and the fleet key into /mnt/etc"
-    return 1
-  }
-  nh_ok "staged the host key and the fleet key into /mnt/etc"
+	nh_install_stage_tree "$remote" "$extra" || {
+		nh_err "could not stage the host key and the fleet key into /mnt/etc"
+		return 1
+	}
+	nh_ok "staged the host key and the fleet key into /mnt/etc"
 
-  # Into the TARGET's store, not the installer's. The ISO's
-  # /nix/store is an overlay whose writable layer is an unsized tmpfs
-  # — half of RAM, whatever the disk being installed holds — and its
-  # / is another one, so a closure built in place is capped by memory
-  # and a graphical host's does not fit. `--store /mnt` is the chroot
-  # store nixos-install builds into itself; `auto?trusted=1` keeps
-  # the installer's own store a source, so what it already realised
-  # is not re-fetched; TMPDIR moves build scratch off the RAM-backed
-  # root. `env` rather than a prefix assignment: sudo resets the
-  # environment. --print-out-paths reports the logical /nix/store
-  # path even out of a chroot store, so nixos-install --system takes
-  # it as-is and copies nothing.
-  nh_info "building $name's system closure at ${sha:0:12} into $name's own store"
-  out="$(nh_target_sudo_sh "$remote" "nh_rsudo install -d -m 1777 /mnt/tmp || exit 1
+	# Into the TARGET's store, not the installer's. The ISO's
+	# /nix/store is an overlay whose writable layer is an unsized tmpfs
+	# — half of RAM, whatever the disk being installed holds — and its
+	# / is another one, so a closure built in place is capped by memory
+	# and a graphical host's does not fit. `--store /mnt` is the chroot
+	# store nixos-install builds into itself; `auto?trusted=1` keeps
+	# the installer's own store a source, so what it already realised
+	# is not re-fetched; TMPDIR moves build scratch off the RAM-backed
+	# root. `env` rather than a prefix assignment: sudo resets the
+	# environment. --print-out-paths reports the logical /nix/store
+	# path even out of a chroot store, so nixos-install --system takes
+	# it as-is and copies nothing.
+	nh_info "building $name's system closure at ${sha:0:12} into $name's own store"
+	out="$(nh_target_sudo_sh "$remote" "nh_rsudo install -d -m 1777 /mnt/tmp || exit 1
 nh_rsudo env $fetch TMPDIR=/mnt/tmp nix build --no-link --print-out-paths --store /mnt --extra-substituters 'auto?trusted=1' '$flake#nixosConfigurations.$name.config.system.build.toplevel'")" || {
-    nh_err "closure build failed"
-    return 1
-  }
-  [ -n "$out" ] || {
-    nh_err "the build printed no out path"
-    return 1
-  }
+		nh_err "closure build failed"
+		return 1
+	}
+	[ -n "$out" ] || {
+		nh_err "the build printed no out path"
+		return 1
+	}
 
-  nh_info "installing $out into /mnt"
-  nh_target_sudo_sh "$remote" "nh_rsudo nixos-install --root /mnt --system '$out' --no-root-passwd" || {
-    nh_err "nixos-install failed"
-    return 1
-  }
-  nh_ok "installed $name"
-  if [ -n "$remote" ]; then
-    nh_info "rebooting the installer into $name"
-    nh_ssh "$remote" --installer -- "reboot" </dev/null >/dev/null 2>&1 || true
-  fi
+	nh_info "installing $out into /mnt"
+	nh_target_sudo_sh "$remote" "nh_rsudo nixos-install --root /mnt --system '$out' --no-root-passwd" || {
+		nh_err "nixos-install failed"
+		return 1
+	}
+	nh_ok "installed $name"
+	if [ -n "$remote" ]; then
+		nh_info "rebooting the installer into $name"
+		nh_ssh "$remote" --installer -- "reboot" </dev/null >/dev/null 2>&1 || true
+	fi
 }
 
 # nh_bootstrap_fleet <owner/repo> <keys-dir> — the fresh-Mac path: no
@@ -827,64 +829,64 @@ nh_rsudo env $fetch TMPDIR=/mnt/tmp nix build --no-link --print-out-paths --stor
 # place and would otherwise skip the relocation.
 _NH_BOOTSTRAPPED="${NIXHOLD_BOOTSTRAPPED:-0}"
 nh_bootstrap_fleet() {
-  local repo="$1" keys="$2" dir parent remote
-  case "$repo" in
-    */*) ;;
-    *)
-      nh_err "--repo expects owner/repo (got '$repo')"
-      return 1
-      ;;
-  esac
-  if [ ! -f "$keys/identity.age" ]; then
-    nh_err "--keys $keys holds no identity.age — copy it there from any checkout (it is secrets/identity.age, the fleet's own ssh key, and what clones the fleet)"
-    return 1
-  fi
-  NIXHOLD_CLONE_KEY_FILE="$keys/identity.age"
-  export NIXHOLD_CLONE_KEY_FILE
-  nh_export_clone_ssh || return 1
-  # A token-only fleet ships no wrapped identity: the token is the
-  # seat, and there is no checkout to read its recipient from yet, so
-  # the route falls to whatever is plugged in.
-  if [ -f "$keys/operator.age" ]; then
-    NIXHOLD_IDENTITY_FILE="$keys/operator.age"
-    export NIXHOLD_IDENTITY_FILE
-  elif nh_age_token_present; then
-    nh_info "no operator.age in $keys — decrypting with the FIDO2 token that is plugged in"
-  else
-    nh_err "--keys $keys holds no operator.age and no FIDO2 token is plugged in — nothing can decrypt the clone key; plug the token in, or copy keys/operator.age there"
-    return 1
-  fi
+	local repo="$1" keys="$2" dir parent remote
+	case "$repo" in
+		*/*) ;;
+		*)
+			nh_err "--repo expects owner/repo (got '$repo')"
+			return 1
+			;;
+	esac
+	if [ ! -f "$keys/identity.age" ]; then
+		nh_err "--keys $keys holds no identity.age — copy it there from any checkout (it is secrets/identity.age, the fleet's own ssh key, and what clones the fleet)"
+		return 1
+	fi
+	NIXHOLD_CLONE_KEY_FILE="$keys/identity.age"
+	export NIXHOLD_CLONE_KEY_FILE
+	nh_export_clone_ssh || return 1
+	# A token-only fleet ships no wrapped identity: the token is the
+	# seat, and there is no checkout to read its recipient from yet, so
+	# the route falls to whatever is plugged in.
+	if [ -f "$keys/operator.age" ]; then
+		NIXHOLD_IDENTITY_FILE="$keys/operator.age"
+		export NIXHOLD_IDENTITY_FILE
+	elif nh_age_token_present; then
+		nh_info "no operator.age in $keys — decrypting with the FIDO2 token that is plugged in"
+	else
+		nh_err "--keys $keys holds no operator.age and no FIDO2 token is plugged in — nothing can decrypt the clone key; plug the token in, or copy keys/operator.age there"
+		return 1
+	fi
 
-  # The framework's checkout directory, baked into the CLI package
-  # from lib/defaults.nix: nothing here can be evaluated yet, and
-  # this is the clone that makes evaluation possible. A fleet that
-  # overrides `nixhold.home.repositoriesDir` is honoured by
-  # nh_fleet_relocate, which runs once the option is readable.
-  parent="${NIXHOLD_REPOSITORIES_DIR:-}"
-  if [ -z "$parent" ]; then
-    nh_err "\$NIXHOLD_REPOSITORIES_DIR is unset — the packaged 'nixhold' bakes it in; run that rather than these sources"
-    return 1
-  fi
-  dir="$parent/${repo##*/}"
-  dir="${dir%.git}"
-  if [ -f "$dir/flake.nix" ]; then
-    nh_info "fleet checkout already at $dir"
-  else
-    nh_require_cmd git || return 1
-    remote="git@github.com:${repo%.git}.git"
-    nh_info "cloning $remote into $dir over the fleet identity key"
-    _NH_CLONING=1
-    if ! nh_repo_git clone "$remote" "$dir" >&2; then
-      _NH_CLONING=0
-      nh_err "clone of $remote failed — the key in $keys/identity.age must be registered on the forge (it is the fleet's own identity key)"
-      return 1
-    fi
-    _NH_CLONING=0
-    _NH_BOOTSTRAPPED=1
-    nh_mark_cloned
-    nh_ok "cloned fleet to $dir"
-  fi
-  _NH_FLEET_ROOT="$dir"
+	# The framework's checkout directory, baked into the CLI package
+	# from lib/defaults.nix: nothing here can be evaluated yet, and
+	# this is the clone that makes evaluation possible. A fleet that
+	# overrides `nixhold.home.repositoriesDir` is honoured by
+	# nh_fleet_relocate, which runs once the option is readable.
+	parent="${NIXHOLD_REPOSITORIES_DIR:-}"
+	if [ -z "$parent" ]; then
+		nh_err "\$NIXHOLD_REPOSITORIES_DIR is unset — the packaged 'nixhold' bakes it in; run that rather than these sources"
+		return 1
+	fi
+	dir="$parent/${repo##*/}"
+	dir="${dir%.git}"
+	if [ -f "$dir/flake.nix" ]; then
+		nh_info "fleet checkout already at $dir"
+	else
+		nh_require_cmd git || return 1
+		remote="git@github.com:${repo%.git}.git"
+		nh_info "cloning $remote into $dir over the fleet identity key"
+		_NH_CLONING=1
+		if ! nh_repo_git clone "$remote" "$dir" >&2; then
+			_NH_CLONING=0
+			nh_err "clone of $remote failed — the key in $keys/identity.age must be registered on the forge (it is the fleet's own identity key)"
+			return 1
+		fi
+		_NH_CLONING=0
+		_NH_BOOTSTRAPPED=1
+		nh_mark_cloned
+		nh_ok "cloned fleet to $dir"
+	fi
+	_NH_FLEET_ROOT="$dir"
 }
 
 # nh_fleet_relocate <name> <platform> — put the checkout this
@@ -897,23 +899,23 @@ nh_bootstrap_fleet() {
 # checkout in one place and its baked default pointing at another —
 # which is how an operator ends up with two.
 nh_fleet_relocate() {
-  local name="$1" platform="$2" want
-  want="$(nh_host_eval "$name" "$platform" programs.nixhold.fleetDir | jq -r '. // empty')" || {
-    nh_warn "could not read $name's programs.nixhold.fleetDir — the checkout stays at $_NH_FLEET_ROOT"
-    return 0
-  }
-  [ -n "$want" ] && [ "$want" != "$_NH_FLEET_ROOT" ] || return 0
-  if [ -e "$want" ]; then
-    nh_warn "$name expects its fleet checkout at $want, where something already sits — leaving this one at $_NH_FLEET_ROOT"
-    return 0
-  fi
-  nh_info "moving the checkout to $want, where $name looks for it"
-  if ! mkdir -p "$(dirname "$want")" || ! mv "$_NH_FLEET_ROOT" "$want"; then
-    nh_err "could not move the checkout to $want — it is still at $_NH_FLEET_ROOT"
-    return 1
-  fi
-  _NH_FLEET_ROOT="$want"
-  nh_ok "fleet checkout at $want"
+	local name="$1" platform="$2" want
+	want="$(nh_host_eval "$name" "$platform" programs.nixhold.fleetDir | jq -r '. // empty')" || {
+		nh_warn "could not read $name's programs.nixhold.fleetDir — the checkout stays at $_NH_FLEET_ROOT"
+		return 0
+	}
+	[ -n "$want" ] && [ "$want" != "$_NH_FLEET_ROOT" ] || return 0
+	if [ -e "$want" ]; then
+		nh_warn "$name expects its fleet checkout at $want, where something already sits — leaving this one at $_NH_FLEET_ROOT"
+		return 0
+	fi
+	nh_info "moving the checkout to $want, where $name looks for it"
+	if ! mkdir -p "$(dirname "$want")" || ! mv "$_NH_FLEET_ROOT" "$want"; then
+		nh_err "could not move the checkout to $want — it is still at $_NH_FLEET_ROOT"
+		return 1
+	fi
+	_NH_FLEET_ROOT="$want"
+	nh_ok "fleet checkout at $want"
 }
 
 # nh_darwin_preflight <name> — what a fresh Mac must already be
@@ -922,23 +924,23 @@ nh_fleet_relocate() {
 # Line Tools present, and no Determinate Nix beside a host that
 # manages Nix itself (nix-darwin refuses that activation).
 nh_darwin_preflight() {
-  local name="$1" want user
-  want="$(nh_host_eval "$name" darwin nixhold.identity.username | jq -r '.')" || return 2
-  user="$(id -un)"
-  if [ "$user" != "$want" ]; then
-    nh_err "logged in as '$user', but $name's operator account is '$want' — create that account (System Settings › Users & Groups, administrator) and run the install from it"
-    return 1
-  fi
-  if ! xcode-select -p >/dev/null 2>&1; then
-    nh_err "Command Line Tools are missing — run 'xcode-select --install', then re-run"
-    return 1
-  fi
-  if [ -e /usr/local/bin/determinate-nixd ] &&
-    [ "$(nh_host_eval "$name" darwin nix.enable | jq -r '.')" = "true" ]; then
-    nh_err "Determinate Nix is installed and $name manages Nix itself — nix-darwin refuses to activate beside it; uninstall Determinate for the vanilla multi-user install, or set nix.enable = false in the host module"
-    return 1
-  fi
-  nh_ok "preflight: account $user, Command Line Tools present, Nix manageable"
+	local name="$1" want user
+	want="$(nh_host_eval "$name" darwin nixhold.identity.username | jq -r '.')" || return 2
+	user="$(id -un)"
+	if [ "$user" != "$want" ]; then
+		nh_err "logged in as '$user', but $name's operator account is '$want' — create that account (System Settings › Users & Groups, administrator) and run the install from it"
+		return 1
+	fi
+	if ! xcode-select -p >/dev/null 2>&1; then
+		nh_err "Command Line Tools are missing — run 'xcode-select --install', then re-run"
+		return 1
+	fi
+	if [ -e /usr/local/bin/determinate-nixd ] &&
+		[ "$(nh_host_eval "$name" darwin nix.enable | jq -r '.')" = "true" ]; then
+		nh_err "Determinate Nix is installed and $name manages Nix itself — nix-darwin refuses to activate beside it; uninstall Determinate for the vanilla multi-user install, or set nix.enable = false in the host module"
+		return 1
+	fi
+	nh_ok "preflight: account $user, Command Line Tools present, Nix manageable"
 }
 
 # nh_darwin_switch <out> — nix-darwin's switch from a built system
@@ -948,28 +950,31 @@ nh_darwin_preflight() {
 # are moved to <file>.before-nix-darwin — the rename nix-darwin asks
 # for — and the switch retried once.
 nh_darwin_switch() {
-  local out="$1" log attempt files f
-  log="$(nh_tmpdir switch)/log" || return 1
-  for attempt in 1 2; do
-    if (nh_activate_darwin "$out" 2>&1 | tee "$log" >&2; exit "${PIPESTATUS[0]}"); then
-      return 0
-    fi
-    [ "$attempt" -eq 1 ] || break
-    grep -q "Unexpected files in /etc" "$log" || break
-    files="$(awk '/would be overwritten:/ { f = 1; next } f && /^  \// { print $1; next } f && NF { exit }' "$log")"
-    [ -n "$files" ] || break
-    nh_warn "nix-darwin refuses to overwrite files in /etc it did not write — moving them aside and retrying once"
-    while IFS= read -r f; do
-      [ -n "$f" ] || continue
-      sudo mv "$f" "$f.before-nix-darwin" || {
-        nh_err "could not move $f aside"
-        return 1
-      }
-      nh_info "  $f → $f.before-nix-darwin"
-    done <<<"$files"
-  done
-  nh_err "activation failed — see above"
-  return 1
+	local out="$1" log attempt files f
+	log="$(nh_tmpdir switch)/log" || return 1
+	for attempt in 1 2; do
+		if (
+			nh_activate_darwin "$out" 2>&1 | tee "$log" >&2
+			exit "${PIPESTATUS[0]}"
+		); then
+			return 0
+		fi
+		[ "$attempt" -eq 1 ] || break
+		grep -q "Unexpected files in /etc" "$log" || break
+		files="$(awk '/would be overwritten:/ { f = 1; next } f && /^  \// { print $1; next } f && NF { exit }' "$log")"
+		[ -n "$files" ] || break
+		nh_warn "nix-darwin refuses to overwrite files in /etc it did not write — moving them aside and retrying once"
+		while IFS= read -r f; do
+			[ -n "$f" ] || continue
+			sudo mv "$f" "$f.before-nix-darwin" || {
+				nh_err "could not move $f aside"
+				return 1
+			}
+			nh_info "  $f → $f.before-nix-darwin"
+		done <<<"$files"
+	done
+	nh_err "activation failed — see above"
+	return 1
 }
 
 # nh_darwin_wait_secrets <name> — agenix on darwin decrypts under
@@ -978,45 +983,45 @@ nh_darwin_switch() {
 # does not, and say what is still missing. Non-zero when something
 # is.
 nh_darwin_wait_secrets() {
-  local name="$1" paths
-  paths="$(nh_host_eval "$name" darwin age.secrets | jq -r '.[] | .path')" || return 0
-  [ -n "$paths" ] || return 0
-  nh_info "waiting for agenix to decrypt $(printf '%s\n' "$paths" | grep -c .) secret(s) under /run/agenix"
-  if nh_wait_paths 30 "$paths"; then
-    nh_ok "every active secret is decrypted"
-    return 0
-  fi
-  nh_info "not decrypted yet — kickstarting system/activate-agenix"
-  sudo launchctl kickstart -k system/activate-agenix 2>/dev/null ||
-    nh_warn "could not kickstart system/activate-agenix"
-  if nh_wait_paths 30 "$paths"; then
-    nh_ok "every active secret is decrypted"
-    return 0
-  fi
-  nh_warn "still missing after the kickstart: $(nh_missing_paths "$paths" | paste -sd' ' -)"
-  nh_info "the usual cause is a stale /etc/nixhold/fleet.key — 'nixhold deploy $name' reinstalls it; 'sudo launchctl print system/activate-agenix' shows the daemon"
-  return 1
+	local name="$1" paths
+	paths="$(nh_host_eval "$name" darwin age.secrets | jq -r '.[] | .path')" || return 0
+	[ -n "$paths" ] || return 0
+	nh_info "waiting for agenix to decrypt $(printf '%s\n' "$paths" | grep -c .) secret(s) under /run/agenix"
+	if nh_wait_paths 30 "$paths"; then
+		nh_ok "every active secret is decrypted"
+		return 0
+	fi
+	nh_info "not decrypted yet — kickstarting system/activate-agenix"
+	sudo launchctl kickstart -k system/activate-agenix 2>/dev/null ||
+		nh_warn "could not kickstart system/activate-agenix"
+	if nh_wait_paths 30 "$paths"; then
+		nh_ok "every active secret is decrypted"
+		return 0
+	fi
+	nh_warn "still missing after the kickstart: $(nh_missing_paths "$paths" | paste -sd' ' -)"
+	nh_info "the usual cause is a stale /etc/nixhold/fleet.key — 'nixhold deploy $name' reinstalls it; 'sudo launchctl print system/activate-agenix' shows the daemon"
+	return 1
 }
 
 # nh_wait_paths <seconds> <paths-newline-separated> — poll (as root:
 # the secrets dir is not traversable by the operator) until every
 # path exists or the bound is hit.
 nh_wait_paths() {
-  local bound="$1" paths="$2" i=0
-  while [ "$i" -lt "$bound" ]; do
-    [ -z "$(nh_missing_paths "$paths")" ] && return 0
-    sleep 1
-    i=$((i + 1))
-  done
-  [ -z "$(nh_missing_paths "$paths")" ]
+	local bound="$1" paths="$2" i=0
+	while [ "$i" -lt "$bound" ]; do
+		[ -z "$(nh_missing_paths "$paths")" ] && return 0
+		sleep 1
+		i=$((i + 1))
+	done
+	[ -z "$(nh_missing_paths "$paths")" ]
 }
 
 nh_missing_paths() {
-  local p
-  while IFS= read -r p; do
-    [ -n "$p" ] || continue
-    sudo test -e "$p" || printf '%s\n' "$p"
-  done <<<"$1"
+	local p
+	while IFS= read -r p; do
+		[ -n "$p" ] || continue
+		sudo test -e "$p" || printf '%s\n' "$p"
+	done <<<"$1"
 }
 
 # nh_darwin_install <name> <root> — local darwin install, fresh-macOS
@@ -1035,56 +1040,56 @@ nh_missing_paths() {
 #   3. secrets verified under /run/agenix, then a second activation so
 #      home-manager derives the .pub files of sshKey secrets.
 nh_darwin_install() {
-  local name="$1" root="$2"
+	local name="$1" root="$2"
 
-  if [ "$(uname -s)" != "Darwin" ]; then
-    nh_err "darwin install runs on the Mac itself — run this on $name"
-    return 1
-  fi
+	if [ "$(uname -s)" != "Darwin" ]; then
+		nh_err "darwin install runs on the Mac itself — run this on $name"
+		return 1
+	fi
 
-  nh_darwin_preflight "$name" || return 1
+	nh_darwin_preflight "$name" || return 1
 
-  # 1. Identity: the machine's own ssh key (recorded, never escrowed)
-  #    and the fleet key (installed, so agenix can decrypt).
-  nh_ensure_darwin_host_key || return 1
-  local live
-  live="$(nh_read_live_host_pub)" || return 1
-  nh_commit_host_pub "$name" "$live" >/dev/null || return 1
-  nh_fleet_key_install || {
-    nh_err "the fleet key is not on this Mac — agenix would decrypt nothing; fix the operator route and re-run install"
-    return 1
-  }
-  local keys_dir
-  keys_dir="$(nh_worktree_keys_dir)" || return 2
-  nh_commit_paths "$root" "host($name): pubkey" "$keys_dir/hosts/$name.pub"
+	# 1. Identity: the machine's own ssh key (recorded, never escrowed)
+	#    and the fleet key (installed, so agenix can decrypt).
+	nh_ensure_darwin_host_key || return 1
+	local live
+	live="$(nh_read_live_host_pub)" || return 1
+	nh_commit_host_pub "$name" "$live" >/dev/null || return 1
+	nh_fleet_key_install || {
+		nh_err "the fleet key is not on this Mac — agenix would decrypt nothing; fix the operator route and re-run install"
+		return 1
+	}
+	local keys_dir
+	keys_dir="$(nh_worktree_keys_dir)" || return 2
+	nh_commit_paths "$root" "host($name): pubkey" "$keys_dir/hosts/$name.pub"
 
-  # Required secrets before the build, as on NixOS: activation would
-  # only fail later with a worse error.
-  nh_provision_required_secrets "$name" darwin || {
-    nh_err "secret provisioning failed — fix the secrets above, then re-run install"
-    return 1
-  }
+	# Required secrets before the build, as on NixOS: activation would
+	# only fail later with a worse error.
+	nh_provision_required_secrets "$name" darwin || {
+		nh_err "secret provisioning failed — fix the secrets above, then re-run install"
+		return 1
+	}
 
-  # 2. Build at the committed HEAD, then activate.
-  local sha out
-  sha="$(nh_fleet_rev "$root")" || return 1
-  nh_fleet_push "$root" || return 1
-  nh_info "building $name's system at ${sha:0:12}"
-  out="$(sh -c "$(nh_build_cmd "$root" darwin "$name" 0)")" || {
-    nh_err "could not build $name's system closure"
-    return 1
-  }
-  nh_darwin_switch "$out" || return 1
+	# 2. Build at the committed HEAD, then activate.
+	local sha out
+	sha="$(nh_fleet_rev "$root")" || return 1
+	nh_fleet_push "$root" || return 1
+	nh_info "building $name's system at ${sha:0:12}"
+	out="$(sh -c "$(nh_build_cmd "$root" darwin "$name" 0)")" || {
+		nh_err "could not build $name's system closure"
+		return 1
+	}
+	nh_darwin_switch "$out" || return 1
 
-  # 3. Secrets, then the .pub files.
-  nh_darwin_wait_secrets "$name" || true
-  if [ "$(nh_host_eval "$name" darwin nixhold.secrets | jq 'any(.[]; .sshKey and .active)')" = "true" ]; then
-    nh_info "activating again so home-manager derives the .pub files of the SSH keys"
-    nh_darwin_switch "$out" || return 1
-  fi
+	# 3. Secrets, then the .pub files.
+	nh_darwin_wait_secrets "$name" || true
+	if [ "$(nh_host_eval "$name" darwin nixhold.secrets | jq 'any(.[]; .sshKey and .active)')" = "true" ]; then
+		nh_info "activating again so home-manager derives the .pub files of the SSH keys"
+		nh_darwin_switch "$out" || return 1
+	fi
 
-  nh_ok "installed $name"
-  nh_next_after_install "$name" darwin
+	nh_ok "installed $name"
+	nh_next_after_install "$name" darwin
 }
 
 # nh_next_after_install <name> <platform> — the closing steps for a
@@ -1102,62 +1107,81 @@ nh_darwin_install() {
 # darwin.nix asserts when one is set — so a Mac is always by hand, and
 # it switches in place rather than rebooting.
 nh_next_after_install() {
-  local name="$1" platform="$2" ts="" enabled="false" key="" n=1
-  ts="$(nh_host_eval "$name" "$platform" nixhold.services.tailscale 2>/dev/null)" || ts=""
-  if [ -n "$ts" ]; then
-    enabled="$(printf '%s' "$ts" | jq -r '.enable // false')"
-    key="$(printf '%s' "$ts" | jq -r '.authKeySecret // empty')"
-  fi
+	local name="$1" platform="$2" ts="" enabled="false" key="" n=1
+	ts="$(nh_host_eval "$name" "$platform" nixhold.services.tailscale 2>/dev/null)" || ts=""
+	if [ -n "$ts" ]; then
+		enabled="$(printf '%s' "$ts" | jq -r '.enable // false')"
+		key="$(printf '%s' "$ts" | jq -r '.authKeySecret // empty')"
+	fi
 
-  nh_info "next:"
-  if [ "$platform" != "darwin" ]; then
-    printf '  %d. %s reboots into its new system.\n' "$n" "$name" >&2
-    n=$((n + 1))
-  fi
-  if [ "$enabled" = "true" ] && [ -z "$key" ]; then
-    if [ "$platform" = "darwin" ]; then
-      printf '  %d. On this Mac, join the tailnet once (a Mac has no auth-key file):\n' "$n" >&2
-    else
-      printf '  %d. On %s itself — it declares no tailscale authKeySecret,\n     so it joins the tailnet by hand, once:\n' "$n" "$name" >&2
-    fi
-    printf '       sudo tailscale up\n' >&2
-    n=$((n + 1))
-  elif [ "$enabled" = "true" ]; then
-    printf '  %d. %s joins the tailnet itself on activation (authKeySecret "%s").\n' "$n" "$name" "$key" >&2
-    n=$((n + 1))
-  fi
-  printf '  %d. From here, for every change after this:\n       nixhold deploy %s\n' "$n" "$name" >&2
-  if [ "$enabled" = "true" ] && [ -n "$key" ]; then
-    printf '  A reinstall spends the committed key: if %s never appears, put a fresh\n' "$name" >&2
-    printf "  one in with 'nixhold secret edit %s %s', then deploy.\n" "$name" "$key" >&2
-  fi
+	nh_info "next:"
+	if [ "$platform" != "darwin" ]; then
+		printf '  %d. %s reboots into its new system.\n' "$n" "$name" >&2
+		n=$((n + 1))
+	fi
+	if [ "$enabled" = "true" ] && [ -z "$key" ]; then
+		if [ "$platform" = "darwin" ]; then
+			printf '  %d. On this Mac, join the tailnet once (a Mac has no auth-key file):\n' "$n" >&2
+		else
+			printf '  %d. On %s itself — it declares no tailscale authKeySecret,\n     so it joins the tailnet by hand, once:\n' "$n" "$name" >&2
+		fi
+		printf '       sudo tailscale up\n' >&2
+		n=$((n + 1))
+	elif [ "$enabled" = "true" ]; then
+		printf '  %d. %s joins the tailnet itself on activation (authKeySecret "%s").\n' "$n" "$name" "$key" >&2
+		n=$((n + 1))
+	fi
+	printf '  %d. From here, for every change after this:\n       nixhold deploy %s\n' "$n" "$name" >&2
+	if [ "$enabled" = "true" ] && [ -n "$key" ]; then
+		printf '  A reinstall spends the committed key: if %s never appears, put a fresh\n' "$name" >&2
+		printf "  one in with 'nixhold secret edit %s %s', then deploy.\n" "$name" "$key" >&2
+	fi
 }
 
 cmd_host_install() {
-  local name="" remote="" disk="" yes=0 picked=0 repo="" keys=""
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      # Each value flag reports its own missing value: left bare, "$2"
-      # under `set -u` aborts the run with bash's "unbound variable".
-      --remote)
-        remote="${2:-}"
-        [ -n "$remote" ] || { nh_err "--remote needs <user>@<ip>"; return 1; }
-        shift 2 ;;
-      --disk)
-        disk="${2:-}"
-        [ -n "$disk" ] || { nh_err "--disk needs a /dev/disk/by-id path"; return 1; }
-        shift 2 ;;
-      --yes) yes=1; shift ;;
-      --repo)
-        repo="${2:-}"
-        [ -n "$repo" ] || { nh_err "--repo needs <owner/repo>"; return 1; }
-        shift 2 ;;
-      --keys)
-        keys="${2:-}"
-        [ -n "$keys" ] || { nh_err "--keys needs a directory"; return 1; }
-        shift 2 ;;
-      -h | --help)
-        cat <<'EOF'
+	local name="" remote="" disk="" yes=0 picked=0 repo="" keys=""
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+			# Each value flag reports its own missing value: left bare, "$2"
+			# under `set -u` aborts the run with bash's "unbound variable".
+			--remote)
+				remote="${2:-}"
+				[ -n "$remote" ] || {
+					nh_err "--remote needs <user>@<ip>"
+					return 1
+				}
+				shift 2
+				;;
+			--disk)
+				disk="${2:-}"
+				[ -n "$disk" ] || {
+					nh_err "--disk needs a /dev/disk/by-id path"
+					return 1
+				}
+				shift 2
+				;;
+			--yes)
+				yes=1
+				shift
+				;;
+			--repo)
+				repo="${2:-}"
+				[ -n "$repo" ] || {
+					nh_err "--repo needs <owner/repo>"
+					return 1
+				}
+				shift 2
+				;;
+			--keys)
+				keys="${2:-}"
+				[ -n "$keys" ] || {
+					nh_err "--keys needs a directory"
+					return 1
+				}
+				shift 2
+				;;
+			-h | --help)
+				cat <<'EOF'
 Usage: nixhold host install [<name>] [--remote <user>@<ip>]
                                      [--disk <by-id>] [--yes]
                                      [--repo <owner/repo> --keys <dir>]
@@ -1175,207 +1199,216 @@ Usage: nixhold host install [<name>] [--remote <user>@<ip>]
                    identity.age, plus operator.age unless the
                    operator's seat is a FIDO2 token.
 EOF
-        return 0
-        ;;
-      -*) nh_err "unknown flag: $1"; return 1 ;;
-      *) if [ -z "$name" ]; then name="$1"; shift; else nh_err "extra arg: $1"; return 1; fi ;;
-    esac
-  done
+				return 0
+				;;
+			-*)
+				nh_err "unknown flag: $1"
+				return 1
+				;;
+			*) if [ -z "$name" ]; then
+				name="$1"
+				shift
+			else
+				nh_err "extra arg: $1"
+				return 1
+			fi ;;
+		esac
+	done
 
-  nh_require_cmd nix jq
-  if [ -n "$repo" ] || [ -n "$keys" ]; then
-    if [ -z "$repo" ] || [ -z "$keys" ]; then
-      nh_err "--repo and --keys go together"
-      return 1
-    fi
-    nh_bootstrap_fleet "$repo" "$keys" || return 1
-  fi
-  local root
-  root="$(nh_fleet_root)" || return 2
-  # Before any prompt and any write: if this run cloned the checkout,
-  # the CLI that finishes the install is the one that checkout pins.
-  nh_reexec_at_fleet_pin "$root"
-  # Then the checkout meets the forge, before the roster is read and
-  # before the install's own commit, which then lands on the forge's
-  # tip and pushes as a fast-forward. --yes asks nothing, so a refusal
-  # comes without its offer.
-  local offer=()
-  [ "$yes" -eq 0 ] || offer=(--no-offer)
-  nh_checkout_sync "$root" "${offer[@]}" || return 1
+	nh_require_cmd nix jq
+	if [ -n "$repo" ] || [ -n "$keys" ]; then
+		if [ -z "$repo" ] || [ -z "$keys" ]; then
+			nh_err "--repo and --keys go together"
+			return 1
+		fi
+		nh_bootstrap_fleet "$repo" "$keys" || return 1
+	fi
+	local root
+	root="$(nh_fleet_root)" || return 2
+	# Before any prompt and any write: if this run cloned the checkout,
+	# the CLI that finishes the install is the one that checkout pins.
+	nh_reexec_at_fleet_pin "$root"
+	# Then the checkout meets the forge, before the roster is read and
+	# before the install's own commit, which then lands on the forge's
+	# tip and pushes as a fast-forward. --yes asks nothing, so a refusal
+	# comes without its offer.
+	local offer=()
+	[ "$yes" -eq 0 ] || offer=(--no-offer)
+	nh_checkout_sync "$root" "${offer[@]}" || return 1
 
-  # Host selection.
-  if [ -z "$name" ]; then
-    if ! nh_tty; then
-      nh_err "expected: nixhold host install <name>"
-      return 1
-    fi
-    nh_require_cmd gum
-    name="$(nh_pick_install_host)" || return 1
-    if [ "$name" = "new" ]; then
-      # The add walk ends with its own install question.
-      . "$NIXHOLD_LIB_ROOT/host-add.sh"
-      cmd_host_add
-      return $?
-    fi
-  fi
+	# Host selection.
+	if [ -z "$name" ]; then
+		if ! nh_tty; then
+			nh_err "expected: nixhold host install <name>"
+			return 1
+		fi
+		nh_require_cmd gum
+		name="$(nh_pick_install_host)" || return 1
+		if [ "$name" = "new" ]; then
+			# The add walk ends with its own install question.
+			. "$NIXHOLD_LIB_ROOT/host-add.sh"
+			cmd_host_add
+			return $?
+		fi
+	fi
 
-  # A guest ("Guests") owns no disk and is never imaged: its machine's
-  # deploy builds and starts it.
-  local machine
-  machine="$(nh_host_machine "$name" 2>/dev/null || true)"
-  if [ -n "$machine" ]; then
-    nh_err "$name is a guest of $machine — nothing to install; 'nixhold deploy $machine' builds and starts it"
-    return 1
-  fi
+	# A guest ("Guests") owns no disk and is never imaged: its machine's
+	# deploy builds and starts it.
+	local machine
+	machine="$(nh_host_machine "$name" 2>/dev/null || true)"
+	if [ -n "$machine" ]; then
+		nh_err "$name is a guest of $machine — nothing to install; 'nixhold deploy $machine' builds and starts it"
+		return 1
+	fi
 
-  local platform arch
-  platform="$(nh_host_platform "$name")" || {
-    nh_err "host '$name' is not in this fleet — 'nixhold status --fleet' lists the roster"
-    return 1
-  }
-  arch="$(nh_host_arch "$name")"
-  if [ "$_NH_BOOTSTRAPPED" = 1 ]; then
-    nh_fleet_relocate "$name" "$platform" || return 1
-    root="$_NH_FLEET_ROOT"
-  fi
-  if [ "$platform" = "android" ]; then
-    nh_err "$name is an Android host — nothing is installed on a device; 'nixhold deploy $name' converges it over adb"
-    return 1
-  fi
+	local platform arch
+	platform="$(nh_host_platform "$name")" || {
+		nh_err "host '$name' is not in this fleet — 'nixhold status --fleet' lists the roster"
+		return 1
+	}
+	arch="$(nh_host_arch "$name")"
+	if [ "$_NH_BOOTSTRAPPED" = 1 ]; then
+		nh_fleet_relocate "$name" "$platform" || return 1
+		root="$_NH_FLEET_ROOT"
+	fi
+	if [ "$platform" = "android" ]; then
+		nh_err "$name is an Android host — nothing is installed on a device; 'nixhold deploy $name' converges it over adb"
+		return 1
+	fi
 
-  # Preflight, ahead of all three entry paths (darwin, local ISO,
-  # --remote) and therefore ahead of any disk or machine: every one of
-  # them opens keys/fleet.key.age to stage /etc/nixhold/fleet.key,
-  # which needs the operator's seat. Discovered here it costs a re-run;
-  # discovered after disko it costs an erased machine.
-  nh_age_route_check "the fleet key" || {
-    nh_err "install refused — plug in the operator's FIDO2 token, or run this from a checkout that holds keys/operator.age (nothing has been touched)"
-    return 1
-  }
+	# Preflight, ahead of all three entry paths (darwin, local ISO,
+	# --remote) and therefore ahead of any disk or machine: every one of
+	# them opens keys/fleet.key.age to stage /etc/nixhold/fleet.key,
+	# which needs the operator's seat. Discovered here it costs a re-run;
+	# discovered after disko it costs an erased machine.
+	nh_age_route_check "the fleet key" || {
+		nh_err "install refused — plug in the operator's FIDO2 token, or run this from a checkout that holds keys/operator.age (nothing has been touched)"
+		return 1
+	}
 
-  case "$arch" in
-    *-darwin)
-      if [ -n "$remote" ]; then
-        nh_warn "--remote is ignored for darwin hosts (install runs locally)"
-      fi
-      nh_darwin_install "$name" "$root"
-      return $?
-      ;;
-    *-linux) ;;
-    *)
-      nh_err "unsupported arch: $arch"
-      return 1
-      ;;
-  esac
+	case "$arch" in
+		*-darwin)
+			if [ -n "$remote" ]; then
+				nh_warn "--remote is ignored for darwin hosts (install runs locally)"
+			fi
+			nh_darwin_install "$name" "$root"
+			return $?
+			;;
+		*-linux) ;;
+		*)
+			nh_err "unsupported arch: $arch"
+			return 1
+			;;
+	esac
 
-  # Local means THIS machine, which only the installer ISO may be.
-  # Elsewhere the walk asks where the booted installer is.
-  if [ -z "$remote" ] && ! nh_installer_env; then
-    if ! nh_tty; then
-      nh_err "local install refused — pass --remote <user>@<ip> or boot the installer ISO"
-      return 1
-    fi
-    nh_info "this machine is not the installer — $name installs over ssh to a target booted from the fleet ISO"
-    remote="$(nh_prompt_input "Installer address (root@<ip>)")" || remote=""
-    if [ -z "$remote" ]; then
-      nh_err "no address — boot the target from the fleet ISO, then: nixhold host install $name --remote root@<ip>"
-      return 1
-    fi
-  fi
-  if [ -n "$remote" ]; then nh_require_cmd ssh; fi
+	# Local means THIS machine, which only the installer ISO may be.
+	# Elsewhere the walk asks where the booted installer is.
+	if [ -z "$remote" ] && ! nh_installer_env; then
+		if ! nh_tty; then
+			nh_err "local install refused — pass --remote <user>@<ip> or boot the installer ISO"
+			return 1
+		fi
+		nh_info "this machine is not the installer — $name installs over ssh to a target booted from the fleet ISO"
+		remote="$(nh_prompt_input "Installer address (root@<ip>)")" || remote=""
+		if [ -z "$remote" ]; then
+			nh_err "no address — boot the target from the fleet ISO, then: nixhold host install $name --remote root@<ip>"
+			return 1
+		fi
+	fi
+	if [ -n "$remote" ]; then nh_require_cmd ssh; fi
 
-  local hosts_file facter_target
-  hosts_file="$(nh_worktree_layout_file hostsFile)" || return 2
-  facter_target="$(nh_facter_target "$name")" || return $?
-  mkdir -p "$(dirname "$facter_target")"
+	local hosts_file facter_target
+	hosts_file="$(nh_worktree_layout_file hostsFile)" || return 2
+	facter_target="$(nh_facter_target "$name")" || return $?
+	mkdir -p "$(dirname "$facter_target")"
 
-  # 1. Disk. The picker, on every install: the roster's `disk` is the
-  #    picker's output (or --disk), never its input, so a stale or
-  #    hand-written value cannot steer a reformat. A host with
-  #    `disko.devices` of its own is never asked.
-  local current custom=0
-  current="$(nh_host_field "$name" disk)"
-  if [ -z "$current" ] && [ -z "$disk" ] &&
-    [ "$(nh_host_eval "$name" nixos disko.devices.disk | jq 'length > 0')" = "true" ]; then
-    custom=1
-    nh_info "$name declares its own disko.devices — formatting what it names"
-  fi
-  if [ -z "$disk" ] && [ "$custom" -ne 1 ]; then
-    if ! nh_tty; then
-      nh_err "no disk for $name — pass --disk <by-id>, or declare disko.devices in its module"
-      return 1
-    fi
-    nh_require_cmd gum
-    disk="$(nh_pick_disk "$remote")" || {
-      nh_info "aborted"
-      return 1
-    }
-    picked=1
-  fi
-  if [ -n "$disk" ] && [ "$disk" != "$current" ]; then
-    nh_set_host_field "$hosts_file" "$name" disk "$disk" || return 1
-    nh_stage_for_eval "$root" "$hosts_file"
-    nh_fleet_view_reset
-    nh_ok "wrote disk = \"$disk\" for $name into $hosts_file"
-  fi
+	# 1. Disk. The picker, on every install: the roster's `disk` is the
+	#    picker's output (or --disk), never its input, so a stale or
+	#    hand-written value cannot steer a reformat. A host with
+	#    `disko.devices` of its own is never asked.
+	local current custom=0
+	current="$(nh_host_field "$name" disk)"
+	if [ -z "$current" ] && [ -z "$disk" ] &&
+		[ "$(nh_host_eval "$name" nixos disko.devices.disk | jq 'length > 0')" = "true" ]; then
+		custom=1
+		nh_info "$name declares its own disko.devices — formatting what it names"
+	fi
+	if [ -z "$disk" ] && [ "$custom" -ne 1 ]; then
+		if ! nh_tty; then
+			nh_err "no disk for $name — pass --disk <by-id>, or declare disko.devices in its module"
+			return 1
+		fi
+		nh_require_cmd gum
+		disk="$(nh_pick_disk "$remote")" || {
+			nh_info "aborted"
+			return 1
+		}
+		picked=1
+	fi
+	if [ -n "$disk" ] && [ "$disk" != "$current" ]; then
+		nh_set_host_field "$hosts_file" "$name" disk "$disk" || return 1
+		nh_stage_for_eval "$root" "$hosts_file"
+		nh_fleet_view_reset
+		nh_ok "wrote disk = \"$disk\" for $name into $hosts_file"
+	fi
 
-  # 1b. Windows' loader on the target's ESP, with Windows on another
-  #     disk: read it now, while the old ESP exists. Both paths put it
-  #     back into /mnt/boot/EFI right after disko, before the closure
-  #     is built (nh_install_carry).
-  local carry="" carry_part
-  if [ -n "$disk" ]; then
-    local cjson cname
-    cjson="$(nh_disk_json "$remote")" || cjson=""
-    cname="$(nh_disk_name "$remote" "$disk" 2>/dev/null)" || cname=""
-    carry_part=""
-    if [ -n "$cjson" ] && [ -n "$cname" ]; then
-      carry_part="$(nh_windows_carry "$remote" "$cjson" "$cname")" || return 1
-    fi
-    if [ -n "$carry_part" ]; then
-      carry="$(nh_tmpdir esp-carry)/microsoft.tar" || return 1
-      if ! nh_esp_tar "$remote" "$carry_part" >"$carry" || [ ! -s "$carry" ]; then
-        nh_err "could not read Windows' boot files off /dev/$carry_part — nothing has been erased"
-        return 1
-      fi
-      nh_ok "read Windows' boot files off /dev/$carry_part; they return to the new ESP after the format"
-    fi
-  fi
+	# 1b. Windows' loader on the target's ESP, with Windows on another
+	#     disk: read it now, while the old ESP exists. Both paths put it
+	#     back into /mnt/boot/EFI right after disko, before the closure
+	#     is built (nh_install_carry).
+	local carry="" carry_part
+	if [ -n "$disk" ]; then
+		local cjson cname
+		cjson="$(nh_disk_json "$remote")" || cjson=""
+		cname="$(nh_disk_name "$remote" "$disk" 2>/dev/null)" || cname=""
+		carry_part=""
+		if [ -n "$cjson" ] && [ -n "$cname" ]; then
+			carry_part="$(nh_windows_carry "$remote" "$cjson" "$cname")" || return 1
+		fi
+		if [ -n "$carry_part" ]; then
+			carry="$(nh_tmpdir esp-carry)/microsoft.tar" || return 1
+			if ! nh_esp_tar "$remote" "$carry_part" >"$carry" || [ ! -s "$carry" ]; then
+				nh_err "could not read Windows' boot files off /dev/$carry_part — nothing has been erased"
+				return 1
+			fi
+			nh_ok "read Windows' boot files off /dev/$carry_part; they return to the new ESP after the format"
+		fi
+	fi
 
-  # 2. Confirm. The picker already confirmed against the partition
-  #    list; the --disk / roster / custom-layout paths would otherwise
-  #    reformat with zero prompt.
-  if [ "$yes" -ne 1 ] && [ "$picked" -ne 1 ]; then
-    local what="$disk"
-    [ -n "$what" ] || what="every disk in the disko.devices of $name"
-    nh_warn "$what will be ERASED and $name reinstalled from scratch${remote:+ (target: $remote)}"
-    nh_prompt_confirm "Proceed with the destructive install of $name?" || {
-      nh_info "aborted"
-      return 0
-    }
-  fi
+	# 2. Confirm. The picker already confirmed against the partition
+	#    list; the --disk / roster / custom-layout paths would otherwise
+	#    reformat with zero prompt.
+	if [ "$yes" -ne 1 ] && [ "$picked" -ne 1 ]; then
+		local what="$disk"
+		[ -n "$what" ] || what="every disk in the disko.devices of $name"
+		nh_warn "$what will be ERASED and $name reinstalled from scratch${remote:+ (target: $remote)}"
+		nh_prompt_confirm "Proceed with the destructive install of $name?" || {
+			nh_info "aborted"
+			return 0
+		}
+	fi
 
-  # 2b. The tailnet node of this name, and the auth key that replaces
-  #     it. Before the disk is touched and before the required-secret
-  #     walk below, so the walk finds the ciphertext already there:
-  #     the machine is about to be wiped, so its live node is stale and
-  #     its committed key is spent (see "The tailnet's API client").
-  #     A fleet that commits no API client for the host's network
-  #     writes nothing here and the walk asks for a pasted key, as
-  #     before; darwin never reaches this, having no auth-key file.
-  local minted=() minted_out m
-  minted_out="$(nh_tailnet_remint "$name" nixos --delete-node)" || {
-    nh_err "could not re-mint $name's tailnet auth key — nothing has been erased"
-    return 1
-  }
-  while IFS= read -r m; do
-    [ -n "$m" ] || continue
-    minted+=("$m")
-  done <<<"$minted_out"
+	# 2b. The tailnet node of this name, and the auth key that replaces
+	#     it. Before the disk is touched and before the required-secret
+	#     walk below, so the walk finds the ciphertext already there:
+	#     the machine is about to be wiped, so its live node is stale and
+	#     its committed key is spent (see "The tailnet's API client").
+	#     A fleet that commits no API client for the host's network
+	#     writes nothing here and the walk asks for a pasted key, as
+	#     before; darwin never reaches this, having no auth-key file.
+	local minted=() minted_out m
+	minted_out="$(nh_tailnet_remint "$name" nixos --delete-node)" || {
+		nh_err "could not re-mint $name's tailnet auth key — nothing has been erased"
+		return 1
+	}
+	while IFS= read -r m; do
+		[ -n "$m" ] || continue
+		minted+=("$m")
+	done <<<"$minted_out"
 
-  local rc=0
-  nh_install_phases "$name" "$root" "$remote" "$facter_target" "$carry" "$hosts_file" \
-    "${minted[@]+"${minted[@]}"}" || rc=$?
-  [ "$rc" -eq 0 ] && nh_next_after_install "$name" "$platform"
-  return "$rc"
+	local rc=0
+	nh_install_phases "$name" "$root" "$remote" "$facter_target" "$carry" "$hosts_file" \
+		"${minted[@]+"${minted[@]}"}" || rc=$?
+	[ "$rc" -eq 0 ] && nh_next_after_install "$name" "$platform"
+	return "$rc"
 }

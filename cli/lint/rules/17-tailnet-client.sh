@@ -19,26 +19,26 @@ declared="$(nh_tailnet_networks 2>/dev/null)" || declared=""
 found=0
 
 while IFS= read -r net; do
-  [ -n "$net" ] || continue
-  found=$((found + 1))
-  file="$(nh_tailnet_client_file "$net")" || exit 2
-  if ! printf '%s\n' "$declared" | grep -qx "$net"; then
-    echo "VIOLATION: ${file#"$root"/} names no tailscale-typed network of this fleet (it declares $(printf '%s' "$declared" | paste -sd' ' -)) — no host mints an auth key through it; rename it, or drop it"
-    worst=3
-    continue
-  fi
-  if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
-    ! git -C "$root" ls-files --error-unmatch -- "$file" >/dev/null 2>&1; then
-    echo "VIOLATION: ${file#"$root"/} is not tracked by git — the next checkout of this fleet mints no auth key for '$net' and every install asks for a pasted one ('git add' it)"
-    worst=3
-  fi
+	[ -n "$net" ] || continue
+	found=$((found + 1))
+	file="$(nh_tailnet_client_file "$net")" || exit 2
+	if ! printf '%s\n' "$declared" | grep -qx "$net"; then
+		echo "VIOLATION: ${file#"$root"/} names no tailscale-typed network of this fleet (it declares $(printf '%s' "$declared" | paste -sd' ' -)) — no host mints an auth key through it; rename it, or drop it"
+		worst=3
+		continue
+	fi
+	if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
+		! git -C "$root" ls-files --error-unmatch -- "$file" >/dev/null 2>&1; then
+		echo "VIOLATION: ${file#"$root"/} is not tracked by git — the next checkout of this fleet mints no auth key for '$net' and every install asks for a pasted one ('git add' it)"
+		worst=3
+	fi
 done < <(nh_tailnet_client_networks)
 
 if [ "$worst" -eq 0 ]; then
-  if [ "$found" -eq 0 ]; then
-    echo "OK: this fleet commits no tailnet API client; auth keys are pasted from the admin console"
-  else
-    echo "OK: $found tailnet API client(s), each naming a declared tailscale network"
-  fi
+	if [ "$found" -eq 0 ]; then
+		echo "OK: this fleet commits no tailnet API client; auth keys are pasted from the admin console"
+	else
+		echo "OK: $found tailnet API client(s), each naming a declared tailscale network"
+	fi
 fi
 exit "$worst"

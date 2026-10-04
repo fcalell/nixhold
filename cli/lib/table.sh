@@ -12,21 +12,27 @@
 # escape is written, since a pipe reads the data rather than the
 # screen.
 nh_table() {
-  local color="" cols=0 tty=0
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      --color) color="$2"; shift 2 ;;
-      *) nh_err "nh_table: unknown argument $1"; return 1 ;;
-    esac
-  done
-  if [ -t 1 ]; then
-    cols="$(stty size </dev/tty 2>/dev/null | cut -d' ' -f2)" || cols=""
-    cols="${cols:-${COLUMNS:-0}}"
-    [ -n "${NO_COLOR:-}" ] || tty=1
-  fi
-  # A UTF-8 locale makes awk count characters, not bytes: the box
-  # drawing and the ellipsis are three bytes each.
-  LC_ALL=C.UTF-8 awk -F'\t' -v cols="$cols" -v tty="$tty" -v color="$color" '
+	local color="" cols=0 tty=0
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+			--color)
+				color="$2"
+				shift 2
+				;;
+			*)
+				nh_err "nh_table: unknown argument $1"
+				return 1
+				;;
+		esac
+	done
+	if [ -t 1 ]; then
+		cols="$(stty size </dev/tty 2>/dev/null | cut -d' ' -f2)" || cols=""
+		cols="${cols:-${COLUMNS:-0}}"
+		[ -n "${NO_COLOR:-}" ] || tty=1
+	fi
+	# A UTF-8 locale makes awk count characters, not bytes: the box
+	# drawing and the ellipsis are three bytes each.
+	LC_ALL=C.UTF-8 awk -F'\t' -v cols="$cols" -v tty="$tty" -v color="$color" '
     function rep(s, n,   r) { r = ""; while (n-- > 0) r = r s; return r }
     function paint(code, s) { return tty ? "\033[" code "m" s "\033[0m" : s }
     # The state words the CLI prints, by what they ask of the operator:
@@ -98,5 +104,5 @@ nh_table() {
 
 # nh_table_section <title> — the line nh_table draws as a section rule.
 nh_table_section() {
-  printf '\036%s\n' "$1"
+	printf '\036%s\n' "$1"
 }

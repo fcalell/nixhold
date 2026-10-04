@@ -26,8 +26,8 @@ nixos_hosts="$(nix eval --json --no-warn-dirty "$root#nixosConfigurations" --app
 worst=0
 problems=0
 for h in $nixos_hosts; do
-  # shellcheck disable=SC2016 # a Nix expression, not a shell one
-  json="$(nix eval --json --no-warn-dirty "$root#nixosConfigurations.$h" --apply '
+	# shellcheck disable=SC2016 # a Nix expression, not a shell one
+	json="$(nix eval --json --no-warn-dirty "$root#nixosConfigurations.$h" --apply '
     host:
     let
       lib = host.pkgs.lib;
@@ -47,25 +47,25 @@ for h in $nixos_hosts; do
       open = n: ((svcs.${n}.serviceConfig or { }).NoNewPrivileges or false) != true;
     in
     builtins.filter (n: !(builtins.elem n exempt) && runs n && open n) ours' 2>/dev/null)" || {
-    echo "ERROR: could not evaluate systemd.services for $h — service-hardening check skipped"
-    [ "$worst" -lt 2 ] && worst=2
-    continue
-  }
+		echo "ERROR: could not evaluate systemd.services for $h — service-hardening check skipped"
+		[ "$worst" -lt 2 ] && worst=2
+		continue
+	}
 
-  while IFS= read -r unit; do
-    [ -n "$unit" ] || continue
-    problems=$((problems + 1))
-    if [ "$strict" = "1" ]; then
-      echo "ERROR: $h: unit $unit runs a command without the hardening set (inputs.nixhold.lib.hardening)"
-      [ "$worst" -lt 2 ] && worst=2
-    else
-      echo "WARNING: $h: unit $unit runs a command without the hardening set (inputs.nixhold.lib.hardening)"
-      [ "$worst" -lt 1 ] && worst=1
-    fi
-  done < <(echo "$json" | jq -r '.[]?')
+	while IFS= read -r unit; do
+		[ -n "$unit" ] || continue
+		problems=$((problems + 1))
+		if [ "$strict" = "1" ]; then
+			echo "ERROR: $h: unit $unit runs a command without the hardening set (inputs.nixhold.lib.hardening)"
+			[ "$worst" -lt 2 ] && worst=2
+		else
+			echo "WARNING: $h: unit $unit runs a command without the hardening set (inputs.nixhold.lib.hardening)"
+			[ "$worst" -lt 1 ] && worst=1
+		fi
+	done < <(echo "$json" | jq -r '.[]?')
 done
 
 if [ "$problems" -eq 0 ] && [ "$worst" -eq 0 ]; then
-  echo "OK: every unit the framework or the fleet defines takes the hardening set"
+	echo "OK: every unit the framework or the fleet defines takes the hardening set"
 fi
 exit "$worst"

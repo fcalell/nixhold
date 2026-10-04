@@ -26,11 +26,11 @@ nixos_hosts="$(nix eval --json --no-warn-dirty "$root#nixosConfigurations" --app
 worst=0
 problems=0
 for h in $nixos_hosts; do
-  # One eval per host, and only `serviceConfig.User` is forced out of
-  # each unit — `nh_host_eval "$h" nixos systemd.services` would
-  # serialise every unit's full merged config to JSON.
-  # shellcheck disable=SC2016 # a Nix expression, not a shell one
-  json="$(nix eval --json --no-warn-dirty "$root#nixosConfigurations.$h.config" --apply '
+	# One eval per host, and only `serviceConfig.User` is forced out of
+	# each unit — `nh_host_eval "$h" nixos systemd.services` would
+	# serialise every unit's full merged config to JSON.
+	# shellcheck disable=SC2016 # a Nix expression, not a shell one
+	json="$(nix eval --json --no-warn-dirty "$root#nixosConfigurations.$h.config" --apply '
     c:
     let
       op = c.nixhold.identity.username;
@@ -47,20 +47,20 @@ for h in $nixos_hosts; do
       user = op;
       units = builtins.filter runsAsOperator (builtins.attrNames svcs);
     }' 2>/dev/null)" || {
-    echo "ERROR: could not evaluate systemd.services for $h — service-user check skipped"
-    [ "$worst" -lt 2 ] && worst=2
-    continue
-  }
+		echo "ERROR: could not evaluate systemd.services for $h — service-user check skipped"
+		[ "$worst" -lt 2 ] && worst=2
+		continue
+	}
 
-  user="$(echo "$json" | jq -r '.user')"
-  while IFS= read -r unit; do
-    [ -n "$unit" ] || continue
-    problems=$((problems + 1))
-    echo "WARNING: $h: unit $unit runs as the operator ($user); give it a dedicated user"
-  done < <(echo "$json" | jq -r '.units[]?')
+	user="$(echo "$json" | jq -r '.user')"
+	while IFS= read -r unit; do
+		[ -n "$unit" ] || continue
+		problems=$((problems + 1))
+		echo "WARNING: $h: unit $unit runs as the operator ($user); give it a dedicated user"
+	done < <(echo "$json" | jq -r '.units[]?')
 done
 
 if [ "$problems" -eq 0 ] && [ "$worst" -eq 0 ]; then
-  echo "OK: no unit runs as the operator account"
+	echo "OK: no unit runs as the operator account"
 fi
 exit "$worst"

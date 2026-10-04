@@ -1,0 +1,23 @@
+# Biome and shfmt read this file, so it is formatter config, not only editor hints.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = tab
+
+# YAML forbids tabs; nixfmt formats nix at two spaces.
+[*.{yml,yaml,nix}]
+indent_style = space
+indent_size = 2
+
+# Markdown nests lists with spaces, and trailing spaces are hard line breaks.
+[*.md]
+indent_style = space
+indent_size = 2
+trim_trailing_whitespace = false
+
+[*.{sh,bash}]
+switch_case_indent = true

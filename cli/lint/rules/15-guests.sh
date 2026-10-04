@@ -32,48 +32,48 @@ view="$(nh_fleet_view)" || exit 2
 worst=0
 problems=0
 fail() {
-  problems=$((problems + 1))
-  echo "VIOLATION: $1"
-  worst=3
+	problems=$((problems + 1))
+	echo "VIOLATION: $1"
+	worst=3
 }
 report() {
-  problems=$((problems + 1))
-  if [ "$strict" = "1" ]; then
-    echo "VIOLATION: $1"
-    worst=3
-  else
-    echo "WARNING: $1"
-    [ "$worst" -lt 1 ] && worst=1
-  fi
+	problems=$((problems + 1))
+	if [ "$strict" = "1" ]; then
+		echo "VIOLATION: $1"
+		worst=3
+	else
+		echo "WARNING: $1"
+		[ "$worst" -lt 1 ] && worst=1
+	fi
 }
 
 # --- the roster shape, one line per (machine, guest) pair ---
 while IFS=$'\t' read -r machine mplatform march guest; do
-  [ -n "$machine" ] || continue
-  if [ "$mplatform" != "nixos" ]; then
-    fail "$machine names $guest as a guest but is $mplatform — only a NixOS machine runs containers"
-    continue
-  fi
-  gjson="$(printf '%s' "$view" | jq -c --arg g "$guest" '.hosts[$g] // empty')"
-  if [ -z "$gjson" ]; then
-    fail "$machine names $guest as a guest, but there is no host '$guest' in the roster"
-    continue
-  fi
-  garch="$(printf '%s' "$gjson" | jq -r '.arch')"
-  [ "$garch" = "$march" ] || fail "$guest is $garch but its machine $machine is $march — a guest shares its machine's kernel"
-  [ "$(printf '%s' "$gjson" | jq -r '.disk // empty')" = "" ] || fail "$guest carries a disk but is a guest of $machine — a guest owns no disk (drop 'disk' from its entry)"
-  [ "$(printf '%s' "$gjson" | jq -r '.guests | length')" = "0" ] || fail "$guest names guests of its own but is a guest of $machine — nesting is not a shape"
-  [ "$(printf '%s' "$gjson" | jq -r '.publicIp // empty')" = "" ] || fail "$guest has a publicIp but is a guest of $machine — the gateway is a machine"
-  [ "$(printf '%s' "$gjson" | jq -r '.publicFqdn // empty')" = "" ] || fail "$guest has a publicFqdn but is a guest of $machine — the gateway is a machine"
-  while IFS= read -r dev; do
-    [ -n "$dev" ] || continue
-    case "$dev" in
-      /dev/dri/card*) fail "$machine grants $guest '$dev', which is a DRM card node — a card node carries DRM master, the seat's mode-setting and every buffer on the machine; a guest takes the render node beside it (/dev/dri/renderD*)" ;;
-      /dev/dri/* | /dev/snd/by-id/*) ;;
-      /dev/*) report "$machine grants $guest '$dev', which is neither a render node (/dev/dri/*) nor a sound card (/dev/snd/by-id/*) — nothing renders it" ;;
-      *) fail "$machine grants $guest '$dev', which is not a path under /dev" ;;
-    esac
-  done < <(printf '%s' "$view" | jq -r --arg m "$machine" --arg g "$guest" '.hosts[$m].guests[$g].devices[]?')
+	[ -n "$machine" ] || continue
+	if [ "$mplatform" != "nixos" ]; then
+		fail "$machine names $guest as a guest but is $mplatform — only a NixOS machine runs containers"
+		continue
+	fi
+	gjson="$(printf '%s' "$view" | jq -c --arg g "$guest" '.hosts[$g] // empty')"
+	if [ -z "$gjson" ]; then
+		fail "$machine names $guest as a guest, but there is no host '$guest' in the roster"
+		continue
+	fi
+	garch="$(printf '%s' "$gjson" | jq -r '.arch')"
+	[ "$garch" = "$march" ] || fail "$guest is $garch but its machine $machine is $march — a guest shares its machine's kernel"
+	[ "$(printf '%s' "$gjson" | jq -r '.disk // empty')" = "" ] || fail "$guest carries a disk but is a guest of $machine — a guest owns no disk (drop 'disk' from its entry)"
+	[ "$(printf '%s' "$gjson" | jq -r '.guests | length')" = "0" ] || fail "$guest names guests of its own but is a guest of $machine — nesting is not a shape"
+	[ "$(printf '%s' "$gjson" | jq -r '.publicIp // empty')" = "" ] || fail "$guest has a publicIp but is a guest of $machine — the gateway is a machine"
+	[ "$(printf '%s' "$gjson" | jq -r '.publicFqdn // empty')" = "" ] || fail "$guest has a publicFqdn but is a guest of $machine — the gateway is a machine"
+	while IFS= read -r dev; do
+		[ -n "$dev" ] || continue
+		case "$dev" in
+			/dev/dri/card*) fail "$machine grants $guest '$dev', which is a DRM card node — a card node carries DRM master, the seat's mode-setting and every buffer on the machine; a guest takes the render node beside it (/dev/dri/renderD*)" ;;
+			/dev/dri/* | /dev/snd/by-id/*) ;;
+			/dev/*) report "$machine grants $guest '$dev', which is neither a render node (/dev/dri/*) nor a sound card (/dev/snd/by-id/*) — nothing renders it" ;;
+			*) fail "$machine grants $guest '$dev', which is not a path under /dev" ;;
+		esac
+	done < <(printf '%s' "$view" | jq -r --arg m "$machine" --arg g "$guest" '.hosts[$m].guests[$g].devices[]?')
 done < <(printf '%s' "$view" | jq -r '
   .hosts | to_entries[]
   | .key as $m | .value as $h
@@ -82,8 +82,8 @@ done < <(printf '%s' "$view" | jq -r '
 
 # A guest named by two machines.
 while IFS= read -r line; do
-  [ -n "$line" ] || continue
-  fail "$line"
+	[ -n "$line" ] || continue
+	fail "$line"
 done < <(printf '%s' "$view" | jq -r '
   [ .hosts | to_entries[] | .key as $m | (.value.guests // {} | keys[]) | { guest: ., machine: $m } ]
   | group_by(.guest)[] | select(length > 1)
@@ -96,8 +96,8 @@ done < <(printf '%s' "$view" | jq -r '
 # check, because the kernel time-slices a GPU and the framework binds
 # one into every guest that names it by design.
 while IFS= read -r line; do
-  [ -n "$line" ] || continue
-  fail "$line"
+	[ -n "$line" ] || continue
+	fail "$line"
 done < <(printf '%s' "$view" | jq -r '
   .hosts | to_entries[] | .key as $m
   | [ (.value.guests // {} | to_entries[]) as $ge
@@ -112,22 +112,22 @@ done < <(printf '%s' "$view" | jq -r '
 # machine names, with no roster `disk` and no disko layout of its own,
 # so no partition table, no loader, nothing `host install` could write.
 while IFS= read -r h; do
-  [ -n "$h" ] || continue
-  [ -z "$(nh_host_machine "$h")" ] || continue
-  [ -z "$(nh_host_field "$h" disk)" ] || continue
-  # An eval that fails is rule 01's finding, not this one's.
-  own="$(nix eval --json --no-warn-dirty "$root#nixosConfigurations.$h.config.disko.devices.disk" \
-    --apply 'd: d != { }' 2>/dev/null)" || own="true"
-  [ "$own" = "false" ] || continue
-  fail "$h is a NixOS host that no machine names as a guest, carries no 'disk' and declares no disko layout of its own — nothing could install or boot it. A guest whose machine left the roster looks exactly like this: name it under a machine's 'guests', give it a 'disk', or 'nixhold host remove $h'"
+	[ -n "$h" ] || continue
+	[ -z "$(nh_host_machine "$h")" ] || continue
+	[ -z "$(nh_host_field "$h" disk)" ] || continue
+	# An eval that fails is rule 01's finding, not this one's.
+	own="$(nix eval --json --no-warn-dirty "$root#nixosConfigurations.$h.config.disko.devices.disk" \
+		--apply 'd: d != { }' 2>/dev/null)" || own="true"
+	[ "$own" = "false" ] || continue
+	fail "$h is a NixOS host that no machine names as a guest, carries no 'disk' and declares no disko layout of its own — nothing could install or boot it. A guest whose machine left the roster looks exactly like this: name it under a machine's 'guests', give it a 'disk', or 'nixhold host remove $h'"
 done < <(nh_hosts nixos | cut -d' ' -f1)
 
 # --- the grant against the guest's own units ---
 while IFS=$'\t' read -r guest machine; do
-  [ -n "$guest" ] || continue
-  grant="$(printf '%s' "$view" | jq -c --arg m "$machine" --arg g "$guest" '.hosts[$m].guests[$g].devices // []')"
-  # shellcheck disable=SC2016 # a Nix expression, not a shell one
-  json="$(nix eval --json --no-warn-dirty "$root#nixosConfigurations.$guest" --apply '
+	[ -n "$guest" ] || continue
+	grant="$(printf '%s' "$view" | jq -c --arg m "$machine" --arg g "$guest" '.hosts[$m].guests[$g].devices // []')"
+	# shellcheck disable=SC2016 # a Nix expression, not a shell one
+	json="$(nix eval --json --no-warn-dirty "$root#nixosConfigurations.$guest" --apply '
     host:
     let
       lib = host.pkgs.lib;
@@ -146,26 +146,26 @@ while IFS=$'\t' read -r guest machine; do
       node = s: lib.head (lib.splitString " " s);
     in
     lib.concatMap (n: map (s: { unit = n; node = node s; }) (allow n)) ours' 2>/dev/null)" || {
-    echo "ERROR: could not evaluate systemd.services for $guest — guest device check skipped"
-    [ "$worst" -lt 2 ] && worst=2
-    continue
-  }
-  hasRender="$(printf '%s' "$grant" | jq 'any(.[]; startswith("/dev/dri/"))')"
-  hasCard="$(printf '%s' "$grant" | jq 'any(.[]; startswith("/dev/snd/by-id/"))')"
-  while IFS=$'\t' read -r unit node; do
-    [ -n "$unit" ] || continue
-    ok=0
-    case "$node" in
-      /dev/net/tun) ok=1 ;;
-      char-drm) [ "$hasRender" = "true" ] && ok=1 ;;
-      char-alsa | char-sound | /dev/snd/*) [ "$hasCard" = "true" ] && ok=1 ;;
-      *) [ "$(printf '%s' "$grant" | jq --arg n "$node" 'index($n) != null')" = "true" ] && ok=1 ;;
-    esac
-    [ "$ok" -eq 1 ] || report "$guest: unit $unit allows '$node', which $machine's grant does not hold (hosts.$machine.guests.$guest.devices)"
-  done < <(printf '%s' "$json" | jq -r '.[] | [ .unit, .node ] | @tsv')
+		echo "ERROR: could not evaluate systemd.services for $guest — guest device check skipped"
+		[ "$worst" -lt 2 ] && worst=2
+		continue
+	}
+	hasRender="$(printf '%s' "$grant" | jq 'any(.[]; startswith("/dev/dri/"))')"
+	hasCard="$(printf '%s' "$grant" | jq 'any(.[]; startswith("/dev/snd/by-id/"))')"
+	while IFS=$'\t' read -r unit node; do
+		[ -n "$unit" ] || continue
+		ok=0
+		case "$node" in
+			/dev/net/tun) ok=1 ;;
+			char-drm) [ "$hasRender" = "true" ] && ok=1 ;;
+			char-alsa | char-sound | /dev/snd/*) [ "$hasCard" = "true" ] && ok=1 ;;
+			*) [ "$(printf '%s' "$grant" | jq --arg n "$node" 'index($n) != null')" = "true" ] && ok=1 ;;
+		esac
+		[ "$ok" -eq 1 ] || report "$guest: unit $unit allows '$node', which $machine's grant does not hold (hosts.$machine.guests.$guest.devices)"
+	done < <(printf '%s' "$json" | jq -r '.[] | [ .unit, .node ] | @tsv')
 done < <(printf '%s' "$view" | jq -r '.machineOf | to_entries[] | [ .key, .value ] | @tsv')
 
 if [ "$problems" -eq 0 ] && [ "$worst" -eq 0 ]; then
-  echo "OK: every guest is a well-formed host of one NixOS machine, within its grant"
+	echo "OK: every guest is a well-formed host of one NixOS machine, within its grant"
 fi
 exit "$worst"

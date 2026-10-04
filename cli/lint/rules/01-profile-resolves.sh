@@ -13,28 +13,28 @@ android_hosts="$(nix eval --json --no-warn-dirty "$root#androidConfigurations.$(
 
 worst=0
 for h in $nixos_hosts; do
-  if nh_host_eval "$h" nixos nixhold.fleet.derived.self.arch >/dev/null 2>&1; then
-    echo "OK: profile resolves for $h"
-  else
-    echo "VIOLATION: profile fails to resolve for $h"
-    worst=3
-  fi
+	if nh_host_eval "$h" nixos nixhold.fleet.derived.self.arch >/dev/null 2>&1; then
+		echo "OK: profile resolves for $h"
+	else
+		echo "VIOLATION: profile fails to resolve for $h"
+		worst=3
+	fi
 done
 for h in $darwin_hosts; do
-  if nh_host_eval "$h" darwin nixhold.fleet.derived.self.arch >/dev/null 2>&1; then
-    echo "OK: profile resolves for $h"
-  else
-    echo "VIOLATION: profile fails to resolve for $h"
-    worst=3
-  fi
+	if nh_host_eval "$h" darwin nixhold.fleet.derived.self.arch >/dev/null 2>&1; then
+		echo "OK: profile resolves for $h"
+	else
+		echo "VIOLATION: profile fails to resolve for $h"
+		worst=3
+	fi
 done
 for h in $android_hosts; do
-  if nh_host_eval "$h" android nixhold.fleet.derived.self.arch >/dev/null 2>&1; then
-    echo "OK: profile resolves for $h"
-  else
-    echo "VIOLATION: profile fails to resolve for $h"
-    worst=3
-  fi
+	if nh_host_eval "$h" android nixhold.fleet.derived.self.arch >/dev/null 2>&1; then
+		echo "OK: profile resolves for $h"
+	else
+		echo "VIOLATION: profile fails to resolve for $h"
+		worst=3
+	fi
 done
 
 exit "$worst"

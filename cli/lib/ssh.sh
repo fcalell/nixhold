@@ -30,11 +30,11 @@
 # Exactly one line today: keys/hosts/<host>.pub, written at install and
 # re-recorded by `host key`.
 nh_ssh_pin_keys() {
-  local host="$1" pub line
-  [ -n "$host" ] || return 1
-  pub="$(nh_committed_host_pub "$host" 2>/dev/null)" || return 1
-  line="$(nh_pubkey_line "$pub")" || return 1
-  printf '%s\n' "$line"
+	local host="$1" pub line
+	[ -n "$host" ] || return 1
+	pub="$(nh_committed_host_pub "$host" 2>/dev/null)" || return 1
+	line="$(nh_pubkey_line "$pub")" || return 1
+	printf '%s\n' "$line"
 }
 
 # nh_ssh_known_hosts <hostpart> <host> — write a scratch known_hosts
@@ -51,16 +51,16 @@ nh_ssh_pin_keys() {
 # resolved address). The file lives under the process scratch root, so
 # the dispatcher's exit handler wipes it.
 nh_ssh_known_hosts() {
-  local hostpart="$1" host="$2" keys d kh line
-  keys="$(nh_ssh_pin_keys "$host")" || return 1
-  d="$(nh_tmpdir known-hosts)" || return 2
-  kh="$d/known_hosts"
-  : >"$kh" || return 2
-  while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    printf '%s %s\n' "$hostpart" "$line" >>"$kh"
-  done <<<"$keys"
-  printf '%s' "$kh"
+	local hostpart="$1" host="$2" keys d kh line
+	keys="$(nh_ssh_pin_keys "$host")" || return 1
+	d="$(nh_tmpdir known-hosts)" || return 2
+	kh="$d/known_hosts"
+	: >"$kh" || return 2
+	while IFS= read -r line; do
+		[ -n "$line" ] || continue
+		printf '%s %s\n' "$hostpart" "$line" >>"$kh"
+	done <<<"$keys"
+	printf '%s' "$kh"
 }
 
 # nh_ssh_pin_opts <host> <hostpart> — the same pin as a single string
@@ -71,15 +71,15 @@ nh_ssh_known_hosts() {
 # them and offer no quoting, so a scratch path containing whitespace is
 # a 2, not a mis-split command line.
 nh_ssh_pin_opts() {
-  local host="$1" hostpart="$2" kh rc=0
-  kh="$(nh_ssh_known_hosts "$hostpart" "$host")" || rc=$?
-  if [ "$rc" -ne 0 ]; then
-    return "$rc"
-  fi
-  case "$kh" in
-    *[[:space:]]*) return 2 ;;
-  esac
-  printf -- '-o UserKnownHostsFile=%s -o GlobalKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes -o CheckHostIP=no -o UpdateHostKeys=no' "$kh"
+	local host="$1" hostpart="$2" kh rc=0
+	kh="$(nh_ssh_known_hosts "$hostpart" "$host")" || rc=$?
+	if [ "$rc" -ne 0 ]; then
+		return "$rc"
+	fi
+	case "$kh" in
+		*[[:space:]]*) return 2 ;;
+	esac
+	printf -- '-o UserKnownHostsFile=%s -o GlobalKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes -o CheckHostIP=no -o UpdateHostKeys=no' "$kh"
 }
 
 # Run a command on a remote host, exit non-zero on failure.
@@ -92,68 +92,68 @@ nh_ssh_pin_opts() {
 # and no fleet host at all (see the policy at the top of this file);
 # the two are exclusive.
 nh_ssh() {
-  local target="$1" host="" installer=0 kh hostpart rc=0 pinrc=0
-  shift
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      --host)
-        host="${2:-}"
-        shift 2
-        ;;
-      --installer)
-        installer=1
-        shift
-        ;;
-      --)
-        shift
-        break
-        ;;
-      *) break ;;
-    esac
-  done
-  hostpart="${target##*@}"
+	local target="$1" host="" installer=0 kh hostpart rc=0 pinrc=0
+	shift
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+			--host)
+				host="${2:-}"
+				shift 2
+				;;
+			--installer)
+				installer=1
+				shift
+				;;
+			--)
+				shift
+				break
+				;;
+			*) break ;;
+		esac
+	done
+	hostpart="${target##*@}"
 
-  if [ -n "$host" ] && [ "$installer" -eq 1 ]; then
-    nh_err "nh_ssh: --host and --installer are exclusive — a fleet host is pinned, an installer is not recorded"
-    return 1
-  fi
+	if [ -n "$host" ] && [ "$installer" -eq 1 ]; then
+		nh_err "nh_ssh: --host and --installer are exclusive — a fleet host is pinned, an installer is not recorded"
+		return 1
+	fi
 
-  if [ -n "$host" ]; then
-    kh="$(nh_ssh_known_hosts "$hostpart" "$host")" || pinrc=$?
-    # 2 = the fleet HAS a key for $host but the pin could not be
-    # staged. Falling through to first-use trust there would drop the
-    # verification on exactly the connections that carry the fleet key
-    # and drive activation, so it is a hard failure instead.
-    if [ "$pinrc" -eq 2 ]; then
-      nh_err "could not stage the host-key pin for $host — refusing to connect to $hostpart unverified"
-      return 1
-    fi
-  fi
+	if [ -n "$host" ]; then
+		kh="$(nh_ssh_known_hosts "$hostpart" "$host")" || pinrc=$?
+		# 2 = the fleet HAS a key for $host but the pin could not be
+		# staged. Falling through to first-use trust there would drop the
+		# verification on exactly the connections that carry the fleet key
+		# and drive activation, so it is a hard failure instead.
+		if [ "$pinrc" -eq 2 ]; then
+			nh_err "could not stage the host-key pin for $host — refusing to connect to $hostpart unverified"
+			return 1
+		fi
+	fi
 
-  if [ "$pinrc" -eq 0 ] && [ -n "$host" ]; then
-    # UpdateHostKeys=no keeps the pin file exactly as written;
-    # GlobalKnownHostsFile=/dev/null keeps a system-wide entry from
-    # standing in for the fleet's own record.
-    ssh -o "UserKnownHostsFile=$kh" -o GlobalKnownHostsFile=/dev/null \
-      -o StrictHostKeyChecking=yes -o CheckHostIP=no -o UpdateHostKeys=no \
-      "$target" "$@" || rc=$?
-    if [ "$rc" -eq 255 ]; then
-      # Every remote verb pins the same way, so a drifted machine is
-      # unreachable from here on purpose: reconcile ON the machine
-      # (the local paths read /etc/ssh directly, no ssh involved).
-      nh_info "$hostpart was pinned to $host's committed key — if ssh reported a host key mismatch, the machine runs a key the fleet does not know; check its fingerprint out of band, then 'nixhold host key $host' records the machine's live key as keys/hosts/$host.pub"
-    fi
-    return "$rc"
-  fi
+	if [ "$pinrc" -eq 0 ] && [ -n "$host" ]; then
+		# UpdateHostKeys=no keeps the pin file exactly as written;
+		# GlobalKnownHostsFile=/dev/null keeps a system-wide entry from
+		# standing in for the fleet's own record.
+		ssh -o "UserKnownHostsFile=$kh" -o GlobalKnownHostsFile=/dev/null \
+			-o StrictHostKeyChecking=yes -o CheckHostIP=no -o UpdateHostKeys=no \
+			"$target" "$@" || rc=$?
+		if [ "$rc" -eq 255 ]; then
+			# Every remote verb pins the same way, so a drifted machine is
+			# unreachable from here on purpose: reconcile ON the machine
+			# (the local paths read /etc/ssh directly, no ssh involved).
+			nh_info "$hostpart was pinned to $host's committed key — if ssh reported a host key mismatch, the machine runs a key the fleet does not know; check its fingerprint out of band, then 'nixhold host key $host' records the machine's live key as keys/hosts/$host.pub"
+		fi
+		return "$rc"
+	fi
 
-  if [ "$installer" -eq 1 ]; then
-    ssh -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null \
-      -o StrictHostKeyChecking=no "$target" "$@"
-    return
-  fi
+	if [ "$installer" -eq 1 ]; then
+		ssh -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null \
+			-o StrictHostKeyChecking=no "$target" "$@"
+		return
+	fi
 
-  nh_info "no committed host key for ${host:-$hostpart} — accepting $hostpart's key on first use"
-  ssh -o StrictHostKeyChecking=accept-new "$target" "$@"
+	nh_info "no committed host key for ${host:-$hostpart} — accepting $hostpart's key on first use"
+	ssh -o StrictHostKeyChecking=accept-new "$target" "$@"
 }
 
 # ---------------------------------------------------------------------
@@ -222,23 +222,23 @@ _NH_SUDO_PW_SET=0
 # operator's sudo password, prompting once. Non-zero when there is
 # nobody to ask.
 nh_sudo_password_ensure() {
-  local label="${1:-the remote host}" pw=""
-  [ "$_NH_SUDO_PW_SET" -eq 1 ] && return 0
-  if [ ! -r /dev/tty ]; then
-    nh_err "sudo on $label needs the operator's password and there is no terminal to ask on — run this verb interactively"
-    return 1
-  fi
-  if command -v gum >/dev/null 2>&1; then
-    pw="$(gum input --password --placeholder "sudo password for $label" </dev/tty)" || return 1
-  else
-    # The prompt goes to the terminal, not stderr: callers that
-    # swallow stderr (best-effort probes) must still be answerable.
-    printf 'sudo password for %s: ' "$label" >/dev/tty
-    IFS= read -rs pw </dev/tty || return 1
-    printf '\n' >/dev/tty
-  fi
-  _NH_SUDO_PW="$pw"
-  _NH_SUDO_PW_SET=1
+	local label="${1:-the remote host}" pw=""
+	[ "$_NH_SUDO_PW_SET" -eq 1 ] && return 0
+	if [ ! -r /dev/tty ]; then
+		nh_err "sudo on $label needs the operator's password and there is no terminal to ask on — run this verb interactively"
+		return 1
+	fi
+	if command -v gum >/dev/null 2>&1; then
+		pw="$(gum input --password --placeholder "sudo password for $label" </dev/tty)" || return 1
+	else
+		# The prompt goes to the terminal, not stderr: callers that
+		# swallow stderr (best-effort probes) must still be answerable.
+		printf 'sudo password for %s: ' "$label" >/dev/tty
+		IFS= read -rs pw </dev/tty || return 1
+		printf '\n' >/dev/tty
+	fi
+	_NH_SUDO_PW="$pw"
+	_NH_SUDO_PW_SET=1
 }
 
 # nh_sudo_password_forget — drop the cached password so the next
@@ -246,8 +246,8 @@ nh_sudo_password_ensure() {
 # otherwise be cached for the life of the process and fail every
 # remaining verb with the same error.
 nh_sudo_password_forget() {
-  _NH_SUDO_PW=""
-  _NH_SUDO_PW_SET=0
+	_NH_SUDO_PW=""
+	_NH_SUDO_PW_SET=0
 }
 
 # nh_sudo_preamble_remote — a shell snippet for the TARGET's shell that
@@ -256,7 +256,7 @@ nh_sudo_password_forget() {
 # rest of the stream for the command that follows, and refuses to go
 # any further if that password is not accepted.
 nh_sudo_preamble_remote() {
-  cat <<EOF
+	cat <<EOF
 IFS= read -r _nh_pw || _nh_pw=""
 if [ "\$(id -u)" -ne 0 ]; then
   # The gate. sudo's own stderr is left visible: "Sorry, try again" and
@@ -281,7 +281,7 @@ EOF
 # local `sh -c`, where sudo has a terminal and prompts for itself. No
 # password line is consumed.
 nh_sudo_preamble_local() {
-  cat <<'EOF'
+	cat <<'EOF'
 nh_rsudo() {
   if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo "$@"; fi
 }
@@ -298,57 +298,57 @@ EOF
 # the snippet reads nothing, or the file to stream when it does. Never
 # hand it a terminal: the forwarder would block on it.
 nh_ssh_sudo() {
-  local target="$1" host="" snippet pw=""
-  local -a keyargs=()
-  shift
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      --host)
-        host="${2:-}"
-        shift 2
-        ;;
-      --installer)
-        keyargs=(--installer)
-        shift
-        ;;
-      --)
-        shift
-        break
-        ;;
-      *) break ;;
-    esac
-  done
-  snippet="${1:-}"
+	local target="$1" host="" snippet pw=""
+	local -a keyargs=()
+	shift
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+			--host)
+				host="${2:-}"
+				shift 2
+				;;
+			--installer)
+				keyargs=(--installer)
+				shift
+				;;
+			--)
+				shift
+				break
+				;;
+			*) break ;;
+		esac
+	done
+	snippet="${1:-}"
 
-  # A root connection needs no password, but the preamble always eats
-  # one line — send an empty one so the wire format does not depend on
-  # who is connecting.
-  case "${target%%@*}" in
-    root) ;;
-    *)
-      nh_sudo_password_ensure "$target" || return 1
-      pw="$_NH_SUDO_PW"
-      ;;
-  esac
+	# A root connection needs no password, but the preamble always eats
+	# one line — send an empty one so the wire format does not depend on
+	# who is connecting.
+	case "${target%%@*}" in
+		root) ;;
+		*)
+			nh_sudo_password_ensure "$target" || return 1
+			pw="$_NH_SUDO_PW"
+			;;
+	esac
 
-  # Appended, not assigned: a caller that passed both flags reaches
-  # nh_ssh's exclusivity check rather than having one silently win.
-  [ -n "$host" ] && keyargs+=(--host "$host")
+	# Appended, not assigned: a caller that passed both flags reaches
+	# nh_ssh's exclusivity check rather than having one silently win.
+	[ -n "$host" ] && keyargs+=(--host "$host")
 
-  # Process substitution, not a pipe into nh_ssh: under `pipefail` a
-  # forwarder that takes SIGPIPE when the remote exits early would turn
-  # a successful run into a failure.
-  local rc=0
-  nh_ssh "$target" "${keyargs[@]}" -- "$(nh_sudo_preamble_remote)
+	# Process substitution, not a pipe into nh_ssh: under `pipefail` a
+	# forwarder that takes SIGPIPE when the remote exits early would turn
+	# a successful run into a failure.
+	local rc=0
+	nh_ssh "$target" "${keyargs[@]}" -- "$(nh_sudo_preamble_remote)
 $snippet" < <(
-    printf '%s\n' "$pw"
-    cat
-  ) || rc=$?
+		printf '%s\n' "$pw"
+		cat
+	) || rc=$?
 
-  if [ "$rc" -eq "$_NH_SUDO_AUTH_RC" ]; then
-    # Nothing ran on the target — the gate stopped before the snippet.
-    nh_err "sudo on $target rejected the password — re-run the verb and retype it"
-    nh_sudo_password_forget
-  fi
-  return "$rc"
+	if [ "$rc" -eq "$_NH_SUDO_AUTH_RC" ]; then
+		# Nothing ran on the target — the gate stopped before the snippet.
+		nh_err "sudo on $target rejected the password — re-run the verb and retype it"
+		nh_sudo_password_forget
+	fi
+	return "$rc"
 }

@@ -7,27 +7,27 @@ nixos_hosts="$(nix eval --json --no-warn-dirty "$root#nixosConfigurations" --app
 
 worst=0
 for h in $nixos_hosts; do
-  services="$(nh_host_eval "$h" nixos nixhold.services 2>/dev/null)" || {
-    echo "ERROR: could not evaluate nixhold.services for $h — backend check skipped"
-    [ "$worst" -lt 2 ] && worst=2
-    continue
-  }
-  refs="$(echo "$services" | jq -r '
+	services="$(nh_host_eval "$h" nixos nixhold.services 2>/dev/null)" || {
+		echo "ERROR: could not evaluate nixhold.services for $h — backend check skipped"
+		[ "$worst" -lt 2 ] && worst=2
+		continue
+	}
+	refs="$(echo "$services" | jq -r '
     to_entries[]
     | .key as $svc
     | (.value.expose // {} | to_entries[])
     | "\($svc)\t\(.key)\t\(.value.backend)"
   ' 2>/dev/null || true)"
-  [ -z "$refs" ] && continue
-  while IFS=$'\t' read -r svc ep backend; do
-    [ -z "$svc" ] && continue
-    has="$(echo "$services" | jq -r --arg s "$svc" --arg b "$backend" \
-      '.[$s].network.ports[$b] // .[$s].network.sockets[$b] // empty')"
-    if [ -z "$has" ]; then
-      echo "VIOLATION: $h/$svc/expose.$ep references unknown backend '$backend'"
-      worst=3
-    fi
-  done <<<"$refs"
+	[ -z "$refs" ] && continue
+	while IFS=$'\t' read -r svc ep backend; do
+		[ -z "$svc" ] && continue
+		has="$(echo "$services" | jq -r --arg s "$svc" --arg b "$backend" \
+			'.[$s].network.ports[$b] // .[$s].network.sockets[$b] // empty')"
+		if [ -z "$has" ]; then
+			echo "VIOLATION: $h/$svc/expose.$ep references unknown backend '$backend'"
+			worst=3
+		fi
+	done <<<"$refs"
 done
 
 [ "$worst" -eq 0 ] && echo "OK: every expose backend resolves"

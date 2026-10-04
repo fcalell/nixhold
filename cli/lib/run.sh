@@ -21,64 +21,64 @@ nh_ok() { printf '\033[32m✓\033[0m %s\n' "$*" >&2; }
 _NH_FLEET_ROOT="${_NH_FLEET_ROOT:-}"
 
 nh_fleet_root() {
-  # Memo: command-substitution callers each run in their own subshell,
-  # so this mainly keeps one verb from walking (or prompting) twice.
-  if [ -n "$_NH_FLEET_ROOT" ]; then
-    printf '%s' "$_NH_FLEET_ROOT"
-    return 0
-  fi
+	# Memo: command-substitution callers each run in their own subshell,
+	# so this mainly keeps one verb from walking (or prompting) twice.
+	if [ -n "$_NH_FLEET_ROOT" ]; then
+		printf '%s' "$_NH_FLEET_ROOT"
+		return 0
+	fi
 
-  if [ -n "${NIXHOLD_FLEET:-}" ]; then
-    if [ ! -f "$NIXHOLD_FLEET/flake.nix" ]; then
-      nh_err "no flake.nix at $NIXHOLD_FLEET (from \$NIXHOLD_FLEET)"
-      return 1
-    fi
-    _NH_FLEET_ROOT="$NIXHOLD_FLEET"
-    printf '%s' "$_NH_FLEET_ROOT"
-    return 0
-  fi
+	if [ -n "${NIXHOLD_FLEET:-}" ]; then
+		if [ ! -f "$NIXHOLD_FLEET/flake.nix" ]; then
+			nh_err "no flake.nix at $NIXHOLD_FLEET (from \$NIXHOLD_FLEET)"
+			return 1
+		fi
+		_NH_FLEET_ROOT="$NIXHOLD_FLEET"
+		printf '%s' "$_NH_FLEET_ROOT"
+		return 0
+	fi
 
-  local dir="$PWD" nonfleet=""
-  while :; do
-    if [ -f "$dir/flake.nix" ]; then
-      if grep -Eq '\.mkFleet[[:space:]]*\{' "$dir/flake.nix"; then
-        _NH_FLEET_ROOT="$dir"
-        printf '%s' "$_NH_FLEET_ROOT"
-        return 0
-      fi
-      nonfleet="${nonfleet:-$dir}"
-    fi
-    [ "$dir" = "/" ] && break
-    dir="${dir%/*}"
-    [ -z "$dir" ] && dir="/"
-  done
+	local dir="$PWD" nonfleet=""
+	while :; do
+		if [ -f "$dir/flake.nix" ]; then
+			if grep -Eq '\.mkFleet[[:space:]]*\{' "$dir/flake.nix"; then
+				_NH_FLEET_ROOT="$dir"
+				printf '%s' "$_NH_FLEET_ROOT"
+				return 0
+			fi
+			nonfleet="${nonfleet:-$dir}"
+		fi
+		[ "$dir" = "/" ] && break
+		dir="${dir%/*}"
+		[ -z "$dir" ] && dir="/"
+	done
 
-  local fallback="${NIXHOLD_FLEET_DEFAULT:-}"
-  if [ -n "$fallback" ]; then
-    # The module bakes the option string verbatim, so a leading $HOME
-    # arrives unexpanded; expand it without eval.
-    # shellcheck disable=SC2016 # the patterns are literal '$HOME' text
-    case "$fallback" in
-      '$HOME') fallback="$HOME" ;;
-      '$HOME/'*) fallback="$HOME/${fallback#\$HOME/}" ;;
-    esac
-    if [ -f "$fallback/flake.nix" ]; then
-      _NH_FLEET_ROOT="$fallback"
-      printf '%s' "$_NH_FLEET_ROOT"
-      return 0
-    fi
-    if [ -d "$fallback" ]; then
-      nh_err "$fallback (from \$NIXHOLD_FLEET_DEFAULT) exists but holds no flake.nix"
-      return 1
-    fi
-    nh_clone_fleet "$fallback" || return 1
-    _NH_FLEET_ROOT="$fallback"
-    printf '%s' "$_NH_FLEET_ROOT"
-    return 0
-  fi
+	local fallback="${NIXHOLD_FLEET_DEFAULT:-}"
+	if [ -n "$fallback" ]; then
+		# The module bakes the option string verbatim, so a leading $HOME
+		# arrives unexpanded; expand it without eval.
+		# shellcheck disable=SC2016 # the patterns are literal '$HOME' text
+		case "$fallback" in
+			'$HOME') fallback="$HOME" ;;
+			'$HOME/'*) fallback="$HOME/${fallback#\$HOME/}" ;;
+		esac
+		if [ -f "$fallback/flake.nix" ]; then
+			_NH_FLEET_ROOT="$fallback"
+			printf '%s' "$_NH_FLEET_ROOT"
+			return 0
+		fi
+		if [ -d "$fallback" ]; then
+			nh_err "$fallback (from \$NIXHOLD_FLEET_DEFAULT) exists but holds no flake.nix"
+			return 1
+		fi
+		nh_clone_fleet "$fallback" || return 1
+		_NH_FLEET_ROOT="$fallback"
+		printf '%s' "$_NH_FLEET_ROOT"
+		return 0
+	fi
 
-  nh_err "no fleet found${nonfleet:+ ($nonfleet/flake.nix is not a nixhold fleet: it does not call mkFleet)} — cd into a fleet checkout, set NIXHOLD_FLEET=/path, or enable programs.nixhold so the default checkout is baked in"
-  return 1
+	nh_err "no fleet found${nonfleet:+ ($nonfleet/flake.nix is not a nixhold fleet: it does not call mkFleet)} — cd into a fleet checkout, set NIXHOLD_FLEET=/path, or enable programs.nixhold so the default checkout is baked in"
+	return 1
 }
 
 # nh_clone_fleet <dir> — the fresh-machine path: the baked default
@@ -91,54 +91,54 @@ nh_fleet_root() {
 # no offer.
 _NH_CLONING=0
 nh_clone_fleet() {
-  local dir="$1" repo="${NIXHOLD_REPO_URL:-}" remote reply=""
-  # Unwrapping the clone key can walk back through nh_fleet_root (the
-  # identity may live in the fleet), which would land here again on a
-  # machine that has no checkout yet. One attempt per process.
-  if [ "$_NH_CLONING" = "1" ]; then
-    nh_err "no fleet checkout at $dir (already trying to clone one — the operator identity is not reachable without it)"
-    return 1
-  fi
-  if [ -z "$repo" ]; then
-    nh_err "no fleet at $dir and no repo baked in (set layout.repoUrl) — clone your fleet there or set NIXHOLD_FLEET"
-    return 1
-  fi
-  remote="git@github.com:${repo%.git}.git"
-  if [ ! -t 2 ]; then
-    nh_err "no fleet at $dir — clone $remote there (not offering: no terminal)"
-    return 1
-  fi
-  nh_require_cmd git || return 1
+	local dir="$1" repo="${NIXHOLD_REPO_URL:-}" remote reply=""
+	# Unwrapping the clone key can walk back through nh_fleet_root (the
+	# identity may live in the fleet), which would land here again on a
+	# machine that has no checkout yet. One attempt per process.
+	if [ "$_NH_CLONING" = "1" ]; then
+		nh_err "no fleet checkout at $dir (already trying to clone one — the operator identity is not reachable without it)"
+		return 1
+	fi
+	if [ -z "$repo" ]; then
+		nh_err "no fleet at $dir and no repo baked in (set layout.repoUrl) — clone your fleet there or set NIXHOLD_FLEET"
+		return 1
+	fi
+	remote="git@github.com:${repo%.git}.git"
+	if [ ! -t 2 ]; then
+		nh_err "no fleet at $dir — clone $remote there (not offering: no terminal)"
+		return 1
+	fi
+	nh_require_cmd git || return 1
 
-  nh_info "no fleet checkout at $dir"
-  if command -v gum >/dev/null 2>&1 && [ -t 0 ]; then
-    if gum confirm "Clone $remote into $dir?"; then reply=y; fi
-  else
-    printf 'Clone %s into %s? [y/N] ' "$remote" "$dir" >&2
-    read -r reply </dev/tty || reply=""
-  fi
-  case "$reply" in
-    y | Y | yes | Yes) ;;
-    *)
-      nh_err "declined — clone $remote to $dir, or run from a fleet checkout"
-      return 1
-      ;;
-  esac
+	nh_info "no fleet checkout at $dir"
+	if command -v gum >/dev/null 2>&1 && [ -t 0 ]; then
+		if gum confirm "Clone $remote into $dir?"; then reply=y; fi
+	else
+		printf 'Clone %s into %s? [y/N] ' "$remote" "$dir" >&2
+		read -r reply </dev/tty || reply=""
+	fi
+	case "$reply" in
+		y | Y | yes | Yes) ;;
+		*)
+			nh_err "declined — clone $remote to $dir, or run from a fleet checkout"
+			return 1
+			;;
+	esac
 
-  mkdir -p "${dir%/*}" 2>/dev/null || true
-  _NH_CLONING=1
-  if ! nh_repo_git clone "$remote" "$dir" >&2; then
-    _NH_CLONING=0
-    nh_err "clone of $remote failed — check the fleet repo credentials (the fleet identity key: unwrapped on the installer, ~/.ssh/identity through the host's ssh config on a fleet machine)"
-    return 1
-  fi
-  _NH_CLONING=0
-  if [ ! -f "$dir/flake.nix" ]; then
-    nh_err "cloned $remote to $dir but it holds no flake.nix"
-    return 1
-  fi
-  nh_mark_cloned
-  nh_ok "cloned fleet to $dir"
+	mkdir -p "${dir%/*}" 2>/dev/null || true
+	_NH_CLONING=1
+	if ! nh_repo_git clone "$remote" "$dir" >&2; then
+		_NH_CLONING=0
+		nh_err "clone of $remote failed — check the fleet repo credentials (the fleet identity key: unwrapped on the installer, ~/.ssh/identity through the host's ssh config on a fleet machine)"
+		return 1
+	fi
+	_NH_CLONING=0
+	if [ ! -f "$dir/flake.nix" ]; then
+		nh_err "cloned $remote to $dir but it holds no flake.nix"
+		return 1
+	fi
+	nh_mark_cloned
+	nh_ok "cloned fleet to $dir"
 }
 
 # nh_reexec_at_fleet_pin <fleet-root> [verb arg…] — hand the rest of
@@ -168,58 +168,58 @@ nh_clone_fleet() {
 # writes it: the checkout is a git work tree, and `path:` copies all of
 # it — `.git`, every `result` symlink — into the store a second time.
 nh_reexec_at_fleet_pin() {
-  local root="$1" pinned="" system="" rc=0
-  shift
-  local -a argv=("$@")
-  [ "${#argv[@]}" -gt 0 ] || argv=("${_NH_ARGV[@]}")
-  [ -z "${NIXHOLD_REEXEC:-}" ] || return 0
-  nh_cloned_this_process || return 0
-  # Sources run directly have no package path to compare, so there is
-  # nothing to be stale against.
-  [ -n "${NIXHOLD_SELF:-}" ] || return 0
+	local root="$1" pinned="" system="" rc=0
+	shift
+	local -a argv=("$@")
+	[ "${#argv[@]}" -gt 0 ] || argv=("${_NH_ARGV[@]}")
+	[ -z "${NIXHOLD_REEXEC:-}" ] || return 0
+	nh_cloned_this_process || return 0
+	# Sources run directly have no package path to compare, so there is
+	# nothing to be stale against.
+	[ -n "${NIXHOLD_SELF:-}" ] || return 0
 
-  system="$(nh_system)" || return 0
-  pinned="$(nix eval --raw --no-warn-dirty \
-    "$root#packages.$system.nixhold.outPath" 2>/dev/null)" || {
-    nh_warn "could not read the CLI $root pins — continuing on this one"
-    return 0
-  }
-  [ "$pinned" != "$NIXHOLD_SELF" ] || return 0
+	system="$(nh_system)" || return 0
+	pinned="$(nix eval --raw --no-warn-dirty \
+		"$root#packages.$system.nixhold.outPath" 2>/dev/null)" || {
+		nh_warn "could not read the CLI $root pins — continuing on this one"
+		return 0
+	}
+	[ "$pinned" != "$NIXHOLD_SELF" ] || return 0
 
-  nh_info "this CLI is not the one $root pins — re-running there"
-  nh_info "  nix run $root#nixhold -- ${argv[*]}"
-  # NIXHOLD_BOOTSTRAPPED carries "the checkout was cloned into the
-  # framework's default directory" across: the child's own clone step
-  # finds it already there, and would otherwise skip the relocation to
-  # the host's own fleetDir.
-  NIXHOLD_REEXEC=1 NIXHOLD_BOOTSTRAPPED="${_NH_BOOTSTRAPPED:-0}" \
-    nix run --no-warn-dirty "$root#nixhold" -- "${argv[@]}" || rc=$?
-  exit "$rc"
+	nh_info "this CLI is not the one $root pins — re-running there"
+	nh_info "  nix run $root#nixhold -- ${argv[*]}"
+	# NIXHOLD_BOOTSTRAPPED carries "the checkout was cloned into the
+	# framework's default directory" across: the child's own clone step
+	# finds it already there, and would otherwise skip the relocation to
+	# the host's own fleetDir.
+	NIXHOLD_REEXEC=1 NIXHOLD_BOOTSTRAPPED="${_NH_BOOTSTRAPPED:-0}" \
+		nix run --no-warn-dirty "$root#nixhold" -- "${argv[@]}" || rc=$?
+	exit "$rc"
 }
 
 # nh_system — the system double this CLI runs on: baked in by the
 # package (cli/default.nix), asked of nix when running in-tree.
 nh_system() {
-  if [ -z "${NIXHOLD_SYSTEM:-}" ]; then
-    NIXHOLD_SYSTEM="$(nix eval --raw --impure --expr builtins.currentSystem)" || return 1
-    export NIXHOLD_SYSTEM
-  fi
-  printf '%s' "$NIXHOLD_SYSTEM"
+	if [ -z "${NIXHOLD_SYSTEM:-}" ]; then
+		NIXHOLD_SYSTEM="$(nix eval --raw --impure --expr builtins.currentSystem)" || return 1
+		export NIXHOLD_SYSTEM
+	fi
+	printf '%s' "$NIXHOLD_SYSTEM"
 }
 
 # nh_config_set <platform> — the flake attribute a platform's hosts
 # live under. Android hosts are keyed by the seat that builds their
 # plan, which is this machine.
 nh_config_set() {
-  case "$1" in
-    nixos) printf 'nixosConfigurations' ;;
-    darwin) printf 'darwinConfigurations' ;;
-    android) printf 'androidConfigurations.%s' "$(nh_system)" ;;
-    *)
-      nh_err "unknown platform: $1"
-      return 1
-      ;;
-  esac
+	case "$1" in
+		nixos) printf 'nixosConfigurations' ;;
+		darwin) printf 'darwinConfigurations' ;;
+		android) printf 'androidConfigurations.%s' "$(nh_system)" ;;
+		*)
+			nh_err "unknown platform: $1"
+			return 1
+			;;
+	esac
 }
 
 # Evaluate an attr under the framework view of a host's config.
@@ -228,11 +228,11 @@ nh_config_set() {
 #   <attrPath>  = e.g. "nixhold.services" or "nixhold.fleet.derived.address"
 # Returns JSON on stdout, exits non-zero on eval failure.
 nh_host_eval() {
-  local host="$1" platform="$2" path="$3"
-  local root set
-  root="$(nh_fleet_root)" || return 1
-  set="$(nh_config_set "$platform")" || return 1
-  nix eval --json --no-warn-dirty "$root#$set.$host.config.$path"
+	local host="$1" platform="$2" path="$3"
+	local root set
+	root="$(nh_fleet_root)" || return 1
+	set="$(nh_config_set "$platform")" || return 1
+	nix eval --json --no-warn-dirty "$root#$set.$host.config.$path"
 }
 
 # The passphrase-wrapped operator identity lives in the fleet
@@ -254,12 +254,12 @@ NIXHOLD_CLONE_KEY_FILE="${NIXHOLD_CLONE_KEY_FILE:-}"
 export NIXHOLD_CLONE_KEY_FILE
 
 nh_require_cmd() {
-  for c in "$@"; do
-    if ! command -v "$c" >/dev/null 2>&1; then
-      nh_err "missing required command: $c"
-      return 1
-    fi
-  done
+	for c in "$@"; do
+		if ! command -v "$c" >/dev/null 2>&1; then
+			nh_err "missing required command: $c"
+			return 1
+		fi
+	done
 }
 
 # ---------------------------------------------------------------------
@@ -284,50 +284,50 @@ nh_require_cmd() {
 # — including the command substitutions in nh_tmpdir — agrees on the
 # path, and the dispatcher's single exit handler wipes exactly it.
 nh_scratch_root_path() {
-  local base="${TMPDIR:-/tmp}"
-  if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR" ] && [ -O "$XDG_RUNTIME_DIR" ]; then
-    base="$XDG_RUNTIME_DIR"
-  fi
-  printf '%s/nixhold-%s' "$base" "$$"
+	local base="${TMPDIR:-/tmp}"
+	if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR" ] && [ -O "$XDG_RUNTIME_DIR" ]; then
+		base="$XDG_RUNTIME_DIR"
+	fi
+	printf '%s/nixhold-%s' "$base" "$$"
 }
 
 nh_tmp_root() {
-  local root
-  root="$(nh_scratch_root_path)"
-  # Plain `mkdir`, not `mkdir -p`: the parent always exists, and -p
-  # would happily adopt whatever already sits at $root — a symlink, or
-  # another user's directory. A failing mkdir is therefore either the
-  # normal same-process re-entry (the root is there and it is OURS: a
-  # real directory, owned by this uid) or an entry we must refuse.
-  if ! mkdir "$root" 2>/dev/null; then
-    if [ -L "$root" ] || [ ! -d "$root" ] || [ ! -O "$root" ]; then
-      nh_err "cannot stage key material in $root — either its parent is not writable, or something already sits at that path that is not a directory of ours (remove it, or point \$TMPDIR elsewhere)"
-      return 1
-    fi
-  fi
-  chmod 700 "$root" || return 1
-  printf '%s' "$root"
+	local root
+	root="$(nh_scratch_root_path)"
+	# Plain `mkdir`, not `mkdir -p`: the parent always exists, and -p
+	# would happily adopt whatever already sits at $root — a symlink, or
+	# another user's directory. A failing mkdir is therefore either the
+	# normal same-process re-entry (the root is there and it is OURS: a
+	# real directory, owned by this uid) or an entry we must refuse.
+	if ! mkdir "$root" 2>/dev/null; then
+		if [ -L "$root" ] || [ ! -d "$root" ] || [ ! -O "$root" ]; then
+			nh_err "cannot stage key material in $root — either its parent is not writable, or something already sits at that path that is not a directory of ours (remove it, or point \$TMPDIR elsewhere)"
+			return 1
+		fi
+	fi
+	chmod 700 "$root" || return 1
+	printf '%s' "$root"
 }
 
 # nh_tmpdir [label] — a private 0700 scratch dir, removed when the CLI
 # exits. Replaces bare `mktemp -d` + a per-caller EXIT trap, which
 # clobbered whatever trap the caller before it had installed.
 nh_tmpdir() {
-  local label="${1:-tmp}" root d
-  root="$(nh_tmp_root)" || {
-    nh_err "could not create the scratch directory at $(nh_scratch_root_path)"
-    return 1
-  }
-  d="$(mktemp -d "$root/$label.XXXXXX")" || {
-    nh_err "could not create a scratch directory under $root"
-    return 1
-  }
-  chmod 700 "$d" || {
-    rm -rf "$d"
-    nh_err "could not restrict $d"
-    return 1
-  }
-  printf '%s' "$d"
+	local label="${1:-tmp}" root d
+	root="$(nh_tmp_root)" || {
+		nh_err "could not create the scratch directory at $(nh_scratch_root_path)"
+		return 1
+	}
+	d="$(mktemp -d "$root/$label.XXXXXX")" || {
+		nh_err "could not create a scratch directory under $root"
+		return 1
+	}
+	chmod 700 "$d" || {
+		rm -rf "$d"
+		nh_err "could not restrict $d"
+		return 1
+	}
+	printf '%s' "$d"
 }
 
 # nh_mark_cloned / nh_cloned_this_process — did THIS run clone the
@@ -339,13 +339,13 @@ nh_tmpdir() {
 # assignments are thrown away. The dispatcher's exit wipe removes it
 # with everything else.
 nh_mark_cloned() {
-  local root
-  root="$(nh_tmp_root)" || return 0
-  : >"$root/cloned" || true
+	local root
+	root="$(nh_tmp_root)" || return 0
+	: >"$root/cloned" || true
 }
 
 nh_cloned_this_process() {
-  [ -f "$(nh_scratch_root_path)/cloned" ]
+	[ -f "$(nh_scratch_root_path)/cloned" ]
 }
 
 # nh_at_exit <function-name> — register a handler the dispatcher's
@@ -355,21 +355,21 @@ nh_cloned_this_process() {
 # other's).
 _NH_EXIT_HANDLERS=""
 nh_at_exit() {
-  _NH_EXIT_HANDLERS="${_NH_EXIT_HANDLERS}${_NH_EXIT_HANDLERS:+ }$1"
+	_NH_EXIT_HANDLERS="${_NH_EXIT_HANDLERS}${_NH_EXIT_HANDLERS:+ }$1"
 }
 
 _NH_EXIT_RAN=0
 nh_run_at_exit() {
-  [ "$_NH_EXIT_RAN" -eq 0 ] || return 0
-  _NH_EXIT_RAN=1
-  local f
-  for f in $_NH_EXIT_HANDLERS; do
-    "$f" || true
-  done
-  local root
-  root="$(nh_scratch_root_path)"
-  [ -d "$root" ] && rm -rf "$root"
-  return 0
+	[ "$_NH_EXIT_RAN" -eq 0 ] || return 0
+	_NH_EXIT_RAN=1
+	local f
+	for f in $_NH_EXIT_HANDLERS; do
+		"$f" || true
+	done
+	local root
+	root="$(nh_scratch_root_path)"
+	[ -d "$root" ] && rm -rf "$root"
+	return 0
 }
 
 # nh_installer_env — true inside the fleet installer ISO. The marker
@@ -378,28 +378,28 @@ nh_run_at_exit() {
 # before any verb is sourced. ($NIXHOLD_INSTALLER_MARKER overrides the
 # path — test hook only, never set in production.)
 nh_installer_env() {
-  [ -f "${NIXHOLD_INSTALLER_MARKER:-/etc/nixhold-installer}" ]
+	[ -f "${NIXHOLD_INSTALLER_MARKER:-/etc/nixhold-installer}" ]
 }
 
 # nh_sudo <cmd…> — the installer ISO runs as root; anywhere else the
 # few phases that touch /etc, /mnt and /dev escalate.
 nh_sudo() {
-  if [ "$(id -u)" -eq 0 ]; then
-    "$@"
-  else
-    sudo "$@"
-  fi
+	if [ "$(id -u)" -eq 0 ]; then
+		"$@"
+	else
+		sudo "$@"
+	fi
 }
 
 # nh_clone_key_src — the clone key's ciphertext, when this run has one:
 # $NIXHOLD_CLONE_KEY_FILE, or the one the installer image bakes.
 nh_clone_key_src() {
-  local src="${NIXHOLD_CLONE_KEY_FILE:-}"
-  if [ -z "$src" ] && nh_installer_env && [ -f /etc/nixhold/keys/identity.age ]; then
-    src="/etc/nixhold/keys/identity.age"
-  fi
-  [ -n "$src" ] || return 1
-  printf '%s' "$src"
+	local src="${NIXHOLD_CLONE_KEY_FILE:-}"
+	if [ -z "$src" ] && nh_installer_env && [ -f /etc/nixhold/keys/identity.age ]; then
+		src="/etc/nixhold/keys/identity.age"
+	fi
+	[ -n "$src" ] || return 1
+	printf '%s' "$src"
 }
 
 # nh_export_clone_ssh — GIT_SSH_COMMAND for the whole run, naming the
@@ -418,13 +418,13 @@ nh_clone_key_src() {
 # opens the key itself, up front, which is safe because the checkout
 # its operator route may read is already there.
 nh_export_clone_ssh() {
-  [ -z "${GIT_SSH_COMMAND:-}" ] || return 0
-  nh_clone_key_src >/dev/null || return 0
-  if [ -n "${NIXHOLD_REEXEC:-}" ]; then
-    nh_clone_key >/dev/null || return 1
-  fi
-  GIT_SSH_COMMAND="$(nh_clone_ssh_command "$(nh_scratch_root_path)/clone.key")"
-  export GIT_SSH_COMMAND
+	[ -z "${GIT_SSH_COMMAND:-}" ] || return 0
+	nh_clone_key_src >/dev/null || return 0
+	if [ -n "${NIXHOLD_REEXEC:-}" ]; then
+		nh_clone_key >/dev/null || return 1
+	fi
+	GIT_SSH_COMMAND="$(nh_clone_ssh_command "$(nh_scratch_root_path)/clone.key")"
+	export GIT_SSH_COMMAND
 }
 
 # nh_clone_key — plaintext path of the credential git clones and
@@ -445,42 +445,42 @@ nh_export_clone_ssh() {
 # on the host's ssh config — on a fleet machine that names this same
 # key for the fleet repo's forge (modules/repositories/default.nix).
 nh_clone_key() {
-  local src root out
-  src="$(nh_clone_key_src)" || return 1
-  if [ ! -f "$src" ]; then
-    nh_err "no clone key at $src (from \$NIXHOLD_CLONE_KEY_FILE) — the installer image is incomplete"
-    return 2
-  fi
-  root="$(nh_tmp_root)" || {
-    nh_err "could not create the scratch directory for the clone key"
-    return 2
-  }
-  out="$root/clone.key"
-  if [ -s "$out" ]; then
-    printf '%s' "$out"
-    return 0
-  fi
-  nh_require_cmd age ssh git || return 2
+	local src root out
+	src="$(nh_clone_key_src)" || return 1
+	if [ ! -f "$src" ]; then
+		nh_err "no clone key at $src (from \$NIXHOLD_CLONE_KEY_FILE) — the installer image is incomplete"
+		return 2
+	fi
+	root="$(nh_tmp_root)" || {
+		nh_err "could not create the scratch directory for the clone key"
+		return 2
+	}
+	out="$root/clone.key"
+	if [ -s "$out" ]; then
+		printf '%s' "$out"
+		return 0
+	fi
+	nh_require_cmd age ssh git || return 2
 
-  # Subshell: the key's plaintext is written 0600 before it is moved
-  # into place. errexit is off in here (the caller tests our status),
-  # so every step exits explicitly.
-  if ! (
-    set -euo pipefail
-    nh_age_decrypt "$src" "$out.tmp" || exit 1
-    chmod 600 "$out.tmp" || exit 1
-  ); then
-    rm -f "$out.tmp"
-    nh_err "could not decrypt the clone key at $src (the operator's seat did not open it, or it predates the current operator key)"
-    return 2
-  fi
-  if ! mv "$out.tmp" "$out"; then
-    rm -f "$out.tmp"
-    nh_err "could not stage the decrypted clone key at $out"
-    return 2
-  fi
-  nh_info "using the fleet identity key from $src to reach the fleet repo"
-  printf '%s' "$out"
+	# Subshell: the key's plaintext is written 0600 before it is moved
+	# into place. errexit is off in here (the caller tests our status),
+	# so every step exits explicitly.
+	if ! (
+		set -euo pipefail
+		nh_age_decrypt "$src" "$out.tmp" || exit 1
+		chmod 600 "$out.tmp" || exit 1
+	); then
+		rm -f "$out.tmp"
+		nh_err "could not decrypt the clone key at $src (the operator's seat did not open it, or it predates the current operator key)"
+		return 2
+	fi
+	if ! mv "$out.tmp" "$out"; then
+		rm -f "$out.tmp"
+		nh_err "could not stage the decrypted clone key at $out"
+		return 2
+	fi
+	nh_info "using the fleet identity key from $src to reach the fleet repo"
+	printf '%s' "$out"
 }
 
 # nh_clone_ssh_command <key> — the ssh command git, and Nix's own git,
@@ -490,7 +490,7 @@ nh_clone_key() {
 # which is the operator's and may contain spaces. The timeouts are the
 # forge ssh blocks' (modules/repositories/default.nix).
 nh_clone_ssh_command() {
-  printf 'ssh -i %q -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=15' "$1"
+	printf 'ssh -i %q -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=15' "$1"
 }
 
 # nh_repo_git <git-args…> — git against the fleet REMOTE (clone, push,
@@ -502,16 +502,16 @@ nh_clone_ssh_command() {
 # plaintext lives in this process's scratch root, so a persisted
 # command would point at a path the next invocation has already wiped.
 nh_repo_git() {
-  local key="" rc=0
-  key="$(nh_clone_key)" || rc=$?
-  case "$rc" in
-    0)
-      GIT_SSH_COMMAND="$(nh_clone_ssh_command "$key")" git "$@"
-      return $?
-      ;;
-    1) git "$@" ;;
-    *) return 1 ;;
-  esac
+	local key="" rc=0
+	key="$(nh_clone_key)" || rc=$?
+	case "$rc" in
+		0)
+			GIT_SSH_COMMAND="$(nh_clone_ssh_command "$key")" git "$@"
+			return $?
+			;;
+		1) git "$@" ;;
+		*) return 1 ;;
+	esac
 }
 
 # nh_commit_paths <root> <msg> <path…> — every verb commits exactly
@@ -522,33 +522,33 @@ nh_repo_git() {
 # A checkout with no git identity (the ISO, a fresh Mac) commits
 # under a framework one. Prints nothing on stdout.
 nh_commit_paths() {
-  local root="$1" msg="$2"
-  shift 2
-  git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
-    nh_warn "fleet is not a git worktree — commit the generated files yourself"
-    return 0
-  }
-  local present=() p
-  for p in "$@"; do
-    if [ -e "$p" ] || [ -n "$(git -C "$root" ls-files -- "$p" 2>/dev/null)" ]; then
-      present+=("$p")
-    fi
-  done
-  [ "${#present[@]}" -gt 0 ] || return 0
-  git -C "$root" add -A -- "${present[@]}" || {
-    nh_warn "git add failed — commit the generated files yourself"
-    return 0
-  }
-  git -C "$root" diff --cached --quiet -- "${present[@]}" && return 0
-  local ident=()
-  if [ -z "$(git -C "$root" config user.email || true)" ]; then
-    ident=(-c user.name=nixhold -c user.email=nixhold@localhost)
-  fi
-  if git -C "$root" "${ident[@]}" commit -q -m "$msg" -- "${present[@]}"; then
-    nh_ok "committed: ${present[*]#"$root"/}"
-  else
-    nh_warn "commit failed — commit the generated files yourself"
-  fi
+	local root="$1" msg="$2"
+	shift 2
+	git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+		nh_warn "fleet is not a git worktree — commit the generated files yourself"
+		return 0
+	}
+	local present=() p
+	for p in "$@"; do
+		if [ -e "$p" ] || [ -n "$(git -C "$root" ls-files -- "$p" 2>/dev/null)" ]; then
+			present+=("$p")
+		fi
+	done
+	[ "${#present[@]}" -gt 0 ] || return 0
+	git -C "$root" add -A -- "${present[@]}" || {
+		nh_warn "git add failed — commit the generated files yourself"
+		return 0
+	}
+	git -C "$root" diff --cached --quiet -- "${present[@]}" && return 0
+	local ident=()
+	if [ -z "$(git -C "$root" config user.email || true)" ]; then
+		ident=(-c user.name=nixhold -c user.email=nixhold@localhost)
+	fi
+	if git -C "$root" "${ident[@]}" commit -q -m "$msg" -- "${present[@]}"; then
+		nh_ok "committed: ${present[*]#"$root"/}"
+	else
+		nh_warn "commit failed — commit the generated files yourself"
+	fi
 }
 
 # nh_push_if_installer <root> — the installer's checkout is ephemeral:
@@ -558,24 +558,24 @@ nh_commit_paths() {
 # nh_repo_git, not git: on the installer the push rides the baked
 # fleet identity key.
 nh_push_if_installer() {
-  local root="$1"
-  nh_installer_env || return 0
-  if nh_repo_git -C "$root" push >&2; then
-    nh_ok "pushed to the fleet repo"
-  else
-    nh_warn "push failed — push $root from a machine with repo access"
-  fi
+	local root="$1"
+	nh_installer_env || return 0
+	if nh_repo_git -C "$root" push >&2; then
+		nh_ok "pushed to the fleet repo"
+	else
+		nh_warn "push failed — push $root from a machine with repo access"
+	fi
 }
 
 # nh_stage_for_eval <root> <path…> — a dirty git flake includes
 # modified tracked files but NOT untracked ones, so a freshly written
 # file is invisible to the eval that must read it.
 nh_stage_for_eval() {
-  local root="$1"
-  shift
-  git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
-  git -C "$root" add --intent-to-add -- "$@" 2>/dev/null ||
-    nh_warn "git add of the generated files failed — 'git add' them before evaluating"
+	local root="$1"
+	shift
+	git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+	git -C "$root" add --intent-to-add -- "$@" 2>/dev/null ||
+		nh_warn "git add of the generated files failed — 'git add' them before evaluating"
 }
 
 # nh_reroot <option> <evaluated-path> -> the operator's working-tree
@@ -593,41 +593,41 @@ nh_stage_for_eval() {
 # never existed, so refuse instead (exit 3, which lint reports as a
 # violation rather than as a probe failure).
 nh_reroot() {
-  local label="$1" abspath="$2" root src rest store_root
-  root="$(nh_fleet_root)" || return 2
-  case "$abspath" in
-    "$root" | "$root"/*)
-      printf '%s' "$abspath"
-      return 0
-      ;;
-    /nix/store/*) ;;
-    *)
-      # Not a store path and not under the checkout: an operator-set
-      # absolute path, used verbatim.
-      printf '%s' "$abspath"
-      return 0
-      ;;
-  esac
-  rest="${abspath#/nix/store/}"
-  store_root="/nix/store/${rest%%/*}"
-  src="$(nh_flake_source_path)" || src=""
-  # The metadata probe and the eval can land on two copies of the same
-  # tree (a write between the calls re-hashes it), so a store root
-  # whose flake.nix is byte-identical to ours is still ours.
-  if [ "$store_root" != "$src" ] && ! cmp -s "$store_root/flake.nix" "$root/flake.nix"; then
-    nh_err "$label points into another flake input ($abspath); the CLI only writes inside the fleet checkout ($root)"
-    return 3
-  fi
-  if [ "$abspath" = "$store_root" ]; then
-    printf '%s' "$root"
-  else
-    printf '%s/%s' "$root" "${abspath#"$store_root"/}"
-  fi
+	local label="$1" abspath="$2" root src rest store_root
+	root="$(nh_fleet_root)" || return 2
+	case "$abspath" in
+		"$root" | "$root"/*)
+			printf '%s' "$abspath"
+			return 0
+			;;
+		/nix/store/*) ;;
+		*)
+			# Not a store path and not under the checkout: an operator-set
+			# absolute path, used verbatim.
+			printf '%s' "$abspath"
+			return 0
+			;;
+	esac
+	rest="${abspath#/nix/store/}"
+	store_root="/nix/store/${rest%%/*}"
+	src="$(nh_flake_source_path)" || src=""
+	# The metadata probe and the eval can land on two copies of the same
+	# tree (a write between the calls re-hashes it), so a store root
+	# whose flake.nix is byte-identical to ours is still ours.
+	if [ "$store_root" != "$src" ] && ! cmp -s "$store_root/flake.nix" "$root/flake.nix"; then
+		nh_err "$label points into another flake input ($abspath); the CLI only writes inside the fleet checkout ($root)"
+		return 3
+	fi
+	if [ "$abspath" = "$store_root" ]; then
+		printf '%s' "$root"
+	else
+		printf '%s/%s' "$root" "${abspath#"$store_root"/}"
+	fi
 }
 
 # nh_hostname -> this machine's short hostname. `uname -n` rather than
 # `hostname`: the latter is not in the CLI's runtimeInputs, and on a
 # minimal NixOS it is not on PATH at all.
 nh_hostname() {
-  uname -n | cut -d. -f1
+	uname -n | cut -d. -f1
 }

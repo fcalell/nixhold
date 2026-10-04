@@ -20,44 +20,44 @@
 # calling shell; non-zero when it can't be probed.
 _NH_FLAKE_SRC=""
 nh_flake_source_path() {
-  local root p
-  case "$_NH_FLAKE_SRC" in
-    "") ;;
-    -) return 1 ;;
-    *)
-      printf '%s' "$_NH_FLAKE_SRC"
-      return 0
-      ;;
-  esac
-  root="$(nh_fleet_root)" || return 2
-  p="$(nix flake metadata --json --no-warn-dirty "$root" 2>/dev/null | jq -r '.path // empty')" || p=""
-  if [ -z "$p" ]; then
-    _NH_FLAKE_SRC="-"
-    return 1
-  fi
-  _NH_FLAKE_SRC="$p"
-  printf '%s' "$p"
+	local root p
+	case "$_NH_FLAKE_SRC" in
+		"") ;;
+		-) return 1 ;;
+		*)
+			printf '%s' "$_NH_FLAKE_SRC"
+			return 0
+			;;
+	esac
+	root="$(nh_fleet_root)" || return 2
+	p="$(nix flake metadata --json --no-warn-dirty "$root" 2>/dev/null | jq -r '.path // empty')" || p=""
+	if [ -z "$p" ]; then
+		_NH_FLAKE_SRC="-"
+		return 1
+	fi
+	_NH_FLAKE_SRC="$p"
+	printf '%s' "$p"
 }
 
 # nh_reroot_layout <layout-key> <evaluated-path> — nh_reroot
 # (lib/run.sh) for a `nixhold.layout.<key>` value.
 nh_reroot_layout() {
-  nh_reroot "nixhold.layout.$1" "$2"
+	nh_reroot "nixhold.layout.$1" "$2"
 }
 
 # nh_worktree_layout_dir <layout-key> <fallback-subdir> -> the
 # operator's working-tree directory for nixhold.layout.<key>; the
 # fallback stands in when the option can't be probed at all.
 nh_worktree_layout_dir() {
-  local key="$1" fallback="$2" root abspath out
-  root="$(nh_fleet_root)" || return 2
-  abspath="$(nh_layout "$key" 2>/dev/null | jq -r '.')" || abspath=""
-  if [ -z "$abspath" ] || [ "$abspath" = "null" ]; then
-    printf '%s/%s' "$root" "$fallback"
-    return 0
-  fi
-  out="$(nh_reroot_layout "$key" "$abspath")" || return $?
-  printf '%s' "$out"
+	local key="$1" fallback="$2" root abspath out
+	root="$(nh_fleet_root)" || return 2
+	abspath="$(nh_layout "$key" 2>/dev/null | jq -r '.')" || abspath=""
+	if [ -z "$abspath" ] || [ "$abspath" = "null" ]; then
+		printf '%s/%s' "$root" "$fallback"
+		return 0
+	fi
+	out="$(nh_reroot_layout "$key" "$abspath")" || return $?
+	printf '%s' "$out"
 }
 
 nh_worktree_secrets_dir() { nh_worktree_layout_dir secrets secrets; }
@@ -68,31 +68,31 @@ nh_worktree_hosts_dir() { nh_worktree_layout_dir hostsDir hosts; }
 # file-valued nixhold.layout.<key>; non-zero (and no output) when the
 # option can't be probed or points outside the fleet checkout.
 nh_worktree_layout_file() {
-  local key="$1" abspath out
-  nh_fleet_root >/dev/null || return 2
-  abspath="$(nh_layout "$key" 2>/dev/null | jq -r '.')" || abspath=""
-  if [ -z "$abspath" ] || [ "$abspath" = "null" ]; then
-    return 1
-  fi
-  out="$(nh_reroot_layout "$key" "$abspath")" || return $?
-  printf '%s' "$out"
+	local key="$1" abspath out
+	nh_fleet_root >/dev/null || return 2
+	abspath="$(nh_layout "$key" 2>/dev/null | jq -r '.')" || abspath=""
+	if [ -z "$abspath" ] || [ "$abspath" = "null" ]; then
+		return 1
+	fi
+	out="$(nh_reroot_layout "$key" "$abspath")" || return $?
+	printf '%s' "$out"
 }
 
 # nh_pubkey_line <file> -> the first non-empty, non-comment line of a
 # committed pubkey file (age recipient or SSH host pubkey). Non-zero
 # when the file is absent or holds no key line.
 nh_pubkey_line() {
-  local f="$1" line
-  [ -f "$f" ] || return 1
-  while IFS= read -r line || [ -n "$line" ]; do
-    line="${line%$'\r'}"
-    case "$line" in
-      '' | '#'*) continue ;;
-    esac
-    printf '%s' "$line"
-    return 0
-  done <"$f"
-  return 1
+	local f="$1" line
+	[ -f "$f" ] || return 1
+	while IFS= read -r line || [ -n "$line" ]; do
+		line="${line%$'\r'}"
+		case "$line" in
+			'' | '#'*) continue ;;
+		esac
+		printf '%s' "$line"
+		return 0
+	done <"$f"
+	return 1
 }
 
 # nh_pubkey_lines <file> -> EVERY non-empty, non-comment line of a
@@ -102,17 +102,17 @@ nh_pubkey_line() {
 # and every ssh key that may log in is a line of its own. Non-zero when
 # the file is absent or holds no key line at all.
 nh_pubkey_lines() {
-  local f="$1" line found=1
-  [ -f "$f" ] || return 1
-  while IFS= read -r line || [ -n "$line" ]; do
-    line="${line%$'\r'}"
-    case "$line" in
-      '' | '#'*) continue ;;
-    esac
-    printf '%s\n' "$line"
-    found=0
-  done <"$f"
-  return "$found"
+	local f="$1" line found=1
+	[ -f "$f" ] || return 1
+	while IFS= read -r line || [ -n "$line" ]; do
+		line="${line%$'\r'}"
+		case "$line" in
+			'' | '#'*) continue ;;
+		esac
+		printf '%s\n' "$line"
+		found=0
+	done <"$f"
+	return "$found"
 }
 
 # nh_login_pub_file -> keys/login.pub (existing or not). The ONE login
@@ -120,9 +120,9 @@ nh_pubkey_lines() {
 # lines, authorized on the operator account of every host and on the
 # ISO's root.
 nh_login_pub_file() {
-  local keys_dir
-  keys_dir="$(nh_worktree_keys_dir)" || return 2
-  printf '%s/login.pub' "$keys_dir"
+	local keys_dir
+	keys_dir="$(nh_worktree_keys_dir)" || return 2
+	printf '%s/login.pub' "$keys_dir"
 }
 
 # ---------------------------------------------------------------------
@@ -140,36 +140,36 @@ nh_login_pub_file() {
 # share it. Declarations do not move mid-verb — a verb that rewrites
 # the roster drops the memo through nh_fleet_view_reset.
 nh_host_secrets() {
-  local host="$1" platform="${2:-}" root memo json
-  root="$(nh_tmp_root)" || return 1
-  memo="$root/secrets.$host.json"
-  if [ -s "$memo" ]; then
-    cat "$memo"
-    return 0
-  fi
-  if [ -z "$platform" ]; then
-    platform="$(nh_host_platform "$host")" || return 1
-  fi
-  json="$(nh_host_eval "$host" "$platform" nixhold.secrets)" || return 1
-  printf '%s' "$json" >"$memo" || return 1
-  printf '%s' "$json"
+	local host="$1" platform="${2:-}" root memo json
+	root="$(nh_tmp_root)" || return 1
+	memo="$root/secrets.$host.json"
+	if [ -s "$memo" ]; then
+		cat "$memo"
+		return 0
+	fi
+	if [ -z "$platform" ]; then
+		platform="$(nh_host_platform "$host")" || return 1
+	fi
+	json="$(nh_host_eval "$host" "$platform" nixhold.secrets)" || return 1
+	printf '%s' "$json" >"$memo" || return 1
+	printf '%s' "$json"
 }
 
 # nh_secret_scope <secrets-json> <name> — "host" | "fleet" (defaulting
 # to host for a JSON that predates the field).
 nh_secret_scope() {
-  printf '%s' "$1" | jq -r --arg n "$2" '.[$n].scope // "host"'
+	printf '%s' "$1" | jq -r --arg n "$2" '.[$n].scope // "host"'
 }
 
 # nh_secret_file <secrets-dir> <host> <name> <scope> — where the
 # ciphertext lives in the worktree.
 nh_secret_file() {
-  local sdir="$1" host="$2" name="$3" scope="$4"
-  if [ "$scope" = "fleet" ]; then
-    printf '%s/%s.age' "$sdir" "$name"
-  else
-    printf '%s/%s/%s.age' "$sdir" "$host" "$name"
-  fi
+	local sdir="$1" host="$2" name="$3" scope="$4"
+	if [ "$scope" = "fleet" ]; then
+		printf '%s/%s.age' "$sdir" "$name"
+	else
+		printf '%s/%s/%s.age' "$sdir" "$host" "$name"
+	fi
 }
 
 # nh_secret_owner <host> <scope> — whose secret it is, as every label,
@@ -177,20 +177,20 @@ nh_secret_file() {
 # ciphertext, the host otherwise. The host a fleet secret is resolved
 # through only supplies its declaration.
 nh_secret_owner() {
-  if [ "$2" = "fleet" ]; then printf fleet; else printf '%s' "$1"; fi
+	if [ "$2" = "fleet" ]; then printf fleet; else printf '%s' "$1"; fi
 }
 
 # nh_secret_next_deploy <host> <scope> <name> — the deploy that puts a
 # changed ciphertext live: the host's own, or, for a fleet secret,
 # every host that declares it.
 nh_secret_next_deploy() {
-  local host="$1" scope="$2" name="$3" hosts
-  if [ "$scope" != "fleet" ]; then
-    nh_info "next: nixhold deploy $host"
-    return 0
-  fi
-  hosts="$(nh_secret_declarers "$name" 2>/dev/null | cut -f1 | sort -u | paste -sd' ')" || hosts=""
-  nh_info "next: deploy every host that declares $name${hosts:+: $hosts}"
+	local host="$1" scope="$2" name="$3" hosts
+	if [ "$scope" != "fleet" ]; then
+		nh_info "next: nixhold deploy $host"
+		return 0
+	fi
+	hosts="$(nh_secret_declarers "$name" 2>/dev/null | cut -f1 | sort -u | paste -sd' ')" || hosts=""
+	nh_info "next: deploy every host that declares $name${hosts:+: $hosts}"
 }
 
 # nh_secret_declarers <name> — every host that declares <name>, as
@@ -200,18 +200,18 @@ nh_secret_next_deploy() {
 # answer would then be short, which is exactly what must not pass
 # silently).
 nh_secret_declarers() {
-  local name="$1" host json rc=0
-  while IFS= read -r host; do
-    [ -n "$host" ] || continue
-    if ! json="$(nh_host_secrets "$host" 2>/dev/null)"; then
-      nh_warn "could not evaluate nixhold.secrets for $host — it is left out of the answer for '$name'"
-      rc=1
-      continue
-    fi
-    printf '%s' "$json" | jq -r --arg n "$name" --arg h "$host" \
-      'select(has($n)) | [ $h, (.[$n].scope // "host") ] | @tsv'
-  done < <(nh_all_hosts)
-  return "$rc"
+	local name="$1" host json rc=0
+	while IFS= read -r host; do
+		[ -n "$host" ] || continue
+		if ! json="$(nh_host_secrets "$host" 2>/dev/null)"; then
+			nh_warn "could not evaluate nixhold.secrets for $host — it is left out of the answer for '$name'"
+			rc=1
+			continue
+		fi
+		printf '%s' "$json" | jq -r --arg n "$name" --arg h "$host" \
+			'select(has($n)) | [ $h, (.[$n].scope // "host") ] | @tsv'
+	done < <(nh_all_hosts)
+	return "$rc"
 }
 
 # nh_secret_resolve_name <name> <verb> — which host to reach <name>
@@ -223,32 +223,32 @@ nh_secret_declarers() {
 # are listed rather than guessed at). <verb> appears in the messages
 # only, so each verb names itself in the command it prints back.
 nh_secret_resolve_name() {
-  local name="$1" verb="$2" rows fleet hosts count
-  rows="$(nh_secret_declarers "$name")" || true
-  if [ -z "$rows" ]; then
-    nh_err "'$name' is neither a host in this fleet nor a secret any host declares — 'nixhold secret list' shows the inventory"
-    return 1
-  fi
-  fleet="$(printf '%s\n' "$rows" | awk -F'\t' '$2 == "fleet" { print $1; exit }')"
-  if [ -n "$fleet" ]; then
-    printf '%s\tfleet' "$fleet"
-    return 0
-  fi
-  hosts="$(printf '%s\n' "$rows" | awk -F'\t' 'NF { print $1 }' | sort -u)"
-  count="$(printf '%s\n' "$hosts" | grep -c .)"
-  if [ "$count" -eq 1 ]; then
-    printf '%s\thost' "$hosts"
-    return 0
-  fi
-  if ! nh_tty; then
-    nh_err "'$name' is declared on several hosts ($(printf '%s' "$hosts" | paste -sd' ' -)) and each has its own ciphertext — name the host: nixhold secret $verb <host> $name"
-    return 1
-  fi
-  local pick
-  # shellcheck disable=SC2086 # host names, split on purpose
-  pick="$(gum choose --header "'$name' on which host?" $hosts)" || return 1
-  [ -n "$pick" ] || return 1
-  printf '%s\thost' "$pick"
+	local name="$1" verb="$2" rows fleet hosts count
+	rows="$(nh_secret_declarers "$name")" || true
+	if [ -z "$rows" ]; then
+		nh_err "'$name' is neither a host in this fleet nor a secret any host declares — 'nixhold secret list' shows the inventory"
+		return 1
+	fi
+	fleet="$(printf '%s\n' "$rows" | awk -F'\t' '$2 == "fleet" { print $1; exit }')"
+	if [ -n "$fleet" ]; then
+		printf '%s\tfleet' "$fleet"
+		return 0
+	fi
+	hosts="$(printf '%s\n' "$rows" | awk -F'\t' 'NF { print $1 }' | sort -u)"
+	count="$(printf '%s\n' "$hosts" | grep -c .)"
+	if [ "$count" -eq 1 ]; then
+		printf '%s\thost' "$hosts"
+		return 0
+	fi
+	if ! nh_tty; then
+		nh_err "'$name' is declared on several hosts ($(printf '%s' "$hosts" | paste -sd' ' -)) and each has its own ciphertext — name the host: nixhold secret $verb <host> $name"
+		return 1
+	fi
+	local pick
+	# shellcheck disable=SC2086 # host names, split on purpose
+	pick="$(gum choose --header "'$name' on which host?" $hosts)" || return 1
+	[ -n "$pick" ] || return 1
+	printf '%s\thost' "$pick"
 }
 
 # The worktree inputs of the recipient set. Probed once per shell: each
@@ -261,17 +261,17 @@ _NH_OP_RECIPIENT_FILE=""
 _NH_OP_RECIPIENT_KEYS=""
 _NH_KEYS_DIR=""
 nh_probe_recipient_inputs() {
-  [ -z "$_NH_RECIPIENT_PROBED" ] || return 0
-  _NH_RECIPIENT_PROBED="done"
-  _NH_OP_RECIPIENT_FILE="$(nh_worktree_layout_file ageRecipient 2>/dev/null)" || _NH_OP_RECIPIENT_FILE=""
-  if [ -n "$_NH_OP_RECIPIENT_FILE" ]; then
-    # EVERY line, not the first: the operator may hold a token
-    # recipient and a passphrase-identity recipient at once, and a
-    # ciphertext that carries only one of them is openable by only one
-    # of the operator's two seats.
-    _NH_OP_RECIPIENT_KEYS="$(nh_pubkey_lines "$_NH_OP_RECIPIENT_FILE")" || _NH_OP_RECIPIENT_KEYS=""
-  fi
-  _NH_KEYS_DIR="$(nh_worktree_keys_dir 2>/dev/null)" || _NH_KEYS_DIR=""
+	[ -z "$_NH_RECIPIENT_PROBED" ] || return 0
+	_NH_RECIPIENT_PROBED="done"
+	_NH_OP_RECIPIENT_FILE="$(nh_worktree_layout_file ageRecipient 2>/dev/null)" || _NH_OP_RECIPIENT_FILE=""
+	if [ -n "$_NH_OP_RECIPIENT_FILE" ]; then
+		# EVERY line, not the first: the operator may hold a token
+		# recipient and a passphrase-identity recipient at once, and a
+		# ciphertext that carries only one of them is openable by only one
+		# of the operator's two seats.
+		_NH_OP_RECIPIENT_KEYS="$(nh_pubkey_lines "$_NH_OP_RECIPIENT_FILE")" || _NH_OP_RECIPIENT_KEYS=""
+	fi
+	_NH_KEYS_DIR="$(nh_worktree_keys_dir 2>/dev/null)" || _NH_KEYS_DIR=""
 }
 
 # nh_recipients_file <out> — THE recipient set, one line per recipient,
@@ -283,24 +283,24 @@ nh_probe_recipient_inputs() {
 # secret is being written has no fleet.pub yet, and a ciphertext
 # encrypted to the operator alone would be one no host could read.
 nh_recipients_file() {
-  local out="$1" fleet_line
-  nh_probe_recipient_inputs
-  if [ -z "$_NH_OP_RECIPIENT_KEYS" ]; then
-    nh_err "no operator recipient to encrypt to (${_NH_OP_RECIPIENT_FILE:-nixhold.layout.ageRecipient could not be probed}) — 'nixhold host add' generates the operator identity on a fleet that has none"
-    return 1
-  fi
-  nh_fleet_key_ensure || return 1
-  fleet_line="$(nh_fleet_pub_line)" || {
-    nh_err "no fleet recipient at $(nh_fleet_pub_file 2>/dev/null) — refusing to encrypt to the operator alone (no host could decrypt it)"
-    return 1
-  }
-  : >"$out" || return 1
-  printf '%s\n' "$_NH_OP_RECIPIENT_KEYS" >>"$out" || return 1
-  printf '%s\n' "$fleet_line" >>"$out" || return 1
-  # Every writer of this file hands it straight to `age -R`, and a
-  # token recipient in it needs the plugin present to encrypt at all —
-  # refused here, once, rather than in each call site.
-  nh_age_require_encrypt
+	local out="$1" fleet_line
+	nh_probe_recipient_inputs
+	if [ -z "$_NH_OP_RECIPIENT_KEYS" ]; then
+		nh_err "no operator recipient to encrypt to (${_NH_OP_RECIPIENT_FILE:-nixhold.layout.ageRecipient could not be probed}) — 'nixhold host add' generates the operator identity on a fleet that has none"
+		return 1
+	fi
+	nh_fleet_key_ensure || return 1
+	fleet_line="$(nh_fleet_pub_line)" || {
+		nh_err "no fleet recipient at $(nh_fleet_pub_file 2>/dev/null) — refusing to encrypt to the operator alone (no host could decrypt it)"
+		return 1
+	}
+	: >"$out" || return 1
+	printf '%s\n' "$_NH_OP_RECIPIENT_KEYS" >>"$out" || return 1
+	printf '%s\n' "$fleet_line" >>"$out" || return 1
+	# Every writer of this file hands it straight to `age -R`, and a
+	# token recipient in it needs the plugin present to encrypt at all —
+	# refused here, once, rather than in each call site.
+	nh_age_require_encrypt
 }
 
 # nh_editor_cmd -> the editor command line the operator has set, for
@@ -308,10 +308,10 @@ nh_recipients_file() {
 # (the usual precedence: VISUAL is the full-screen one), vi is the
 # floor.
 nh_editor_cmd() {
-  local spec="${VISUAL:-}"
-  [ -n "${spec//[[:space:]]/}" ] || spec="${EDITOR:-}"
-  [ -n "${spec//[[:space:]]/}" ] || spec="vi"
-  printf '%s' "$spec"
+	local spec="${VISUAL:-}"
+	[ -n "${spec//[[:space:]]/}" ] || spec="${EDITOR:-}"
+	[ -n "${spec//[[:space:]]/}" ] || spec="vi"
+	printf '%s' "$spec"
 }
 
 # nh_run_editor <file> — open the operator's editor on <file>.
@@ -320,13 +320,13 @@ nh_editor_cmd() {
 # evaluated as one; the filename is passed as a positional so it is
 # never re-split or glob-expanded.
 nh_run_editor() {
-  # shellcheck disable=SC2034 # $file is expanded by the eval below
-  local file="$1" spec
-  spec="$(nh_editor_cmd)"
-  if ! eval "$spec \"\$file\""; then
-    nh_err "editor ($spec) exited non-zero — nothing was encrypted"
-    return 1
-  fi
+	# shellcheck disable=SC2034 # $file is expanded by the eval below
+	local file="$1" spec
+	spec="$(nh_editor_cmd)"
+	if ! eval "$spec \"\$file\""; then
+		nh_err "editor ($spec) exited non-zero — nothing was encrypted"
+		return 1
+	fi
 }
 
 # nh_login_pub_default_from_identity <plaintext-key-file> — the one
@@ -342,32 +342,31 @@ nh_run_editor() {
 # walk pre-encryption, `secret edit identity` and `secret rekey`
 # post-decryption — so the operator never hand-copies a pubkey.
 nh_login_pub_default_from_identity() {
-  local plain="$1" out root d
-  if [ ! -s "$plain" ]; then
-    nh_warn "no plaintext for the identity secret — keys/login.pub NOT written"
-    return 1
-  fi
-  out="$(nh_login_pub_file)" || return 0
-  if nh_pubkey_lines "$out" >/dev/null 2>&1; then
-    return 0
-  fi
-  d="$(nh_tmpdir loginpub)" || return 1
-  chmod 600 "$plain" 2>/dev/null || true
-  if ! ssh-keygen -y -f "$plain" >"$d/line" 2>/dev/null; then
-    nh_warn "the identity secret is not a valid SSH private key — $out NOT written"
-    return 1
-  fi
-  mkdir -p "$(dirname "$out")" || return 1
-  if ! cat "$d/line" >>"$out"; then
-    nh_err "could not append the identity pubkey to $out"
-    return 1
-  fi
-  chmod 0644 "$out" 2>/dev/null || true
-  nh_ok "authorized the fleet identity in $out — every host and the ISO let that key in"
-  root="$(nh_fleet_root)" || return 0
-  nh_stage_for_eval "$root" "$out"
+	local plain="$1" out root d
+	if [ ! -s "$plain" ]; then
+		nh_warn "no plaintext for the identity secret — keys/login.pub NOT written"
+		return 1
+	fi
+	out="$(nh_login_pub_file)" || return 0
+	if nh_pubkey_lines "$out" >/dev/null 2>&1; then
+		return 0
+	fi
+	d="$(nh_tmpdir loginpub)" || return 1
+	chmod 600 "$plain" 2>/dev/null || true
+	if ! ssh-keygen -y -f "$plain" >"$d/line" 2>/dev/null; then
+		nh_warn "the identity secret is not a valid SSH private key — $out NOT written"
+		return 1
+	fi
+	mkdir -p "$(dirname "$out")" || return 1
+	if ! cat "$d/line" >>"$out"; then
+		nh_err "could not append the identity pubkey to $out"
+		return 1
+	fi
+	chmod 0644 "$out" 2>/dev/null || true
+	nh_ok "authorized the fleet identity in $out — every host and the ISO let that key in"
+	root="$(nh_fleet_root)" || return 0
+	nh_stage_for_eval "$root" "$out"
 }
-
 
 # ---------------------------------------------------------------------
 # The public half of a secret.
@@ -386,11 +385,11 @@ nh_login_pub_default_from_identity() {
 # public half lands in the worktree, or nothing at all for a secret
 # that declares none.
 nh_secret_public_file() {
-  local file keys_dir
-  file="$(printf '%s' "$1" | jq -r --arg n "$2" '.[$n].public.file // ""')"
-  [ -n "$file" ] || return 0
-  keys_dir="$(nh_worktree_keys_dir)" || return 1
-  printf '%s/%s' "$keys_dir" "$file"
+	local file keys_dir
+	file="$(printf '%s' "$1" | jq -r --arg n "$2" '.[$n].public.file // ""')"
+	[ -n "$file" ] || return 0
+	keys_dir="$(nh_worktree_keys_dir)" || return 1
+	printf '%s/%s' "$keys_dir" "$file"
 }
 
 # nh_secret_public_write <secrets-json> <name> <plaintext-file> — derive
@@ -400,37 +399,37 @@ nh_secret_public_file() {
 # the ciphertext that was just encrypted, and fixable by re-running
 # `nixhold secret edit <host> <name>`.
 nh_secret_public_write() {
-  local json="$1" name="$2" plain="$3" cmd out
-  out="$(nh_secret_public_file "$json" "$name")" || return 1
-  [ -n "$out" ] || return 0
-  cmd="$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].public.command // ""')"
-  if [ -z "$cmd" ]; then
-    nh_err "$name declares public.file but no public.command — $out NOT written"
-    return 1
-  fi
-  mkdir -p "$(dirname "$out")" || return 1
-  # Module-declared config, run in this process for the same reason a
-  # generator is: bash may not be on the CLI's runtime PATH. The
-  # plaintext arrives on stdin, so the command is never handed the path
-  # of the scratch buffer.
-  if ! { eval "$cmd"; } <"$plain" >"$out.tmp"; then
-    rm -f "$out.tmp"
-    nh_err "deriving the public half of $name failed — $out NOT written"
-    return 1
-  fi
-  if [ ! -s "$out.tmp" ]; then
-    rm -f "$out.tmp"
-    nh_err "the public half of $name came out empty — $out NOT written"
-    return 1
-  fi
-  mv "$out.tmp" "$out" || {
-    rm -f "$out.tmp"
-    nh_err "could not replace $out"
-    return 1
-  }
-  chmod 0644 "$out" 2>/dev/null || true
-  nh_ok "wrote the public half of $name to $out"
-  nh_stage_for_eval "$(nh_fleet_root)" "$out"
+	local json="$1" name="$2" plain="$3" cmd out
+	out="$(nh_secret_public_file "$json" "$name")" || return 1
+	[ -n "$out" ] || return 0
+	cmd="$(printf '%s' "$json" | jq -r --arg n "$name" '.[$n].public.command // ""')"
+	if [ -z "$cmd" ]; then
+		nh_err "$name declares public.file but no public.command — $out NOT written"
+		return 1
+	fi
+	mkdir -p "$(dirname "$out")" || return 1
+	# Module-declared config, run in this process for the same reason a
+	# generator is: bash may not be on the CLI's runtime PATH. The
+	# plaintext arrives on stdin, so the command is never handed the path
+	# of the scratch buffer.
+	if ! { eval "$cmd"; } <"$plain" >"$out.tmp"; then
+		rm -f "$out.tmp"
+		nh_err "deriving the public half of $name failed — $out NOT written"
+		return 1
+	fi
+	if [ ! -s "$out.tmp" ]; then
+		rm -f "$out.tmp"
+		nh_err "the public half of $name came out empty — $out NOT written"
+		return 1
+	fi
+	mv "$out.tmp" "$out" || {
+		rm -f "$out.tmp"
+		nh_err "could not replace $out"
+		return 1
+	}
+	chmod 0644 "$out" 2>/dev/null || true
+	nh_ok "wrote the public half of $name to $out"
+	nh_stage_for_eval "$(nh_fleet_root)" "$out"
 }
 
 # ---------------------------------------------------------------------
@@ -458,9 +457,9 @@ NIXHOLD_AGE_PLUGIN_NAME="fido2-hmac"
 # nh_age_has_token_recipient — does the operator recipients file hold a
 # token line? Reads the probe's memo, so it costs no extra eval.
 nh_age_has_token_recipient() {
-  nh_probe_recipient_inputs
-  [ -n "$_NH_OP_RECIPIENT_KEYS" ] || return 1
-  printf '%s\n' "$_NH_OP_RECIPIENT_KEYS" | grep -q '^age1fido2-hmac1'
+	nh_probe_recipient_inputs
+	[ -n "$_NH_OP_RECIPIENT_KEYS" ] || return 1
+	printf '%s\n' "$_NH_OP_RECIPIENT_KEYS" | grep -q '^age1fido2-hmac1'
 }
 
 # nh_age_token_present — is a FIDO2 token reachable RIGHT NOW? Both
@@ -468,9 +467,9 @@ nh_age_has_token_recipient() {
 # talk to. `age -d -j fido2-hmac` with nothing plugged in blocks until
 # its own timeout, so this is what keeps the route choice instant.
 nh_age_token_present() {
-  command -v "$NIXHOLD_AGE_PLUGIN" >/dev/null 2>&1 || return 1
-  command -v fido2-token >/dev/null 2>&1 || return 1
-  [ -n "$(fido2-token -L 2>/dev/null)" ]
+	command -v "$NIXHOLD_AGE_PLUGIN" >/dev/null 2>&1 || return 1
+	command -v fido2-token >/dev/null 2>&1 || return 1
+	[ -n "$(fido2-token -L 2>/dev/null)" ]
 }
 
 # nh_age_wrapped_identity -> path of the passphrase-wrapped operator
@@ -479,14 +478,14 @@ nh_age_token_present() {
 # fleet-committed `layout.ageIdentityWrapped`, which is `null` on a
 # token-only fleet — an absent value, not an error.
 nh_age_wrapped_identity() {
-  local src="${NIXHOLD_IDENTITY_FILE:-}"
-  if [ -n "$src" ] && [ -f "$src" ]; then
-    printf '%s' "$src"
-    return 0
-  fi
-  src="$(nh_worktree_layout_file ageIdentityWrapped 2>/dev/null)" || return 1
-  [ -n "$src" ] && [ -f "$src" ] || return 1
-  printf '%s' "$src"
+	local src="${NIXHOLD_IDENTITY_FILE:-}"
+	if [ -n "$src" ] && [ -f "$src" ]; then
+		printf '%s' "$src"
+		return 0
+	fi
+	src="$(nh_worktree_layout_file ageIdentityWrapped 2>/dev/null)" || return 1
+	[ -n "$src" ] && [ -f "$src" ] || return 1
+	printf '%s' "$src"
 }
 
 # nh_age_pick_route [--bulk] — decide, ONCE per shell, which route
@@ -512,34 +511,34 @@ nh_age_wrapped_identity() {
 # yet, so a visible token is the only evidence there is.
 _NH_AGE_ROUTE=""
 nh_age_pick_route() {
-  local bulk=0
-  [ "${1:-}" = "--bulk" ] && bulk=1
-  case "$_NH_AGE_ROUTE" in
-    token | passphrase) return 0 ;;
-    -) return 1 ;;
-  esac
-  if [ "$bulk" -eq 1 ] && nh_age_wrapped_identity >/dev/null; then
-    _NH_AGE_ROUTE="passphrase"
-    nh_info "decrypting with the passphrase identity (one prompt for the whole walk)"
-    return 0
-  fi
-  if nh_age_has_token_recipient && nh_age_token_present; then
-    _NH_AGE_ROUTE="token"
-    nh_info "decrypting with the hardware token (touch it when it blinks; the plugin asks for the PIN if the credential requires one)"
-    return 0
-  fi
-  if nh_age_wrapped_identity >/dev/null; then
-    _NH_AGE_ROUTE="passphrase"
-    nh_info "decrypting with the passphrase identity"
-    return 0
-  fi
-  if [ -z "$_NH_OP_RECIPIENT_KEYS" ] && nh_age_token_present; then
-    _NH_AGE_ROUTE="token"
-    nh_info "decrypting with the hardware token (no fleet recipients to read yet — the token is what is here)"
-    return 0
-  fi
-  _NH_AGE_ROUTE="-"
-  return 1
+	local bulk=0
+	[ "${1:-}" = "--bulk" ] && bulk=1
+	case "$_NH_AGE_ROUTE" in
+		token | passphrase) return 0 ;;
+		-) return 1 ;;
+	esac
+	if [ "$bulk" -eq 1 ] && nh_age_wrapped_identity >/dev/null; then
+		_NH_AGE_ROUTE="passphrase"
+		nh_info "decrypting with the passphrase identity (one prompt for the whole walk)"
+		return 0
+	fi
+	if nh_age_has_token_recipient && nh_age_token_present; then
+		_NH_AGE_ROUTE="token"
+		nh_info "decrypting with the hardware token (touch it when it blinks; the plugin asks for the PIN if the credential requires one)"
+		return 0
+	fi
+	if nh_age_wrapped_identity >/dev/null; then
+		_NH_AGE_ROUTE="passphrase"
+		nh_info "decrypting with the passphrase identity"
+		return 0
+	fi
+	if [ -z "$_NH_OP_RECIPIENT_KEYS" ] && nh_age_token_present; then
+		_NH_AGE_ROUTE="token"
+		nh_info "decrypting with the hardware token (no fleet recipients to read yet — the token is what is here)"
+		return 0
+	fi
+	_NH_AGE_ROUTE="-"
+	return 1
 }
 
 # nh_age_route_check [<what>] [--bulk] — is there ANY way to decrypt
@@ -548,17 +547,17 @@ nh_age_pick_route() {
 # `host install`'s preflight — keeps that property now that the unwrap
 # is lazy.
 nh_age_route_check() {
-  local what="" bulk=()
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      --bulk) bulk=(--bulk) ;;
-      *) what="$1" ;;
-    esac
-    shift
-  done
-  nh_age_pick_route "${bulk[@]}" && return 0
-  nh_err "no way to decrypt${what:+ $what}: this fleet names no FIDO2 token recipient with a token plugged in (age1fido2-hmac1… in nixhold.layout.ageRecipient), and this checkout holds no passphrase-wrapped identity (nixhold.layout.ageIdentityWrapped / \$NIXHOLD_IDENTITY_FILE) — plug the token in, or restore keys/operator.age"
-  return 1
+	local what="" bulk=()
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+			--bulk) bulk=(--bulk) ;;
+			*) what="$1" ;;
+		esac
+		shift
+	done
+	nh_age_pick_route "${bulk[@]}" && return 0
+	nh_err "no way to decrypt${what:+ $what}: this fleet names no FIDO2 token recipient with a token plugged in (age1fido2-hmac1… in nixhold.layout.ageRecipient), and this checkout holds no passphrase-wrapped identity (nixhold.layout.ageIdentityWrapped / \$NIXHOLD_IDENTITY_FILE) — plug the token in, or restore keys/operator.age"
+	return 1
 }
 
 # nh_age_require_encrypt — refuse to encrypt to a token recipient with
@@ -566,10 +565,10 @@ nh_age_route_check() {
 # above), but age cannot even parse the recipient without the plugin,
 # and its own message names neither the fleet nor the fix.
 nh_age_require_encrypt() {
-  nh_age_has_token_recipient || return 0
-  command -v "$NIXHOLD_AGE_PLUGIN" >/dev/null 2>&1 && return 0
-  nh_err "the operator recipients include a FIDO2 token (age1fido2-hmac1…) but $NIXHOLD_AGE_PLUGIN is not on PATH — age cannot encrypt to that recipient; run this through the nixhold CLI, which ships the plugin"
-  return 1
+	nh_age_has_token_recipient || return 0
+	command -v "$NIXHOLD_AGE_PLUGIN" >/dev/null 2>&1 && return 0
+	nh_err "the operator recipients include a FIDO2 token (age1fido2-hmac1…) but $NIXHOLD_AGE_PLUGIN is not on PATH — age cannot encrypt to that recipient; run this through the nixhold CLI, which ships the plugin"
+	return 1
 }
 
 # nh_operator_identity_file -> path of the UNWRAPPED operator identity,
@@ -580,20 +579,20 @@ nh_age_require_encrypt() {
 # ciphertexts, or that calls another verb, therefore still costs one
 # prompt.
 nh_operator_identity_file() {
-  local root out
-  root="$(nh_tmp_root)" || return 1
-  out="$root/operator-identity"
-  if [ -s "$out" ]; then
-    printf '%s' "$out"
-    return 0
-  fi
-  : >"$out" || return 1
-  chmod 600 "$out" || return 1
-  nh_unwrap_identity "$out" || {
-    rm -f "$out"
-    return 1
-  }
-  printf '%s' "$out"
+	local root out
+	root="$(nh_tmp_root)" || return 1
+	out="$root/operator-identity"
+	if [ -s "$out" ]; then
+		printf '%s' "$out"
+		return 0
+	fi
+	: >"$out" || return 1
+	chmod 600 "$out" || return 1
+	nh_unwrap_identity "$out" || {
+		rm -f "$out"
+		return 1
+	}
+	printf '%s' "$out"
 }
 
 # nh_age_decrypt <ciphertext> <out> — the ONE decrypt in the CLI.
@@ -603,32 +602,32 @@ nh_operator_identity_file() {
 # through to a passphrase prompt half way down a rekey — the operator
 # re-runs. <out> exists only on success.
 nh_age_decrypt() {
-  local src="$1" out="$2" idfile
-  nh_age_route_check "$src" || return 1
-  case "$_NH_AGE_ROUTE" in
-    token)
-      # age -d -j hands the plugin this process's terminal for the PIN
-      # prompt and the touch blink, so nothing here redirects stdin or
-      # stderr.
-      if ! age -d -j "$NIXHOLD_AGE_PLUGIN_NAME" -o "$out" "$src"; then
-        rm -f "$out"
-        nh_err "the FIDO2 token did not decrypt $src (wrong PIN, no touch, the wrong token, or a ciphertext written before the token became a recipient) — nothing fell back to the passphrase; fix it and re-run"
-        return 1
-      fi
-      ;;
-    passphrase)
-      idfile="$(nh_operator_identity_file)" || return 1
-      if ! age -d -i "$idfile" -o "$out" "$src"; then
-        rm -f "$out"
-        nh_err "the operator identity did not decrypt $src (it was encrypted to a key this checkout does not hold)"
-        return 1
-      fi
-      ;;
-    *)
-      nh_err "no decrypt route for $src"
-      return 1
-      ;;
-  esac
+	local src="$1" out="$2" idfile
+	nh_age_route_check "$src" || return 1
+	case "$_NH_AGE_ROUTE" in
+		token)
+			# age -d -j hands the plugin this process's terminal for the PIN
+			# prompt and the touch blink, so nothing here redirects stdin or
+			# stderr.
+			if ! age -d -j "$NIXHOLD_AGE_PLUGIN_NAME" -o "$out" "$src"; then
+				rm -f "$out"
+				nh_err "the FIDO2 token did not decrypt $src (wrong PIN, no touch, the wrong token, or a ciphertext written before the token became a recipient) — nothing fell back to the passphrase; fix it and re-run"
+				return 1
+			fi
+			;;
+		passphrase)
+			idfile="$(nh_operator_identity_file)" || return 1
+			if ! age -d -i "$idfile" -o "$out" "$src"; then
+				rm -f "$out"
+				nh_err "the operator identity did not decrypt $src (it was encrypted to a key this checkout does not hold)"
+				return 1
+			fi
+			;;
+		*)
+			nh_err "no decrypt route for $src"
+			return 1
+			;;
+	esac
 }
 
 # nh_unwrap_identity <out> — decrypt the passphrase-wrapped operator
@@ -648,46 +647,46 @@ nh_age_decrypt() {
 # passphrase-wrapped, EOF on the prompt) repeat identically and are
 # reported verbatim, once. <out> exists only on success.
 nh_unwrap_identity() {
-  local out="$1" src attempts=1 n=1 errfile rc
-  src="$(nh_age_wrapped_identity)" || {
-    nh_err "no passphrase-wrapped operator identity: the fleet commits none at nixhold.layout.ageIdentityWrapped and \$NIXHOLD_IDENTITY_FILE is unset — plug in the operator's FIDO2 token, or restore keys/operator.age from another checkout"
-    return 1
-  }
-  if [ -t 0 ] || [ -t 2 ]; then
-    attempts=3
-  fi
-  # age prompts on the controlling terminal, not on stderr, so its
-  # stderr can be captured without eating the prompt.
-  errfile="$(mktemp -t nixhold-age.XXXXXX)" || {
-    nh_err "could not create a temp file for age's diagnostics"
-    return 1
-  }
-  while :; do
-    nh_info "unlock operator identity (passphrase prompt)"
-    rc=0
-    age -d -o "$out" "$src" 2>"$errfile" || rc=$?
-    if [ "$rc" -eq 0 ]; then
-      rm -f "$errfile"
-      return 0
-    fi
-    rm -f "$out"
-    if ! grep -qi 'incorrect passphrase' "$errfile"; then
-      if [ -s "$errfile" ]; then
-        cat "$errfile" >&2
-      fi
-      rm -f "$errfile"
-      nh_err "age failed while unwrapping the operator identity at $src (not a passphrase failure — see above)"
-      return 1
-    fi
-    if [ "$n" -ge "$attempts" ]; then
-      break
-    fi
-    nh_err "incorrect passphrase — $((attempts - n)) attempt(s) left"
-    n=$((n + 1))
-  done
-  rm -f "$errfile"
-  nh_err "could not unlock the operator identity at $src — wrong passphrase"
-  return 1
+	local out="$1" src attempts=1 n=1 errfile rc
+	src="$(nh_age_wrapped_identity)" || {
+		nh_err "no passphrase-wrapped operator identity: the fleet commits none at nixhold.layout.ageIdentityWrapped and \$NIXHOLD_IDENTITY_FILE is unset — plug in the operator's FIDO2 token, or restore keys/operator.age from another checkout"
+		return 1
+	}
+	if [ -t 0 ] || [ -t 2 ]; then
+		attempts=3
+	fi
+	# age prompts on the controlling terminal, not on stderr, so its
+	# stderr can be captured without eating the prompt.
+	errfile="$(mktemp -t nixhold-age.XXXXXX)" || {
+		nh_err "could not create a temp file for age's diagnostics"
+		return 1
+	}
+	while :; do
+		nh_info "unlock operator identity (passphrase prompt)"
+		rc=0
+		age -d -o "$out" "$src" 2>"$errfile" || rc=$?
+		if [ "$rc" -eq 0 ]; then
+			rm -f "$errfile"
+			return 0
+		fi
+		rm -f "$out"
+		if ! grep -qi 'incorrect passphrase' "$errfile"; then
+			if [ -s "$errfile" ]; then
+				cat "$errfile" >&2
+			fi
+			rm -f "$errfile"
+			nh_err "age failed while unwrapping the operator identity at $src (not a passphrase failure — see above)"
+			return 1
+		fi
+		if [ "$n" -ge "$attempts" ]; then
+			break
+		fi
+		nh_err "incorrect passphrase — $((attempts - n)) attempt(s) left"
+		n=$((n + 1))
+	done
+	rm -f "$errfile"
+	nh_err "could not unlock the operator identity at $src — wrong passphrase"
+	return 1
 }
 
 # nh_secret_reencrypt <ciphertext> <recipients-file> <workdir> — open
@@ -703,31 +702,31 @@ nh_unwrap_identity() {
 # empty gets it filled in here (the migration path for a fleet that
 # predates login.pub).
 nh_secret_reencrypt() {
-  local target="$1" rfile="$2" workdir="$3" tmp label
-  label="${target##*/}"
-  tmp="$workdir/plain"
-  if ! nh_age_decrypt "$target" "$tmp"; then
-    rm -f "$tmp"
-    nh_warn "$label is not decryptable by the operator — NOT rekeyed"
-    return 1
-  fi
-  # Encrypt to a sibling temp + rename so a failure cannot leave the
-  # committed ciphertext truncated.
-  if ! age -R "$rfile" -o "$target.tmp" "$tmp"; then
-    rm -f "$target.tmp" "$tmp"
-    nh_warn "re-encryption of $label failed — the original is untouched"
-    return 1
-  fi
-  if ! mv "$target.tmp" "$target"; then
-    rm -f "$target.tmp" "$tmp"
-    nh_warn "could not replace $label — the original is untouched"
-    return 1
-  fi
-  if [ "$label" = "identity.age" ]; then
-    nh_login_pub_default_from_identity "$tmp" || true
-  fi
-  rm -f "$tmp"
-  nh_stage_for_eval "$(nh_fleet_root)" "$target"
+	local target="$1" rfile="$2" workdir="$3" tmp label
+	label="${target##*/}"
+	tmp="$workdir/plain"
+	if ! nh_age_decrypt "$target" "$tmp"; then
+		rm -f "$tmp"
+		nh_warn "$label is not decryptable by the operator — NOT rekeyed"
+		return 1
+	fi
+	# Encrypt to a sibling temp + rename so a failure cannot leave the
+	# committed ciphertext truncated.
+	if ! age -R "$rfile" -o "$target.tmp" "$tmp"; then
+		rm -f "$target.tmp" "$tmp"
+		nh_warn "re-encryption of $label failed — the original is untouched"
+		return 1
+	fi
+	if ! mv "$target.tmp" "$target"; then
+		rm -f "$target.tmp" "$tmp"
+		nh_warn "could not replace $label — the original is untouched"
+		return 1
+	fi
+	if [ "$label" = "identity.age" ]; then
+		nh_login_pub_default_from_identity "$tmp" || true
+	fi
+	rm -f "$tmp"
+	nh_stage_for_eval "$(nh_fleet_root)" "$target"
 }
 
 # nh_secret_ciphertexts — every committed ciphertext under the
@@ -737,8 +736,8 @@ nh_secret_reencrypt() {
 # ciphertext whose declaration was removed just as surely as one that
 # is still declared, or the fleet key rotates out from under it.
 nh_secret_ciphertexts() {
-  local sdir
-  sdir="$(nh_worktree_secrets_dir)" || return 2
-  [ -d "$sdir" ] || return 0
-  find "$sdir" -mindepth 1 -maxdepth 2 -type f -name '*.age' | sort
+	local sdir
+	sdir="$(nh_worktree_secrets_dir)" || return 2
+	[ -d "$sdir" ] || return 0
+	find "$sdir" -mindepth 1 -maxdepth 2 -type f -name '*.age' | sort
 }

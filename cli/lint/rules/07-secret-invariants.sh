@@ -16,16 +16,16 @@
 
 worst=0
 while IFS= read -r line; do
-  [ -n "$line" ] || continue
-  h="${line%% *}"
-  platform="${line##* }"
-  json="$(nh_host_secrets "$h" "$platform" 2>/dev/null)" || {
-    echo "ERROR: could not evaluate nixhold.secrets for $h — secret invariants check skipped"
-    [ "$worst" -lt 2 ] && worst=2
-    continue
-  }
+	[ -n "$line" ] || continue
+	h="${line%% *}"
+	platform="${line##* }"
+	json="$(nh_host_secrets "$h" "$platform" 2>/dev/null)" || {
+		echo "ERROR: could not evaluate nixhold.secrets for $h — secret invariants check skipped"
+		[ "$worst" -lt 2 ] && worst=2
+		continue
+	}
 
-  bad="$(printf '%s' "$json" | jq -r --arg p "$platform" '
+	bad="$(printf '%s' "$json" | jq -r --arg p "$platform" '
     to_entries[]
     | . as $e
     | [
@@ -38,13 +38,13 @@ while IFS= read -r line; do
         (select($e.value.unit != null and $p != "nixos")
           | "\($e.key) — unit = \"\($e.value.unit)\" on a \($p) host (systemd units are NixOS-only)")
       ][]')"
-  if [ -n "$bad" ]; then
-    while IFS= read -r msg; do
-      [ -n "$msg" ] || continue
-      echo "VIOLATION: $h/$msg"
-      worst=3
-    done <<<"$bad"
-  fi
+	if [ -n "$bad" ]; then
+		while IFS= read -r msg; do
+			[ -n "$msg" ] || continue
+			echo "VIOLATION: $h/$msg"
+			worst=3
+		done <<<"$bad"
+	fi
 done < <(nh_hosts)
 
 [ "$worst" -eq 0 ] && echo "OK: secret declaration invariants hold"

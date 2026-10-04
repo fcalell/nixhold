@@ -19,24 +19,24 @@ worst=0
 problems=0
 
 report() {
-  problems=$((problems + 1))
-  if [ "$strict" = "1" ]; then
-    echo "VIOLATION: $1"
-    worst=3
-  else
-    echo "WARNING: $1"
-  fi
+	problems=$((problems + 1))
+	if [ "$strict" = "1" ]; then
+		echo "VIOLATION: $1"
+		worst=3
+	else
+		echo "WARNING: $1"
+	fi
 }
 
 login="$keys_dir/login.pub"
 if ! nh_pubkey_lines "$login" >/dev/null 2>&1; then
-  report "$login is missing or holds no key line — no host authorizes anyone and the installer ISO would boot unreachable (provision the fleet identity with 'nixhold secret edit <host> identity', which writes it, or add your own ssh pubkey line)"
+	report "$login is missing or holds no key line — no host authorizes anyone and the installer ISO would boot unreachable (provision the fleet identity with 'nixhold secret edit <host> identity', which writes it, or add your own ssh pubkey line)"
 elif git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
-  ! git -C "$root" ls-files --error-unmatch -- "$login" >/dev/null 2>&1; then
-  report "${login#"$root"/} is not tracked by git — nix eval cannot see an untracked file, so every host authorizes nobody ('git add' it)"
+	! git -C "$root" ls-files --error-unmatch -- "$login" >/dev/null 2>&1; then
+	report "${login#"$root"/} is not tracked by git — nix eval cannot see an untracked file, so every host authorizes nobody ('git add' it)"
 fi
 
 if [ "$problems" -eq 0 ]; then
-  echo "OK: keys/login.pub authorizes $(nh_pubkey_lines "$login" | grep -c .) key(s)"
+	echo "OK: keys/login.pub authorizes $(nh_pubkey_lines "$login" | grep -c .) key(s)"
 fi
 exit "$worst"

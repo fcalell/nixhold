@@ -18,27 +18,27 @@ worst=0
 problems=0
 
 report() {
-  problems=$((problems + 1))
-  if [ "$strict" = "1" ]; then
-    echo "VIOLATION: $1"
-    worst=3
-  else
-    echo "WARNING: $1"
-  fi
+	problems=$((problems + 1))
+	if [ "$strict" = "1" ]; then
+		echo "VIOLATION: $1"
+		worst=3
+	else
+		echo "WARNING: $1"
+	fi
 }
 
 while IFS= read -r line; do
-  h="${line%% *}"
-  [ -n "$h" ] || continue
-  disk="$(nh_host_field "$h" disk)"
-  [ -n "$disk" ] || continue
-  case "$disk" in
-    /dev/disk/by-id/*) continue ;;
-  esac
-  report "$h — disk = \"$disk\" is an enumeration-order name, which moves when another disk or a USB stick is present at boot ('nixhold host install $h' records the stable /dev/disk/by-id path the picker resolves, or pass --disk <by-id>)"
+	h="${line%% *}"
+	[ -n "$h" ] || continue
+	disk="$(nh_host_field "$h" disk)"
+	[ -n "$disk" ] || continue
+	case "$disk" in
+		/dev/disk/by-id/*) continue ;;
+	esac
+	report "$h — disk = \"$disk\" is an enumeration-order name, which moves when another disk or a USB stick is present at boot ('nixhold host install $h' records the stable /dev/disk/by-id path the picker resolves, or pass --disk <by-id>)"
 done < <(nh_hosts nixos)
 
 if [ "$problems" -eq 0 ]; then
-  echo "OK: every roster disk is a /dev/disk/by-id path"
+	echo "OK: every roster disk is a /dev/disk/by-id path"
 fi
 exit "$worst"
