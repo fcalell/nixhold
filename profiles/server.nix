@@ -59,5 +59,10 @@
   # `git`: the CLI clones the operator's repositories.
   environment.systemPackages = [ pkgs.git ];
 
+  # A screen left on a headless box blanks after five idle minutes;
+  # the kernel's default is never. A list, so not mkDefault (NixOS's
+  # own entries would discard it); a later `consoleblank=0` wins.
+  boot.kernelParams = [ "consoleblank=300" ];
+
   system.stateVersion = lib.mkDefault "24.11";
 }

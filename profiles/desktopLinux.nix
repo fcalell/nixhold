@@ -10,8 +10,9 @@
 # rest of the fleet, but no caddy/firewall (a desktop doesn't
 # terminate fleet HTTP).
 #
-# Everything here is `mkDefault`: a host overrides the one option
-# rather than opting out of the profile.
+# Every scalar here is `mkDefault`: a host overrides the one option
+# rather than opting out of the profile. Lists merge at normal
+# priority (ARCHITECTURE "Profiles").
 {
   config,
   inputs,

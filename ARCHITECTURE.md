@@ -261,10 +261,18 @@ Concepts, not filesystem (principle 14):
   `workstationDarwin` carries the mac equivalent: Touch ID on
   `sudo_local` (the darwin half of "Sudo asks") and zsh. `server`
   is the headless box: documentation off, fwupd off, networkd with
-  the link as its online signal, oomd on the root slice. What every
-  profile installs is `git`, since the CLI clones, and on the Linux
-  seat `libfido2`. Every value is `mkDefault`, so a host overrides
-  the one option rather than opting out of the profile.
+  the link as its online signal, oomd on the root slice, and a
+  console that blanks after five idle minutes (`consoleblank=300`),
+  so a screen left attached powers down. What every profile
+  installs is `git`, since the CLI clones, and on the Linux seat
+  `libfido2`. Every scalar value is `mkDefault`, so a host
+  overrides the one option rather than opting out of the profile.
+  A list merges instead: any normal-priority definition, NixOS's
+  own included, discards a `mkDefault` list whole, so a profile
+  adds its list entries at normal priority and a host overrides an
+  entry the way that list's consumer allows (the kernel takes the
+  last of a repeated parameter, so `lib.mkAfter [ "consoleblank=0" ]`
+  keeps a console lit).
 - **Per-host modules (layer 3)** are free-form NixOS/Darwin
   modules (service enables, home fragments, host extras) —
   operator filenames, no framework path conventions. Hardware is
