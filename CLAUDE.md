@@ -67,7 +67,8 @@ library, which shellcheck cannot see).
 The fixture is eval-only; what a unit does when it runs belongs in a
 VM check under `checks/vm/` (`nix build .#checks.x86_64-linux.vm-oneshots -L`,
 x86_64-linux and a `/dev/kvm`).
-`nixfmt` is the formatter. Behaviour neither can reach is verified on
+`nixfmt` formats nix and `shfmt` formats the CLI, from `.editorconfig`
+(the `cli-shfmt` check). Behaviour neither can reach is verified on
 the dogfood fleet, which needs that repo to point at this checkout
 and `--allow-dirty-locks`.
 

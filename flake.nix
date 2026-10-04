@@ -154,6 +154,25 @@
               touch $out
             '';
 
+          # The CLI's formatting, from the repo's .editorconfig, the file
+          # shfmt and the editor both read.
+          cli-shfmt =
+            let
+              pkgs = nixpkgs.legacyPackages.${system};
+              src = nixpkgs.lib.fileset.toSource {
+                root = ./.;
+                fileset = nixpkgs.lib.fileset.unions [
+                  ./.editorconfig
+                  ./cli
+                ];
+              };
+            in
+            pkgs.runCommand "nixhold-cli-shfmt" { nativeBuildInputs = [ pkgs.shfmt ]; } ''
+              cd ${src}
+              shfmt -d cli
+              touch $out
+            '';
+
           # What shellcheck cannot see: the dispatcher sources ONE verb
           # plus every lib/, so a verb calling a function another verb
           # defines finds nothing at runtime — and `|| true` swallows
@@ -300,5 +319,22 @@
       );
 
       formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixfmt);
+
+      # The tools behind the gate's own steps, run by hand before
+      # `nix flake check`: shellcheck and shfmt as `cli-shellcheck` and
+      # `cli-shfmt` call them, and the formatter.
+      devShells = forAllSystems (system: {
+        default =
+          let
+            pkgs = nixpkgs.legacyPackages.${system};
+          in
+          pkgs.mkShell {
+            packages = [
+              pkgs.shellcheck
+              pkgs.shfmt
+              pkgs.nixfmt
+            ];
+          };
+      });
     };
 }
