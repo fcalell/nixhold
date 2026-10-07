@@ -261,7 +261,7 @@ Concepts, not filesystem (principle 14):
   `workstationDarwin` carries the mac equivalent: Touch ID on
   `sudo_local` (the darwin half of "Sudo asks") and zsh. `server`
   is the headless box: documentation off, fwupd off, networkd with
-  the link as its online signal, oomd on the root slice, and a
+  the link as its online signal, and a
   console that blanks after five idle minutes (`consoleblank=300`),
   so a screen left attached powers down. What every profile
   installs is `git`, since the CLI clones, and on the Linux seat
@@ -881,6 +881,88 @@ blocked by an assertion pointing at `nixhold host install`. This
 is what lets the install evaluate the disko script and generate
 the report before the build that needs it.
 
+## Pressure
+
+**A NixOS machine stays reachable under any load its workloads
+make.** Agents, browsers, emulators and builds fill memory faster
+than anyone watches it, and a host that thrashes is lost from the
+tailnet until someone reaches its console. The framework owns the
+floor every machine stands on: what the recovery path keeps, what
+dies first, and where builds sit. It names no application. A
+workload that needs a budget of its own (stead's `stead.slice`, its
+admission on the slice's pressure) sets it in its own module, and a
+fleet sets that module's value.
+
+```
+-.slice           ManagedOOMSwap=kill
+├─ core.slice     MemoryMin=256M, CPUWeight=1000
+│   ├─ sshd       ManagedOOMPreference=omit, OOMScoreAdjust=-900
+│   └─ tailscaled ManagedOOMPreference=omit, OOMScoreAdjust=-900
+├─ system.slice   ManagedOOMMemoryPressure=kill, 60% for 30 s
+│   └─ nix-daemon MemoryHigh=50%, CPU batch, I/O best-effort 7
+└─ user.slice     ManagedOOMMemoryPressure=kill, 50% for 20 s
+```
+
+`modules/pressure` renders it, imported by the NixOS baseline, so
+every machine carries it whatever its profile. Every value is a
+`mkDefault`, and every size is a share of physical memory or a
+fixed floor, so one opinion fits a 16 GB server and a 64 GB seat with
+no per-host knob. A host changes one by setting the same systemd key.
+
+**The core is the recovery path, a closed list.** sshd is the door
+and tailscaled the road to it; nothing else is needed to log in and
+fix a host. Both run in `core.slice` when their service is enabled
+(sshd's per-connection `sshd@` instances when it is socket-activated).
+`core.slice` is a top-level slice because a memory protection holds
+only when every ancestor reserves it too, and the root slice is the
+one ancestor exempt from that (systemd.resource-control(5)); a dash
+in a slice's name nests it under its prefix, so the name has none.
+`MemoryMin` keeps both resident while the rest of the machine is
+reclaimed, `omit` takes them out of systemd-oomd's choice (honoured
+because their cgroups are root's), `OOMScoreAdjust` keeps them last
+for the kernel's killer, and the CPU weight keeps the tunnel
+answering while a build holds every core. A login's shell is not in
+the core: pam_systemd moves it to the operator's `user.slice`. The
+list is not an option; a fleet protects another unit by setting the
+same keys on it.
+
+**systemd-oomd kills the leaf under pressure.** Two triggers, each
+picking among the descendant leaf cgroups of the slice that carries
+it (systemd-oomd.service(8)):
+
+- **Swap.** `ManagedOOMSwap=kill` on `-.slice`: once memory and swap
+  are both past 90% used, the leaf holding the most swap goes. zram
+  is the swap ("Hardware"); a custom layout with no swap leaves the
+  trigger idle.
+- **Pressure.** `ManagedOOMMemoryPressure=kill` on `system.slice` at
+  oomd's own 60% for 30 s, and on `user.slice` at 50% for 20 s, since
+  an interactive session pays for a stall sooner than a service
+  does. The root slice carries no pressure trigger: it reads the
+  whole machine, where a stall is already everyone's.
+
+A leaf is the unit of a kill. A workload that runs one job per unit
+loses that job alone, which is why stead's boundary is one unit per
+session; several agents started by hand inside one ssh login share
+that login's session scope and die together.
+
+**Builds are background work.** Every build on a machine runs in
+`nix-daemon.service`, an agent's `nix build` included, so it lands
+outside any limit the agent's own unit carries. `MemoryHigh=50%`
+throttles the daemon's cgroup before it pushes the machine into
+oomd: a build slows and finishes rather than dying with the deploy
+that asked for it. CPU is `batch` and I/O best-effort at priority 7,
+the lowest that still gets the disk. `idle` for either starves a
+build for as long as anything else runs (nixpkgs' `nix.daemon*`
+option docs), and a machine running agents is never idle, so a
+deploy would wait on the agents.
+
+**Guests and darwin carry none of it.** A guest is a leaf of its
+machine: its `container@<guest>` unit sits in the machine's
+`system.slice`, the machine's oomd may take it whole, and inside the
+container there is no oomd, no core and no daemon of its own (the
+store is the machine's). darwin has no cgroups and launchd no memory
+limit.
+
 ## Guests
 
 A host is what the fleet addresses: a name, a tailnet node, a
@@ -943,7 +1025,9 @@ The guest's own eval carries the container mark
 the hardware module reads the same roster fact — a condition under
 `boot.*` on a `boot.*` value would be a cycle — so a guest gets no
 disko layout, no boot loader, no zram, no facter report and no
-facter assertion, and no `disk` in the roster. Its gc and optimise
+facter assertion, no `disk` in the roster, and none of "Pressure"
+(the module reads `boot.isContainer`, a value under `boot.*` it
+does not define). Its gc and optimise
 timers are off: the store is the machine's, reached through the
 machine's nix-daemon socket. A guest entry carrying `disk`, `guests`
 of its own, `publicIp` or `publicFqdn` is a lint error: a guest owns

@@ -211,5 +211,34 @@
           && config.nixhold.secrets.syncthing-identity.resolvedMode == "0400";
         message = "fixture-desktop: the syncthing identity is not split into the daemon's pair by a unit ahead of it";
       }
+      {
+        # "Pressure", from the baseline on a profile that sets none of
+        # it: the recovery path in the protected top-level slice, oomd
+        # on the slices below the root, builds throttled and yielding.
+        assertion =
+          let
+            core = config.systemd.slices.core.sliceConfig;
+            slices = config.systemd.slices;
+            daemon = config.systemd.services.nix-daemon.serviceConfig;
+            protected =
+              unit:
+              let
+                s = config.systemd.services.${unit}.serviceConfig;
+              in
+              s.Slice == "core.slice" && s.ManagedOOMPreference == "omit" && s.OOMScoreAdjust == -900;
+          in
+          core.MemoryMin == "256M"
+          && protected "sshd"
+          && protected "tailscaled"
+          && slices."-".sliceConfig.ManagedOOMSwap == "kill"
+          && !(slices."-".sliceConfig ? ManagedOOMMemoryPressure)
+          && slices.system.sliceConfig.ManagedOOMMemoryPressureLimit == "60%"
+          && slices.user.sliceConfig.ManagedOOMMemoryPressureLimit == "50%"
+          && config.systemd.oomd.enable
+          && daemon.MemoryHigh == "50%"
+          && daemon.CPUSchedulingPolicy == "batch"
+          && daemon.IOSchedulingClass == "best-effort";
+        message = "fixture-desktop: the pressure floor is not rendered on a NixOS machine";
+      }
     ];
 }

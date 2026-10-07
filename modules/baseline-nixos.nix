@@ -36,6 +36,9 @@
     ./checks
     ./checks/nixos.nix
     ./hardware
+    # The pressure floor: the recovery path's memory, oomd's triggers,
+    # builds as background work. Every machine, whatever its profile.
+    ./pressure
     # Both sides of "Guests": what a host sets when it is a container
     # of another host's machine, and what a machine renders for the
     # guests its roster entry names. Each gates itself on the roster.

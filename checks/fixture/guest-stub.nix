@@ -40,6 +40,14 @@ in
       message = "fixture-guest: the hardware module rendered something for a container";
     }
     {
+      # A guest is a leaf of its machine: no core, no oomd triggers.
+      assertion =
+        !(config.systemd.slices ? core)
+        && !(config.systemd.services.tailscaled.serviceConfig ? Slice)
+        && !(config.systemd.slices."-".sliceConfig or { } ? ManagedOOMSwap);
+      message = "fixture-guest: the pressure module rendered something for a container";
+    }
+    {
       assertion =
         me.machine == "fixture-desktop"
         &&

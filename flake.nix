@@ -265,6 +265,11 @@
           # boot.
           vm-syncthing = import ./checks/vm/syncthing.nix { pkgs = nixpkgs.legacyPackages.${system}; };
 
+          # The pressure floor: the recovery path in its protected
+          # slice, and a unit stalling system.slice killed by oomd
+          # while sshd and tailscaled keep running.
+          vm-pressure = import ./checks/vm/pressure.nix { pkgs = nixpkgs.legacyPackages.${system}; };
+
           fixture-server = fixture.nixosConfigurations.fixture-server.config.system.build.toplevel;
 
           # The internet-facing host. One caddy listener serves every

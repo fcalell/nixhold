@@ -45,13 +45,6 @@
   # would queue tailscaled behind its wait-online at every boot).
   networking.useNetworkd = lib.mkDefault true;
 
-  # Pressure-based OOM on the root slice: NixOS ships oomd with every
-  # scope off, so `enable` alone watches nothing. Units in
-  # system.slice are left to the kernel killer.
-  systemd.oomd = {
-    enable = lib.mkDefault true;
-    enableRootSlice = lib.mkDefault true;
-  };
   # fail2ban is not a profile decision: the openssh module turns it on
   # for a host that is actually on an internet-typed network, and a
   # tailnet-only server has nothing reaching sshd to ban.
